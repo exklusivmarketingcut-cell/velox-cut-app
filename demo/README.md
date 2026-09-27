@@ -1,7 +1,7 @@
 # Demo-Durchlauf (lokal, ohne echte Konten)
 
 1. `node demo/backend.mjs` – bildet Supabase (Port 54321) und Stripe-Testmodus (Port 12111) nach, Daten nur im Arbeitsspeicher.
-2. In `.env.local` stehen die Demo-Werte (`NEXT_PUBLIC_DEMO=1` …) – **nie** in Vercel eintragen.
+2. In `.env.development.local` stehen die Demo-Werte (nur `npm run dev` lädt sie, nie der Build) (`NEXT_PUBLIC_DEMO=1` …) – **nie** bei Cloudflare eintragen.
 3. App starten: `npm run dev -- -p 3010`
 4. Schnitt-Maschine: `SUPABASE_URL=http://127.0.0.1:54321 SUPABASE_SERVICE_ROLE_KEY=demo-service node worker/worker.mjs`
 

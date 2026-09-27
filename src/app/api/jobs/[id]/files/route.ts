@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createAdmin, getUser } from '@/lib/supabase/server';
+import { downloadUrl } from '@/lib/r2';
 
 // Download-Links für fertige Clips (1 Stunde gültig)
 export async function GET(_req: Request, ctx: RouteContext<'/api/jobs/[id]/files'>) {
@@ -12,8 +13,8 @@ export async function GET(_req: Request, ctx: RouteContext<'/api/jobs/[id]/files
   const outs = (job.outputs as { path: string; title?: string }[]) ?? [];
   const files = await Promise.all(
     outs.map(async (o, i) => {
-      const { data } = await admin.storage.from('outputs').createSignedUrl(o.path, 3600, { download: `velox-clip-${i + 1}.mp4` });
-      return { title: o.title ?? `Clip ${i + 1}`, url: data?.signedUrl ?? null };
+      const url = await downloadUrl(`outputs/${o.path}`, `velox-clip-${i + 1}.mp4`).catch(() => null);
+      return { title: o.title ?? `Clip ${i + 1}`, url };
     }),
   );
   return NextResponse.json({ files });

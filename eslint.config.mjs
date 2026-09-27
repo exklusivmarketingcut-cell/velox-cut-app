@@ -14,6 +14,9 @@ const eslintConfig = defineConfig([
     "next-env.d.ts",
     // Website-Dateien (kommen fertig aus ~/veloxcut-studio)
     "public/**",
+    // Cloudflare-Build
+    ".open-next/**",
+    ".wrangler/**",
   ]),
 ]);
 

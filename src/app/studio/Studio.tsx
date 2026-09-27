@@ -15,24 +15,20 @@ const CAPTIONS = [
 const COLORS = ['#F6E27F', '#FF3D7F', '#4F9EFF', '#3DFF9A', '#FF7A3D', '#FFFFFF'];
 const STATUS: Record<Job['status'], string> = { queued: 'In der Warteschlange', processing: 'Wird geschnitten', done: 'Fertig', failed: 'Fehlgeschlagen' };
 
-/** Datei direkt in den Speicher hochladen (mit Fortschritt) */
-function putFile(signedUrl: string, file: File, anonKey: string, onProgress: (p: number) => void) {
+/** Datei direkt in den Speicher hochladen (signierter Link, mit Fortschritt) */
+function putFile(signedUrl: string, file: File, onProgress: (p: number) => void) {
   return new Promise<void>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    const body = new FormData();
-    body.append('cacheControl', '3600');
-    body.append('', file);
     xhr.open('PUT', signedUrl);
-    xhr.setRequestHeader('x-upsert', 'false');
-    xhr.setRequestHeader('apikey', anonKey);
+    xhr.setRequestHeader('Content-Type', file.type || 'video/mp4');
     xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(Math.round((e.loaded / e.total) * 100));
     xhr.onload = () => (xhr.status < 300 ? resolve() : reject(new Error(String(xhr.status))));
     xhr.onerror = () => reject(new Error('network'));
-    xhr.send(body);
+    xhr.send(file);
   });
 }
 
-export default function Studio({ credits, initialJobs, anonKey }: { credits: number; initialJobs: Job[]; anonKey: string }) {
+export default function Studio({ credits, initialJobs }: { credits: number; initialJobs: Job[] }) {
   const [tab, setTab] = useState<'upload' | 'drive'>('upload');
   const [file, setFile] = useState<File | null>(null);
   const [drive, setDrive] = useState('');
@@ -92,7 +88,7 @@ export default function Studio({ credits, initialJobs, anonKey }: { credits: num
         }).then((r) => r.json());
         if (!s.signedUrl) throw new Error(s.error || 'Upload konnte nicht vorbereitet werden.');
         setUp(0);
-        await putFile(s.signedUrl, file, anonKey, setUp);
+        await putFile(s.signedUrl, file, setUp);
         sourcePath = s.path;
         sourceName = file.name;
       } else if (!/^https:\/\/(drive|docs)\.google\.com\//.test(drive.trim())) {

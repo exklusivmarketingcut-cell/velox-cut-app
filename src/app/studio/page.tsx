@@ -21,7 +21,7 @@ export default async function Page({ searchParams }: PageProps<'/studio'>) {
           <p className="sub">
             Paket: <b>{PLANS[p.plan].name}</b> · {p.plan_credits} Paket-Credits + {p.topup_credits} nachgekaufte Credits
           </p>
-          <Studio credits={p.plan_credits + p.topup_credits} initialJobs={jobs ?? []} anonKey={process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!} />
+          <Studio credits={p.plan_credits + p.topup_credits} initialJobs={jobs ?? []} />
         </div>
       </main>
     </>

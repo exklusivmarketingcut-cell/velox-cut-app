@@ -351,6 +351,25 @@ async function storage(req, res, url, role) {
   return json(res, 404, { message: 'Nicht nachgebildet: ' + p });
 }
 
+// ───────────────────────────── R2-Nachbildung (S3-Pfad: /r2/<bucket>/<key>, Signatur wird im Demo nicht geprüft) ─────────────────────────────
+async function r2(req, res, url) {
+  const key = decodeURIComponent(url.pathname.split('/').slice(3).join('/'));
+  const file = fileOf(key);
+  if (req.method === 'PUT') {
+    const data = await readBody(req);
+    mkdirSync(dirname(file), { recursive: true });
+    await writeFile(file, data);
+    log(key.startsWith('uploads/') ? '📥 Upload gespeichert' : '📤 Clip gespeichert', key, `${(data.length / 1048576).toFixed(1)} MB`);
+    return send(res, 200);
+  }
+  if (req.method === 'GET') {
+    const cd = url.searchParams.get('response-content-disposition');
+    return sendFile(req, res, file, cd ? { 'Content-Disposition': cd } : {});
+  }
+  if (req.method === 'DELETE') { await rm(file, { force: true }); log('🗑  gelöscht', key); return send(res, 204); }
+  return send(res, 405);
+}
+
 // ───────────────────────────── Stripe (Testmodus-Nachbildung) ─────────────────────────────
 const S = { customers: new Map(), setup_intents: new Map(), payment_methods: new Map(), subscriptions: new Map(), invoices: new Map(), payment_intents: new Map(), payments: [] };
 const PRICES = [
@@ -587,6 +606,7 @@ http.createServer(async (req, res) => {
     if (url.pathname.startsWith('/auth/v1')) return await auth(req, res, url);
     if (url.pathname.startsWith('/rest/v1')) return await rest(req, res, url, role, uid);
     if (url.pathname.startsWith('/storage/v1')) return await storage(req, res, url, role);
+    if (url.pathname.startsWith('/r2/')) return await r2(req, res, url);
     if (url.pathname === '/demo/state') return json(res, 200, { users: [...users.keys()], ...db });
     json(res, 404, { message: 'Nicht nachgebildet' });
   } catch (e) {

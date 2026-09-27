@@ -750,3 +750,23 @@ button:disabled { opacity: .6; cursor: progress; }
 @media (max-width: 900px) { .hero-head .hero-3d-space { width: 124px; height: 124px; } }
 @media (max-width: 680px) { .hero-head .hero-3d-space { width: 84px; height: 84px; margin-left: 0; } }
 @media (min-width: 1200px) { .hero-head .hero-3d-space { margin-top: -20px; margin-bottom: -20px; } }
+
+/* ---------- Hero v6: Logo größer und mittig im freien Raum rechts der Überschrift ---------- */
+@media (min-width: 1200px) {
+  /* Kopfzeile bis kurz vor den rechten Seitenrand ziehen (wie die Navigation), Logo darin mittig im freien Platz */
+  .hero-head { margin-right: calc(-1 * max(0px, (100vw - 880px) / 2 - 120px)); }
+  .hero-head .hero-3d-space { margin: -30px auto; width: clamp(200px, 15vw, 250px); height: clamp(200px, 15vw, 250px); }
+}
+@media (min-width: 901px) and (max-width: 1199px) {
+  .hero-head .hero-3d-space { margin: -10px auto; width: 150px; height: 150px; }
+}
+
+/* ---------- Handy-Fächer weiter runter: gleich viel Luft über und unter dem Übergang ---------- */
+.fan-sec { margin-top: 28px; height: 800px; }
+.fan { top: 70px; }
+@media (max-width: 900px) { .fan-sec { margin-top: 20px; } }
+@media (max-width: 680px) { .fan-sec { margin-top: 18px; height: 540px; } .fan { top: 50px; } }
+/* unten nicht mehr Luft als oben: Fächer-Bereich endet kurz unter den Handys */
+@media (min-width: 681px) { .fan-sec { height: 720px; } }
+@media (max-width: 680px) { .fan-sec { height: 495px; } }
+@media (min-width: 681px) and (max-width: 900px) { .fan-sec { margin-top: 60px; height: 680px; } .hero-head .hero-3d-space { margin: 0 auto; width: 140px; height: 140px; } }

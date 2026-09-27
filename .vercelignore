@@ -1,0 +1,8 @@
+# Nicht zu Vercel hochladen: lokale Schlüssel/Demo-Werte, Demo-Server, Schnitt-Maschine (läuft auf dem Mac)
+.env*
+!.env.example
+demo/
+worker/
+scripts/
+.next/
+node_modules/

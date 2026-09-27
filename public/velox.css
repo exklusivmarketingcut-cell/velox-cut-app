@@ -743,3 +743,10 @@ button:disabled { opacity: .6; cursor: progress; }
 .hero-head .hero-3d-space { width: clamp(96px, 11vw, 160px); height: clamp(96px, 11vw, 160px); }
 @media (max-width: 900px) { .hero-head .hero-3d-space { width: 112px; height: 112px; } }
 @media (max-width: 680px) { .hero-head .hero-3d-space { width: 78px; height: 78px; } }
+
+/* ---------- Hero v5: Logo weiter rechts, mittig im freien Raum neben der Überschrift, etwas größer ---------- */
+.hero-head .hero-3d-space { margin-left: auto; width: clamp(120px, 13vw, 200px); height: clamp(120px, 13vw, 200px); }
+@media (min-width: 1200px) { .hero-head .hero-3d-space { margin-right: -40px; } }
+@media (max-width: 900px) { .hero-head .hero-3d-space { width: 124px; height: 124px; } }
+@media (max-width: 680px) { .hero-head .hero-3d-space { width: 84px; height: 84px; margin-left: 0; } }
+@media (min-width: 1200px) { .hero-head .hero-3d-space { margin-top: -20px; margin-bottom: -20px; } }

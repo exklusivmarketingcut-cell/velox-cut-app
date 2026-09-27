@@ -37,7 +37,9 @@ const needTap = v => {
 const tryPlay = v => {
   v.muted = true; // manche In-App-Browser ignorieren das muted-Attribut
   const p = v.play();
-  if (p) p.then(() => v.parentElement?.querySelector(':scope > .tap-play')?.remove()).catch(() => needTap(v));
+  // Seite im Hintergrund geöffnet (z. B. neuer Tab) → erst beim Sichtbarwerden erneut starten, statt Play-Button
+  if (p) p.then(() => v.parentElement?.querySelector(':scope > .tap-play')?.remove())
+    .catch(() => (document.hidden ? document.addEventListener('visibilitychange', () => tryPlay(v), { once: true }) : needTap(v)));
 };
 const vio = new IntersectionObserver(entries => {
   entries.forEach(e => {
@@ -45,7 +47,8 @@ const vio = new IntersectionObserver(entries => {
     else e.target.pause();
   });
 }, { threshold: 0.1 });
-document.querySelectorAll('video').forEach(v => vio.observe(v));
+// nur die stummen Vorschau-Videos – nicht das Abspiel-Fenster der Beispiele (das soll Ton haben)
+document.querySelectorAll('video:not(#lbVideo)').forEach(v => vio.observe(v));
 
 // ---------- billing toggle ----------
 document.querySelectorAll('.bill').forEach(btn => btn.addEventListener('click', () => {
@@ -265,7 +268,10 @@ document.addEventListener('click', e => {
   if (!b) return;
   lbVideo.src = b.dataset.src;
   lb.hidden = false;
-  lbVideo.play().catch(() => {});
+  // mit Ton auf halber Lautstärke starten (iPhones regeln die Lautstärke nur über die Tasten)
+  lbVideo.muted = false;
+  lbVideo.volume = 0.5;
+  lbVideo.play().catch(() => { lbVideo.muted = true; lbVideo.play().catch(() => {}); });
 });
 lb.addEventListener('click', e => { if (e.target === lb || e.target.closest('.lb-close')) closeLb(); });
 document.addEventListener('keydown', e => { if (e.key === 'Escape' && !lb.hidden) closeLb(); });

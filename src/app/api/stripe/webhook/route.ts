@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
-import type Stripe from 'stripe';
+import Stripe from 'stripe';
+
+const cryptoProvider = Stripe.createSubtleCryptoProvider();
 import { stripe } from '@/lib/stripe';
 import { createAdmin } from '@/lib/supabase/server';
 import { creditTopup, planFromPrice, syncSubscription } from '@/lib/billing';
@@ -11,7 +13,8 @@ export async function POST(request: Request) {
   const body = await request.text();
   let event: Stripe.Event;
   try {
-    event = stripe.webhooks.constructEvent(body, sig!, process.env.STRIPE_WEBHOOK_SECRET!);
+    // Web-Crypto-Variante (läuft auf Cloudflare Workers)
+    event = await stripe.webhooks.constructEventAsync(body, sig!, process.env.STRIPE_WEBHOOK_SECRET!, undefined, cryptoProvider);
   } catch {
     return NextResponse.json({ error: 'Signatur ungültig' }, { status: 400 });
   }

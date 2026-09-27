@@ -6,7 +6,8 @@ import { createAdmin } from './supabase/server';
 let client: Stripe | undefined;
 export const stripe = new Proxy({} as Stripe, {
   get(_t, prop) {
-    client ??= new Stripe(process.env.STRIPE_SECRET_KEY!, demoHost());
+    // Cloudflare Workers: HTTP über fetch statt Node-http (sonst schlagen Stripe-Aufrufe fehl)
+    client ??= new Stripe(process.env.STRIPE_SECRET_KEY!, { httpClient: Stripe.createFetchHttpClient(), ...demoHost() });
     return Reflect.get(client, prop, client);
   },
 });

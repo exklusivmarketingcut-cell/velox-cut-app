@@ -226,9 +226,15 @@ else:
 progress(45)
 
 
+STATS = {}
+
+
 def keep_ranges(words):
     """Zeitbereiche, die bleiben: ohne Füllwörter/Wiederholungen, Stille raus, Schnitte nur zwischen Wörtern."""
-    drop = filler_idx(words) | repeat_idx(words) | gemini_cuts(words)
+    fil, rep, gem = filler_idx(words), repeat_idx(words), gemini_cuts(words)
+    drop = fil | rep | gem
+    STATS.update(filler=len(fil), repeats=len(rep), gemini=len(gem), gemini_on=bool(GEMINI_KEY),
+                 removed=[w["t"] for w in words if w["i"] in drop][:80])
     kept = [w for w in words if w["i"] not in drop]
     PAD_IN, PAD_OUT, MAX_GAP = 0.05, 0.08, 0.14
     ranges = []
@@ -455,6 +461,7 @@ def render(idx, ranges, kept, title):
                   f"afade=t=out:st={max(0.0, e - s - fade):.3f}:d={fade:.3f}[a{k}]")
         parts.append(f"[v{k}][a{k}]")
     build_ass(words_out, ass, title if viral else None)  # nach dem Zuschnitt: kennt jetzt die Gesichtslage
+    STATS["caption_words"] = len(words_out)
     fc.append(f"{''.join(parts)}concat=n={len(ranges)}:v=1:a=1[vc][ac]")
     esc = lambda p: p.replace("\\", "/").replace(":", "\\:").replace("'", "\\'")
     fc.append(f"[vc]ass='{esc(ass)}':fontsdir='{esc(FONTS)}',format=yuv420p[vo]")
@@ -468,6 +475,40 @@ def render(idx, ranges, kept, title):
         for f in (ass, script):
             os.remove(f)
     return out, round(t_out, 1)
+
+
+LOG = os.environ.get("VELOX_JOBLOG", "/Volumes/PortableSSD/velox-worker/logs/jobs.jsonl")
+
+
+def quality_check(path, words, kept, orig, secs):
+    """Sicherheits-Check: Ein Clip wird nur ausgeliefert, wenn wirklich geschnitten und untertitelt wurde.
+    Schlägt er fehl, bricht die Pipeline ab → Auftrag „fehlgeschlagen“, Credits werden automatisch erstattet."""
+    t0, t1 = words[0]["s"], words[-1]["e"]
+    pauses = sum(min(b, t1) - max(a, t0) for a, b in SIL if b > t0 and a < t1 and b - a > 0.4)
+    removable = pauses + 0.3 * STATS.get("filler", 0)
+    removed = orig - secs
+    problems = []
+    if kept and STATS.get("caption_words", 0) < len(kept) * 0.9:
+        problems.append("Untertitel fehlen")
+    if removable > 1.2 and removed < min(0.5, removable * 0.3):
+        problems.append(f"Schnitt hat nicht gegriffen ({removable:.1f} s Pausen/Füller erkannt, nur {removed:.1f} s entfernt)")
+    info = json.loads(run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_type,width,height:format=duration", "-of", "json", path]).stdout)
+    kinds = {st["codec_type"] for st in info["streams"]}
+    vid = next((st for st in info["streams"] if st["codec_type"] == "video"), {})
+    if kinds != {"video", "audio"} or (vid.get("width"), vid.get("height")) != (1080, 1920):
+        problems.append("Ausgabedatei unvollständig")
+    if abs(float(info["format"]["duration"]) - secs) > 1.0:
+        problems.append("Länge stimmt nicht")
+    entry = {"style": A.style, "caption": A.caption, "src_s": round(DUR, 1), "orig_s": round(orig, 1), "out_s": secs,
+             "pauses_s": round(pauses, 1), "removed_s": round(removed, 1), **STATS, "problems": problems}
+    try:
+        os.makedirs(os.path.dirname(LOG), exist_ok=True)
+        with open(LOG, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"t": __import__("time").strftime("%Y-%m-%d %H:%M"), **entry}, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+    if problems:
+        sys.exit("Qualitäts-Check nicht bestanden: " + "; ".join(problems))
 
 
 results = []
@@ -497,6 +538,7 @@ for n, m in enumerate(MOMENTS, 1):
     f, secs = render(n, ranges, kept, title)
     orig = words[-1]["e"] - words[0]["s"]
     log(f"Clip {n}: {orig:.1f} s → {secs} s, {len(ranges)} Abschnitte, {len(words) - len(kept)} Wörter entfernt")
+    quality_check(f, words, kept, orig, secs)
     results.append({"file": f, "title": title[:80], "seconds": secs})
     progress(50 + 45 * n / len(MOMENTS))
 

@@ -90,19 +90,44 @@ log(f"{len(WORDS)} Wörter, Sprache {tr.get('language')}")
 progress(35)
 
 # ─────────────────────────────── 3. Stille messen ───────────────────────────────
-r = subprocess.run(["ffmpeg", "-hide_banner", "-nostats", "-i", wav, "-af", "silencedetect=noise=-34dB:d=0.2", "-f", "null", "-"],
-                   capture_output=True, text=True)
-SIL, cur = [], None
-for line in r.stderr.splitlines():
-    m = re.search(r"silence_start: (-?[\d.]+)", line)
-    if m:
-        cur = max(0.0, float(m.group(1)))
-    m = re.search(r"silence_end: ([\d.]+)", line)
-    if m and cur is not None:
-        SIL.append((cur, float(m.group(1))))
-        cur = None
-if cur is not None:
-    SIL.append((cur, DUR))
+LV = []  # Lautstärke (dB) in 50-ms-Schritten
+
+
+def valley(t0, t1):
+    """Leisester Moment zwischen t0 und t1 – dort klingt ein Schnitt am natürlichsten."""
+    i0, i1 = max(0, int(t0 / 0.05)), min(len(LV) - 1, int(t1 / 0.05))
+    if i1 <= i0:
+        return (t0 + t1) / 2
+    i = min(range(i0, i1 + 1), key=lambda k: LV[k])
+    return i * 0.05 + 0.025
+
+
+def measure_silence():
+    """Stille selbst messen: Lautstärke in 50-ms-Schritten, Schwelle je Video knapp über dem Grundrauschen.
+    (ffmpeg-silencedetect scheitert an Raum-/Mikrofonrauschen – dann würde keine einzige Pause erkannt.)"""
+    r = subprocess.run(["ffmpeg", "-hide_banner", "-nostats", "-i", wav, "-af",
+                        "asetnsamples=800,astats=metadata=1:reset=1,ametadata=print:key=lavfi.astats.Overall.RMS_level",
+                        "-f", "null", "-"], capture_output=True, text=True)
+    lv = [(-120.0 if m == "-inf" else float(m)) for m in re.findall(r"RMS_level=(-?inf|-?[\d.]+)", r.stderr)]
+    LV[:] = lv
+    if len(lv) < 20:
+        return -34.0, []
+    srt = sorted(lv)
+    floor, speech = srt[len(srt) // 10], srt[len(srt) * 6 // 10]
+    th = min(-18.0, max(-60.0, floor + max(4.0, (speech - floor) * 0.3)))
+    sil, start = [], None
+    for i, v in enumerate(lv + [0.0]):
+        if v < th and start is None:
+            start = i
+        elif v >= th and start is not None:
+            if (i - start) * 0.05 >= 0.2:
+                sil.append((start * 0.05, min(DUR, i * 0.05)))
+            start = None
+    return round(th, 1), sil
+
+
+NOISE_DB, SIL = measure_silence()
+log(f"Stille-Schwelle {NOISE_DB} dB, {len(SIL)} Pausen gefunden")
 
 # ─────────────────────────────── 4. Was fliegt raus? ───────────────────────────────
 def norm(s):
@@ -149,7 +174,7 @@ def gemini(system, user, schema):
         return None
     body = json.dumps({"systemInstruction": {"parts": [{"text": system}]}, "contents": [{"role": "user", "parts": [{"text": user}]}],
                        "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json", "responseSchema": schema}}).encode()
-    for model in ("gemini-3.5-flash", "gemini-flash-latest", "gemini-2.5-flash"):
+    for model in ("gemini-3-flash-preview", "gemini-flash-latest", "gemini-2.5-flash"):
         try:
             req = urllib.request.Request(f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent", data=body,
                                          headers={"x-goog-api-key": GEMINI_KEY, "Content-Type": "application/json"})
@@ -229,37 +254,186 @@ progress(45)
 STATS = {}
 
 
-def keep_ranges(words):
+def syllables(t):
+    return max(1, len(re.findall(r"[aeiouyäöü]+", t.lower())))
+
+
+def expected_len(t):
+    return 0.16 * syllables(t) + 0.12
+
+
+def _clip_wav(a, b, path):
+    run(["ffmpeg", "-v", "error", "-y", "-ss", f"{max(0.0, a):.3f}", "-to", f"{b:.3f}", "-i", wav, path])
+
+
+def _looks_hallucinated(ws):
+    toks = [norm(w["word"]) for w in ws]
+    zero = sum(1 for w in ws if w["end"] - w["start"] <= 0.001)
+    if len(ws) > 30 or (len(ws) > 6 and zero > len(ws) * 0.3):
+        return True
+    return any(toks[i] and toks[i] == toks[i + 2] == toks[i + 4] for i in range(len(toks) - 4))
+
+
+def cut_score(w, a, b):
+    """Stelle (mit Kontext) ohne [a, b] neu abhören. 0 = Wort nicht mehr erkennbar, sonst Erkennungs-Sicherheit (0..1)."""
+    x0, x1 = max(0.0, w["s"] - 0.8), min(DUR, w["e"] + 0.8)
+    tmp = os.path.join(A.out, "check.wav")
+    run(["ffmpeg", "-v", "error", "-y", "-i", wav, "-af",
+         f"aselect='between(t,{x0:.3f},{a:.3f})+between(t,{b:.3f},{x1:.3f})',asetpts=N/SR/TB", tmp])
+    try:
+        r = mlx_whisper.transcribe(tmp, path_or_hf_repo=WHISPER, word_timestamps=True, temperature=0.0,
+                                   condition_on_previous_text=False)
+    except Exception:  # noqa: BLE001
+        return 0.0
+    target = norm(w["t"])
+    probs = [x.get("probability", 0.0) for sg in r["segments"] for x in sg.get("words", []) if norm(x["word"]) == target]
+    return max(probs) if probs else 0.0
+
+
+def cut_still_clear(w, a, b):
+    return cut_score(w, a, b) >= 0.5
+
+
+def hidden_cuts(words):
+    """Whisper „schluckt“ Füllwörter gern in Nachbarwörter (ein 1,4 s langes „Restaurants“ = „ähm Restaurants“)
+    und dehnt gezogene Wörter („uuund“). Verdächtig lange Wörter werden mit Kontext neu abgehört:
+    gefundene Füllwörter werden exakt geschnitten, gedehnte Wörter auf normale Länge gekürzt."""
+    cuts, found, trimmed = [], 0, 0
+    snip = os.path.join(A.out, "snip.wav")
+    for k, w in enumerate(words):
+        dur, exp = w["e"] - w["s"], expected_len(w["t"])
+        if dur < exp + 0.35:
+            continue
+        a, b = max(0.0, w["s"] - 1.2), min(DUR, w["e"] + 1.2)
+        _clip_wav(a, b, snip)
+        try:
+            r = mlx_whisper.transcribe(snip, path_or_hf_repo=WHISPER, word_timestamps=True, temperature=0.0,
+                                       condition_on_previous_text=False, initial_prompt="Äh, ähm, also.")
+            ws = [x for sg in r["segments"] for x in sg.get("words", [])]
+        except Exception:  # noqa: BLE001
+            ws = []
+        hit = False
+        if ws and not _looks_hallucinated(ws):
+            for x in ws:
+                xs, xe = a + x["start"], a + x["end"]
+                mid = (xs + xe) / 2
+                if norm(x["word"]) in FILLER and w["s"] - 0.1 <= mid <= w["e"] + 0.1 and xe - xs > 0.05:
+                    if cut_still_clear(w, xs - 0.02, xe + 0.03):
+                        cuts.append((xs - 0.02, xe + 0.03))
+                        hit = True
+        if hit:
+            found += 1
+            continue
+        if dur > exp + 0.45:
+            # gedehnt oder verstecktes „ähm“ davor/danach: Anfang, Mitte oder Ende kürzen – die Variante,
+            # bei der das Wort danach am klarsten erkannt wird, gewinnt (sonst bleibt alles, wie es ist)
+            extra = dur - exp
+            options = [(w["s"], w["s"] + extra), (w["e"] - extra, w["e"]), (w["s"] + exp * 0.4, w["e"] - exp * 0.6)]
+            scored = [(cut_score(w, x, y), (x, y)) for x, y in options if y - x > 0.2]
+            best = max(scored, default=(0.0, None))
+            if best[0] >= 0.5:
+                cuts.append(best[1])
+                trimmed += 1
+    STATS.update(hidden_fillers=found, stretched=trimmed)
+    return cuts
+
+
+def subtract(ranges, cuts):
+    out = []
+    for s, e in ranges:
+        segs = [[s, e]]
+        for a, b in sorted(cuts):
+            nxt = []
+            for x, y in segs:
+                if b <= x or a >= y:
+                    nxt.append([x, y])
+                    continue
+                if a > x + 0.04:
+                    nxt.append([x, a])
+                if b < y - 0.04:
+                    nxt.append([b, y])
+            segs = nxt
+        out.extend(segs)
+    return [r for r in out if r[1] - r[0] > 0.06]
+
+
+def keep_ranges(words, safe=False):
     """Zeitbereiche, die bleiben: ohne Füllwörter/Wiederholungen, Stille raus, Schnitte nur zwischen Wörtern."""
     fil, rep, gem = filler_idx(words), repeat_idx(words), gemini_cuts(words)
     drop = fil | rep | gem
     STATS.update(filler=len(fil), repeats=len(rep), gemini=len(gem), gemini_on=bool(GEMINI_KEY),
                  removed=[w["t"] for w in words if w["i"] in drop][:80])
     kept = [w for w in words if w["i"] not in drop]
-    PAD_IN, PAD_OUT, MAX_GAP = 0.05, 0.08, 0.14
+    PAD_IN, PAD_OUT, MAX_GAP = (0.08, 0.2, 0.2) if safe else (0.05, 0.1, 0.14)
     ranges = []
     for w in kept:
-        s, e = max(0.0, w["s"] - PAD_IN), min(DUR, w["e"] + PAD_OUT)
-        for a, b in SIL:  # Whisper dehnt Wörter gern über Pausen – Stille am Wortanfang/-ende abschneiden
+        tail = PAD_OUT + (0.08 if SENT_END.search(w["t"]) or w["t"].endswith(",") else 0)  # Satzende darf ausklingen
+        s, e = max(0.0, w["s"] - PAD_IN), min(DUR, w["e"] + tail)
+        need = min(w["e"] - w["s"], expected_len(w["t"]))  # jedes Wort behält mindestens seine normale Länge
+        for a, b in ([] if safe else SIL):  # Whisper dehnt Wörter gern über Pausen – Stille am Rand abschneiden
             if a <= s + 0.04 < b < e:
-                s = b - PAD_IN
+                s = min(b - PAD_IN, w["e"] - need - PAD_IN)
             if s < a < e - 0.04 <= b:
-                e = a + PAD_OUT
+                e = max(a + tail, w["s"] + need + tail)
         if e - s < 0.08:
             continue
         if ranges and s - ranges[-1][1] <= MAX_GAP:
             ranges[-1][1] = max(ranges[-1][1], e)
         else:
             ranges.append([s, e])
+    # Lücken zwischen Wörtern nur dort schneiden, wo WIRKLICH Stille ist (oder ein entferntes Füllwort) –
+    # Whisper-Zeitstempel verrutschen, in „Lücken“ steckt oft noch gesprochener Text („… mit dabei“)
+    dropped = []
+    for k, w in enumerate(words):
+        if w["i"] not in drop:
+            continue
+        a, b = w["s"] - 0.03, w["e"] + 0.03
+        if w["i"] in fil:  # Füllwort: bis an die umgebenden Pausen ausdehnen (Whisper setzt „ähm“ oft zu kurz an)
+            prev_e = max((x["e"] for x in words[:k] if x["i"] not in drop), default=0.0) + 0.05
+            next_s = min((x["s"] for x in words[k + 1:] if x["i"] not in drop), default=DUR) - 0.05
+            before = [y for x, y in SIL if w["s"] - 0.5 <= y <= w["s"] + 0.15]
+            after = [x for x, y in SIL if w["e"] - 0.15 <= x <= w["e"] + 0.5]
+            # Grenzen an die Pause bzw. an die Lautstärke-Senke legen (Whisper-Zeiten verrutschen oft um 0,2–0,3 s)
+            a = max(prev_e, max(before) - 0.02) if before else max(prev_e - 0.05, valley(w["s"] - 0.45, w["s"] + 0.1))
+            b = min(next_s + 0.3, min(after) + 0.02) if after else valley(w["e"] - 0.05, min(w["e"] + 0.5, next_s + 0.3))
+        dropped.append((a, b))
+    filled = []
+    for k, (s, e) in enumerate(ranges):
+        if filled:
+            gap_a, gap_b = filled[-1][1], s
+            cuts_in_gap = sorted([(max(a, gap_a), min(b, gap_b)) for a, b in SIL + dropped if b > gap_a and a < gap_b])
+            pos, keep_parts = gap_a, []
+            for a, b in cuts_in_gap:
+                if a - pos > 0.06:
+                    keep_parts.append([pos, a + 0.04])
+                pos = max(pos, b - 0.04)
+            if gap_b - pos > 0.06:
+                keep_parts.append([pos, gap_b])
+            if not cuts_in_gap:  # gar keine Stille gemessen → alles behalten
+                filled[-1][1] = e
+                continue
+            for x, y in keep_parts:
+                if x - filled[-1][1] <= MAX_GAP:
+                    filled[-1][1] = y
+                else:
+                    filled.append([x, y])
+            if s - filled[-1][1] <= MAX_GAP:
+                filled[-1][1] = e
+                continue
+        filled.append([s, e])
+    ranges = filled
     out = []  # lange Stille mitten in einem Block (gedehnte Wörter „uuund …“) ebenfalls raus
     for s, e in ranges:
         cur = s
-        for a, b in SIL:
+        for a, b in ([] if safe else SIL):
             if a > cur + 0.1 and b < e - 0.1 and b - a > 0.3:
                 out.append([cur, a + PAD_OUT])
                 cur = b - PAD_IN
         out.append([cur, e])
-    return [r for r in out if r[1] - r[0] > 0.08], kept
+    out = [r for r in out if r[1] - r[0] > 0.08]
+    if not safe:
+        out = subtract(out, hidden_cuts(kept))
+    return out, kept
 
 
 # ─────────────────────────────── 5. Bildausschnitt (Gesicht) ───────────────────────────────
@@ -477,6 +651,34 @@ def render(idx, ranges, kept, title):
     return out, round(t_out, 1)
 
 
+def missing_words(path, kept):
+    """Hörprobe: fertigen Clip neu transkribieren und prüfen, ob alle behaltenen Wörter noch zu hören sind."""
+    tmp = os.path.join(A.out, "hoerprobe.wav")
+    run(["ffmpeg", "-v", "error", "-y", "-i", path, "-vn", "-ac", "1", "-ar", "16000", tmp])
+    r = mlx_whisper.transcribe(tmp, path_or_hf_repo=WHISPER, condition_on_previous_text=False, temperature=0.0)
+    os.remove(tmp)
+    import difflib
+    stem = lambda t: t[:5]
+    toks = lambda text: [stem(x) for x in re.split(r"[\s\-–]+", text.lower()) if norm(x)]
+    heard = [stem(norm(x)) for x in toks(r.get("text", ""))]
+    want, owner = [], []
+    for w in kept:  # Wörter mit Bindestrich in Teile zerlegen, damit „Baden -Württemberg“ = „Baden-Württemberg“
+        for part in re.split(r"[\-–]+", w["t"]):
+            if norm(part):
+                want.append(stem(norm(part)))
+                owner.append(w["t"])
+    STATS["fillers_heard"] = len(re.findall(r"\b(ähm|äh|öhm|ähh)\b", r.get("text", "").lower()))
+    sm = difflib.SequenceMatcher(a=want, b=heard, autojunk=False)
+    hit = set()
+    for blk in sm.get_matching_blocks():
+        hit.update(range(blk.a, blk.a + blk.size))
+    miss = []
+    for i, o in enumerate(owner):
+        if i not in hit and (not miss or miss[-1] != o):
+            miss.append(o)
+    return miss
+
+
 LOG = os.environ.get("VELOX_JOBLOG", "/Volumes/PortableSSD/velox-worker/logs/jobs.jsonl")
 
 
@@ -511,31 +713,46 @@ def quality_check(path, words, kept, orig, secs):
         sys.exit("Qualitäts-Check nicht bestanden: " + "; ".join(problems))
 
 
+def limit60(ranges, kept):
+    """Clips aus langen Videos: max. 60 s nach dem Schnitt – am letzten Satzende davor kürzen."""
+    if SHORT or sum(e - s for s, e in ranges) <= 60.5:
+        return ranges, kept
+    acc, cut_at = 0.0, None
+    for s, e in ranges:
+        for w in (w for w in kept if s <= w["e"] <= e + 0.1):
+            if acc + (w["e"] - s) > 60:
+                break
+            if SENT_END.search(w["t"]):
+                cut_at = w["e"] + 0.12
+        acc += e - s
+        if acc > 60:
+            break
+    if not cut_at:
+        return ranges, kept
+    return [[s, min(e, cut_at)] for s, e in ranges if s < cut_at], [w for w in kept if w["e"] <= cut_at]
+
+
 results = []
 for n, m in enumerate(MOMENTS, 1):
     words = WORDS[m["start"]:m["end"] + 1]
     ranges, kept = keep_ranges(words)
     if not ranges:
         continue
-    if not SHORT and sum(e - s for s, e in ranges) > 60.5:  # max. 60 s – am letzten Satzende davor kürzen
-        acc, cut_at = 0.0, None
-        for s, e in ranges:
-            for w in (w for w in kept if s <= w["e"] <= e + 0.1):
-                if acc + (w["e"] - s) > 60:
-                    break
-                if SENT_END.search(w["t"]):
-                    cut_at = w["e"] + 0.08
-            acc += e - s
-            if acc > 60:
-                break
-        if cut_at:
-            ranges = [[s, min(e, cut_at)] for s, e in ranges if s < cut_at]
-            kept = [w for w in kept if w["e"] <= cut_at]
+    ranges, kept = limit60(ranges, kept)
     title = (m.get("title") or "").strip()
     if not title:
         first = next((s for s in sentences(kept) if len(s) >= 3), kept[:8])
         title = " ".join(w["t"] for w in first[:7]).rstrip(",.;:")
     f, secs = render(n, ranges, kept, title)
+    miss = missing_words(f, kept)
+    STATS["missing_first"] = miss[:20]
+    if len(miss) > max(1, len(kept) * 0.03):  # Wörter angeschnitten → vorsichtiger neu schneiden
+        log(f"Hörprobe: {len(miss)} Wörter unklar ({', '.join(miss[:6])}) – schneide im sicheren Modus neu")
+        ranges, kept = limit60(*keep_ranges(words, safe=True))
+        f, secs = render(n, ranges, kept, title)
+        miss = missing_words(f, kept)
+        STATS["safe_mode"] = True
+    STATS["missing"] = miss[:20]
     orig = words[-1]["e"] - words[0]["s"]
     log(f"Clip {n}: {orig:.1f} s → {secs} s, {len(ranges)} Abschnitte, {len(words) - len(kept)} Wörter entfernt")
     quality_check(f, words, kept, orig, secs)

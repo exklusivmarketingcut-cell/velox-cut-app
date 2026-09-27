@@ -6,7 +6,7 @@
 set -e
 cd "$(dirname "$0")/.."
 ask()  { local v; read -rp "$1: " v; echo "$v"; }
-askh() { local v; read -rsp "$1: " v; echo "" >&2; echo "$v"; }
+askh() { local v more; read -rsp "$1: " v; while IFS= read -rs -t 1 more; do v+="$more"; done; echo "" >&2; printf '%s' "$v" | tr -d '[:space:]'; }
 need() { [[ "$1" == $2 ]] || { echo "✗ $3 sieht nicht richtig aus (erwartet: $2). Bitte Programm neu starten." >&2; exit 1; }; }
 
 echo ""
@@ -14,9 +14,15 @@ echo "════ Velox Cut – Einrichtung auf Cloudflare ════"
 echo "Tipp: Bei den versteckten Eingaben siehst du beim Einfügen nichts – das ist normal. Einfügen mit Cmd+V, dann Enter."
 echo ""
 echo "── Supabase (supabase.com → dein Projekt → Project Settings → API Keys / Data API) ──"
-SB_URL=$(ask "1) Project URL (https://….supabase.co)");            need "$SB_URL" "https://*.supabase.co*" "Die Project URL"
+SB_URL=$(ask "1) Project URL (https://….supabase.co)")
+# auch die Dashboard-Adresse (supabase.com/dashboard/project/<id>) akzeptieren
+if [[ "$SB_URL" =~ supabase\.com/dashboard/project/([a-z0-9]+) ]]; then SB_URL="https://${BASH_REMATCH[1]}.supabase.co"; fi
+SB_URL="${SB_URL%/}"
+need "$SB_URL" "https://*.supabase.co" "Die Project URL"
+echo "   → $SB_URL"
 SB_ANON=$(askh "2) anon / publishable key");                     [[ -n "$SB_ANON" ]] || exit 1
-SB_SERVICE=$(askh "3) service_role / secret key");               [[ -n "$SB_SERVICE" ]] || exit 1
+SB_SERVICE=$(askh "3) Secret key (sb_secret_… – NICHT der Publishable key)")
+[[ "$SB_SERVICE" == sb_secret_* || "$SB_SERVICE" == eyJ* ]] && [[ "$SB_SERVICE" != "$SB_ANON" ]] || { echo "✗ Das ist kein Secret key (muss mit sb_secret_ beginnen). Bitte neu starten."; exit 1; }
 echo ""
 echo "── Stripe (Sandbox „Velox Cut Studio“ → Entwickler/innen → API-Schlüssel) ──"
 PK=$(askh "4) Veröffentlichbarer Schlüssel (pk_test_…)");        need "$PK" "pk_test_*" "Der Veröffentlichbare Schlüssel"

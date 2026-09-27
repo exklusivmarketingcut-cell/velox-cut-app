@@ -126,3 +126,59 @@ label.f { display: grid; gap: 6px; font-size: 14px; font-weight: 600; color: #c9
 .picker-item span { font-weight: 600; justify-self: end; }
 .picker-item small { grid-column: 1 / -1; color: var(--mut); }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* ---------- Studio: mittig, Vorschau der Untertitel ---------- */
+.studio { max-width: 900px; margin-inline: auto; }
+.studio > h1, .studio > .sub, .studio > .ok { text-align: center; }
+.studio-form { display: grid; grid-template-columns: minmax(0, 1fr) 250px; gap: 22px; align-items: start; }
+.studio-side { position: sticky; top: 84px; display: grid; gap: 10px; justify-items: center; }
+.studio-side .note { text-align: center; }
+.studio-jobs { margin-top: 20px; }
+@media (max-width: 760px) {
+  .studio-form { grid-template-columns: 1fr; }
+  .studio-side { position: static; order: 0; }
+}
+
+.cprev { --cap: #F6E27F; position: relative; width: 250px; aspect-ratio: 9 / 16; border-radius: 26px; overflow: hidden; background: #000;
+  box-shadow: 0 0 0 6px #07080c, 0 0 0 7px var(--line2), 0 24px 60px rgba(0,0,0,.5); }
+.cprev img, .cprev video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.cprev-tag { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); font-size: 11px; padding: 3px 9px; border-radius: 99px;
+  background: rgba(0,0,0,.55); color: #fff; white-space: nowrap; }
+.cprev-cap { position: absolute; left: 8px; right: 8px; top: 70%; transform: translateY(-50%); display: flex; flex-wrap: wrap; justify-content: center;
+  gap: 0 .28em; text-align: center; color: #fff; line-height: 1.1; }
+.cprev-cap .w { opacity: 0; transition: opacity .12s, transform .16s cubic-bezier(.2,.9,.3,1.5), color .12s; }
+.cprev-cap .w.in { opacity: 1; }
+.cprev-cap .w.cur { color: var(--cap); }
+/* Rise */
+.cs-rise { font: 600 22px/1.15 'Poppins', sans-serif; text-transform: lowercase; text-shadow: 0 3px 12px rgba(0,0,0,.75); }
+.cs-rise .w { transform: translateY(10px); } .cs-rise .w.in { transform: none; } .cs-rise .w.e { color: var(--cap); }
+/* Pop */
+.cs-hormozi { font: 900 24px/1.1 'Montserrat', sans-serif; text-transform: uppercase; -webkit-text-stroke: 6px #000; paint-order: stroke fill; filter: drop-shadow(0 3px 0 #000); }
+.cs-hormozi .w { transform: scale(.5); } .cs-hormozi .w.in { transform: scale(1); } .cs-hormozi .w.cur { transform: scale(1.1); }
+/* Karaoke */
+.cs-clean { font: 700 20px/1.15 'Inter', sans-serif; -webkit-text-stroke: 4px #000; paint-order: stroke fill; }
+.cs-clean .w.cur { transform: scale(1.1); }
+/* Neon */
+.cs-neon { font: 400 34px/1 'Bebas Neue', sans-serif; letter-spacing: .04em; text-transform: uppercase;
+  text-shadow: 0 0 4px #fff8, 0 0 10px var(--cap), 0 0 22px var(--cap); }
+.cs-neon .w.e, .cs-neon .w.cur { color: var(--cap); }
+/* Comic */
+.cs-comic { font: 400 34px/1 'Bangers', sans-serif; letter-spacing: .03em; text-transform: uppercase; -webkit-text-stroke: 6px #000; paint-order: stroke fill;
+  filter: drop-shadow(3px 4px 0 #000); }
+.cs-comic .w { transform: scale(.4) rotate(-8deg); } .cs-comic .w.in { transform: none; } .cs-comic .w.e { color: var(--cap); }
+/* Serif */
+.cs-serif { font: italic 700 24px/1.15 'Playfair Display', serif; text-shadow: 0 2px 14px rgba(0,0,0,.85); }
+.cs-serif .w.e { color: var(--cap); }
+
+/* Untertitel-Stil als Knöpfe mit Schriftprobe */
+.capgrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.capbtn { padding: 10px 6px; border-radius: 12px; border: 1px solid var(--line2); background: var(--bg2); color: #fff; cursor: pointer; line-height: 1.1; }
+.capbtn.on { border-color: var(--acc); box-shadow: 0 0 0 1px var(--acc); background: rgba(79,158,255,.08); }
+.capbtn small { display: block; margin-top: 4px; font: 500 11px system-ui; color: var(--mut); text-transform: none; letter-spacing: 0; -webkit-text-stroke: 0; text-shadow: none; filter: none; }
+.capbtn.cs-rise, .capbtn.cs-serif, .capbtn.cs-clean { font-size: 17px; } .capbtn.cs-hormozi { font-size: 16px; -webkit-text-stroke: 4px #000; }
+.capbtn.cs-neon, .capbtn.cs-comic { font-size: 22px; } .capbtn.cs-comic { -webkit-text-stroke: 4px #000; }
+.prev-mobile { display: none; }
+@media (max-width: 760px) {
+  .prev-mobile { display: grid; justify-items: center; padding: 6px 0; }
+  .studio-side { display: none; }
+}

@@ -2,6 +2,7 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import CaptionPreview from './CaptionPreview';
 import { jobCost, MAX_CLIPS_PER_JOB, MAX_UPLOAD_BYTES, STYLES, type StyleId } from '@/lib/pricing';
 
 type Job = {
@@ -12,6 +13,9 @@ type Job = {
 const CAPTIONS = [
   ['rise', 'Rise'], ['hormozi', 'Pop'], ['clean', 'Karaoke'], ['neon', 'Neon'], ['comic', 'Comic'], ['serif', 'Serif'],
 ] as const;
+const CAPTION_HINT: Record<string, string> = {
+  rise: 'weich, modern', hormozi: 'groß, knallig', clean: 'Wort für Wort', neon: 'leuchtend', comic: 'verspielt', serif: 'elegant',
+};
 const COLORS = ['#F6E27F', '#FF3D7F', '#4F9EFF', '#3DFF9A', '#FF7A3D', '#FFFFFF'];
 const STATUS: Record<Job['status'], string> = { queued: 'In der Warteschlange', processing: 'Wird geschnitten', done: 'Fertig', failed: 'Fehlgeschlagen' };
 
@@ -136,7 +140,8 @@ export default function Studio({ credits, initialJobs }: { credits: number; init
   }
 
   return (
-    <div className="grid2">
+    <>
+    <div className="studio-form">
       <section className="card stack">
         {heroLink && !heroDone ? (
           DRIVE_RE.test(heroLink) ? (
@@ -189,26 +194,35 @@ export default function Studio({ credits, initialJobs }: { credits: number; init
           </div>
         </div>
 
-        <div className="row">
-          <label className="f" style={{ flex: 1 }}>
-            Untertitel
-            <select className="inp" value={caption} onChange={(e) => setCaption(e.target.value)}>
-              {CAPTIONS.map(([v, n]) => <option key={v} value={v}>{n}</option>)}
-            </select>
-          </label>
+        <div>
+          <p className="f" style={{ marginBottom: 6 }}>Untertitel</p>
+          <div className="capgrid" role="radiogroup" aria-label="Untertitel-Stil">
+            {CAPTIONS.map(([v, n]) => (
+              <button key={v} type="button" role="radio" aria-checked={caption === v} className={`capbtn cs-${v}${caption === v ? ' on' : ''}`} onClick={() => setCaption(v)}>
+                {n}
+                <small>{CAPTION_HINT[v]}</small>
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="row" style={{ alignItems: 'end' }}>
           <label className="f" style={{ width: 130 }}>
             Anzahl Clips
             <select className="inp" value={clips} onChange={(e) => setClips(+e.target.value)}>
               {Array.from({ length: MAX_CLIPS_PER_JOB }, (_, i) => <option key={i} value={i + 1}>{i + 1}</option>)}
             </select>
           </label>
+          <p className="note" style={{ flex: 1, margin: 0 }}>Kurze Videos (unter 2½ Min.) werden zu einem fertigen Clip geschnitten – zu viel gebuchte Credits bekommst du automatisch zurück.</p>
         </div>
+        <p className="f" style={{ marginBottom: -6 }}>Akzentfarbe</p>
         <div className="row" aria-label="Akzentfarbe">
           {COLORS.map((c) => (
             <button key={c} type="button" onClick={() => setColor(c)} aria-label={`Farbe ${c}`}
               style={{ width: 30, height: 30, borderRadius: '50%', background: c, border: color === c ? '3px solid #fff' : '2px solid rgba(255,255,255,.2)' }} />
           ))}
         </div>
+
+        <div className="prev-mobile"><CaptionPreview caption={caption} color={color} file={tab === 'upload' ? file : null} /></div>
 
         {up >= 0 ? <div><div className="bar"><i style={{ width: `${up}%` }} /></div><p className="note">Upload {up} %</p></div> : null}
         {err ? <p className="err">{err}</p> : null}
@@ -217,10 +231,15 @@ export default function Studio({ credits, initialJobs }: { credits: number; init
         </button>
         <p className="note">Du hast {balance} Credits. Schlägt ein Schnitt fehl, bekommst du die Credits automatisch zurück.</p>
       </section>
+      <aside className="studio-side">
+        <CaptionPreview caption={caption} color={color} file={tab === 'upload' ? file : null} />
+        <p className="note">So sehen Stil und Farbe im fertigen Video aus. Die Untertitel weichen automatisch aus, wenn dort ein Gesicht ist.</p>
+      </aside>
+    </div>
 
-      <section className="card">
+      <section className="card studio-jobs">
         <h2 style={{ font: '700 20px var(--display)', marginBottom: 14 }}>Deine Videos</h2>
-        {jobs.length === 0 ? <p className="muted">Noch keine Videos. Lade links dein erstes hoch.</p> : null}
+        {jobs.length === 0 ? <p className="muted">Noch keine Videos. Lade oben dein erstes hoch.</p> : null}
         <div className="jobs">
           {jobs.map((j) => (
             <div className="job" key={j.id}>
@@ -236,6 +255,6 @@ export default function Studio({ credits, initialJobs }: { credits: number; init
           ))}
         </div>
       </section>
-    </div>
+    </>
   );
 }

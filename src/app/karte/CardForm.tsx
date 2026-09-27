@@ -60,7 +60,8 @@ function Inner({ next }: { next: string }) {
 
   return (
     <form className="stack" onSubmit={submit}>
-      <PaymentElement options={{ layout: 'tabs' }} />
+      {/* Link (Stripes „Daten für schnelleres Bezahlen speichern“) aus – der Kunde hat ja schon ein Konto bei uns */}
+      <PaymentElement options={{ layout: 'tabs', wallets: { link: 'never', applePay: 'auto', googlePay: 'auto' } }} />
       {err ? <p className="err">{err}</p> : null}
       <button className="btn btn-acc full" disabled={busy || !stripe}>{busy ? 'Wird gespeichert …' : 'Karte speichern – 0 €'}</button>
       <p className="note">Deine Kartendaten gehen direkt an unseren Zahlungsdienstleister Stripe und werden nicht bei uns gespeichert.</p>

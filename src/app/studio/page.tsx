@@ -15,7 +15,7 @@ export default async function Page({ searchParams }: PageProps<'/studio'>) {
     <>
       <Topbar p={p} on="studio" />
       <main className="page">
-        <div className="wrap">
+        <div className="wrap studio">
           {q.willkommen ? <p className="ok" style={{ marginBottom: 16 }}>Karte gespeichert – du bist startklar. Dein erstes Video ist gratis.</p> : null}
           <h1>Neues Video</h1>
           <p className="sub">

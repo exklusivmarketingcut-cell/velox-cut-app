@@ -14,6 +14,8 @@ import { Readable } from 'node:stream';
 const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } });
 const WORKER = process.env.WORKER_NAME || hostname();
 const PIPELINE = process.env.PIPELINE || join(import.meta.dirname, 'pipeline.py');
+// Python mit mlx-whisper + OpenCV (eigene Umgebung auf der externen SSD, siehe SETUP.md)
+const PYTHON = process.env.PYTHON || '/Volumes/PortableSSD/velox-worker/venv/bin/python';
 // Zwischendateien auf die externe SSD (die interne Festplatte ist fast voll), sonst ins System-Temp
 const TMP = process.env.WORKER_TMP || (existsSync('/Volumes/PortableSSD') ? '/Volumes/PortableSSD/velox-worker-tmp' : join(tmpdir(), 'velox-worker'));
 const POLL_MS = 8000;
@@ -56,7 +58,7 @@ async function download(job, dir) {
 function runPipeline(job, src, dir) {
   return new Promise((resolve, reject) => {
     const args = [PIPELINE, '--src', src, '--out', dir, '--style', job.style, '--clips', String(job.clips), '--caption', job.caption_style, '--color', job.caption_color];
-    const p = spawn('python3', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const p = spawn(PYTHON, args, { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, PYTHONUNBUFFERED: '1' } });
     let last = '';
     let errTxt = '';
     p.stdout.on('data', (b) => {

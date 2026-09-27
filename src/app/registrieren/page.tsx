@@ -21,7 +21,7 @@ export default async function Page({ searchParams }: PageProps<'/registrieren'>)
       <PlanPicker
         paket={c.paket}
         intervall={c.intervall}
-        plans={(Object.keys(PLANS) as PlanId[]).map((id) => ({ id, name: PLANS[id].name, credits: PLANS[id].credits, monthlyTxt: euro(PLANS[id].monthly), yearlyTxt: euro(PLANS[id].yearly) }))}
+        plans={(Object.keys(PLANS) as PlanId[]).map((id) => ({ id, name: PLANS[id].name, credits: PLANS[id].credits, monthlyTxt: euro(PLANS[id].monthly), yearlyTxt: euro(PLANS[id].yearly), yearlyPerMonthTxt: euro(Math.round(PLANS[id].yearly / 12)) }))}
       />
       <SignupForm next={`/karte${choiceQuery(c)}`} loginHref={`/login?weiter=${encodeURIComponent(c.paket === 'free' ? '/studio' : afterCard(c))}`} />
     </AuthShell>

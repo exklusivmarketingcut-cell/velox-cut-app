@@ -3,7 +3,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import { useState } from 'react';
 import type { Interval, PlanId } from '@/lib/pricing';
 
-export type PickerPlan = { id: PlanId; name: string; credits: number; monthlyTxt: string; yearlyTxt: string };
+export type PickerPlan = { id: PlanId; name: string; credits: number; monthlyTxt: string; yearlyTxt: string; yearlyPerMonthTxt: string };
 
 /** Paket direkt auf der Registrierungsseite wechseln (Aufklapp-Menü statt zurück zur Website) */
 export default function PlanPicker({ plans, paket, intervall }: { plans: PickerPlan[]; paket: PlanId; intervall: Interval }) {
@@ -34,13 +34,13 @@ export default function PlanPicker({ plans, paket, intervall }: { plans: PickerP
         <div className="picker-list" role="listbox" aria-label="Paket wählen">
           <div className="tabs picker-iv">
             <button type="button" className={intervall === 'monthly' ? 'on' : ''} onClick={() => choose(paket === 'free' ? 'pro' : paket, 'monthly', false)}>Monatlich</button>
-            <button type="button" className={intervall === 'yearly' ? 'on' : ''} onClick={() => choose(paket === 'free' ? 'pro' : paket, 'yearly', false)}>Jährlich · 2 Monate gratis</button>
+            <button type="button" className={intervall === 'yearly' ? 'on' : ''} onClick={() => choose(paket === 'free' ? 'pro' : paket, 'yearly', false)}>Jährlich · 17 % günstiger</button>
           </div>
           {plans.map((p) => (
             <button key={p.id} type="button" role="option" aria-selected={p.id === paket} className={`picker-item${p.id === paket ? ' on' : ''}`} onClick={() => choose(p.id, intervall)}>
               <b>{p.name}{p.id === 'pro' ? <em>Beliebt</em> : null}</b>
               <span>{price(p, intervall)}</span>
-              <small>{p.credits} Credits · {videos(p)}</small>
+              <small>{p.credits} Credits · {videos(p)}{intervall === 'yearly' && p.id !== 'free' ? ` · entspricht ${p.yearlyPerMonthTxt} / Monat` : ''}</small>
             </button>
           ))}
         </div>

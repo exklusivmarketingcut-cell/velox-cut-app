@@ -85,7 +85,7 @@ export default function Billing({ current, hasSub, plans, packs, publishableKey,
           {!hasSub ? (
             <div className="tabs" style={{ margin: 0 }}>
               <button type="button" className={interval === 'monthly' ? 'on' : ''} onClick={() => setInterval('monthly')}>Monatlich</button>
-              <button type="button" className={interval === 'yearly' ? 'on' : ''} onClick={() => setInterval('yearly')}>Jährlich · 2 Monate gratis</button>
+              <button type="button" className={interval === 'yearly' ? 'on' : ''} onClick={() => setInterval('yearly')}>Jährlich · 17 % günstiger</button>
             </div>
           ) : null}
         </div>

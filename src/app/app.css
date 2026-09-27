@@ -98,3 +98,15 @@ label.f { display: grid; gap: 6px; font-size: 14px; font-weight: 600; color: #c9
 .pack b { font-size: 16px; } .pack span { color: var(--mut); font-size: 13px; } .pack em { font-style: normal; font-weight: 800; font-size: 20px; color: var(--acc); }
 .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
 .spacer { height: 18px; }
+
+/* Gewähltes Paket von der Website (Registrierung) */
+.choice { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; margin-bottom: 18px;
+  border: 1px solid var(--line2); border-radius: 12px; background: var(--bg2); text-align: left; }
+.choice b { display: block; font: 700 16px var(--display); }
+.choice span { color: var(--mut); font-size: 14px; }
+.choice a { color: var(--acc); font-size: 14px; white-space: nowrap; }
+/* Letzter Schritt auf „Abo & Credits“ hervorheben */
+.card.focus { border-color: var(--acc); box-shadow: 0 0 0 1px var(--acc), 0 12px 40px rgba(79,158,255,.18); scroll-margin-top: 90px; }
+.hint { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border-radius: 12px;
+  background: rgba(79,158,255,.1); border: 1px solid rgba(79,158,255,.35); font-size: 14px; }
+.hint .btn { padding: 6px 12px; font-size: 13px; white-space: nowrap; }

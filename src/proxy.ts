@@ -24,7 +24,7 @@ export async function proxy(request: NextRequest) {
   if (!data.user && PROTECTED.some((p) => path === p || path.startsWith(p + '/'))) {
     const login = request.nextUrl.clone();
     login.pathname = '/login';
-    login.search = `?weiter=${encodeURIComponent(path)}`;
+    login.search = `?weiter=${encodeURIComponent(path + request.nextUrl.search)}`; // gewähltes Paket nicht verlieren
     return NextResponse.redirect(login);
   }
   return response;

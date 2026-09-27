@@ -1,7 +1,7 @@
 'use client';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { jobCost, MAX_CLIPS_PER_JOB, MAX_UPLOAD_BYTES, STYLES, type StyleId } from '@/lib/pricing';
 
 type Job = {
@@ -28,6 +28,13 @@ function putFile(signedUrl: string, file: File, onProgress: (p: number) => void)
   });
 }
 
+/** Link, den jemand auf der Startseite eingefügt hat (wird dort in sessionStorage gemerkt) */
+const readHeroLink = () => {
+  try { return sessionStorage.getItem('velox_link'); } catch { return null; }
+};
+const noSubscribe = () => () => {};
+const DRIVE_RE = /^https:\/\/(drive|docs)\.google\.com\//;
+
 export default function Studio({ credits, initialJobs }: { credits: number; initialJobs: Job[] }) {
   const [tab, setTab] = useState<'upload' | 'drive'>('upload');
   const [file, setFile] = useState<File | null>(null);
@@ -42,6 +49,13 @@ export default function Studio({ credits, initialJobs }: { credits: number; init
   const [jobs, setJobs] = useState<Job[]>(initialJobs);
   const [balance, setBalance] = useState(credits);
   const [over, setOver] = useState(false);
+  const heroLink = useSyncExternalStore(noSubscribe, readHeroLink, () => null);
+  const [heroDone, setHeroDone] = useState(false);
+  const dropHeroLink = (use: boolean) => {
+    if (use && heroLink) { setTab('drive'); setDrive(heroLink); }
+    try { sessionStorage.removeItem('velox_link'); } catch { /* egal */ }
+    setHeroDone(true);
+  };
   const input = useRef<HTMLInputElement>(null);
   const router = useRouter();
   const failedSeen = useRef(new Set(initialJobs.filter((j) => j.status === 'failed').map((j) => j.id)));
@@ -124,6 +138,19 @@ export default function Studio({ credits, initialJobs }: { credits: number; init
   return (
     <div className="grid2">
       <section className="card stack">
+        {heroLink && !heroDone ? (
+          DRIVE_RE.test(heroLink) ? (
+            <div className="hint">
+              <span>Dein Link von der Startseite ist bereit.</span>
+              <button type="button" className="btn" onClick={() => dropHeroLink(true)}>Übernehmen</button>
+            </div>
+          ) : (
+            <div className="hint">
+              <span>Diesen Link können wir noch nicht direkt öffnen. Lade das Video als Datei hoch oder teile es über Google Drive.</span>
+              <button type="button" className="btn" onClick={() => dropHeroLink(false)}>Okay</button>
+            </div>
+          )
+        ) : null}
         <div className="tabs" role="tablist">
           <button className={tab === 'upload' ? 'on' : ''} onClick={() => setTab('upload')} type="button">📁 Datei hochladen</button>
           <button className={tab === 'drive' ? 'on' : ''} onClick={() => setTab('drive')} type="button">Google Drive</button>

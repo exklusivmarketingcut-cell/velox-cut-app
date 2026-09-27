@@ -40,8 +40,8 @@
       <a href="#pricing">Preise</a>
     </nav>
     <div class="nav-cta">
-      <a href="#kontakt" class="btn btn-ghost" data-topic="other">Kontakt</a>
-      <a href="#kontakt" class="btn btn-acc" data-topic="beta">Beta-Zugang</a>
+      <a href="/login" class="btn btn-ghost">Einloggen</a>
+      <a href="/registrieren" class="btn btn-acc">Kostenlos starten</a>
     </div>
     <button class="nav-burger" id="burger" aria-label="Menü öffnen" aria-expanded="false" aria-controls="nav"><span></span><span></span></button>
   </div>
@@ -64,7 +64,7 @@
 
       <form class="link-bar reveal" id="linkBar">
         <svg class="link-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-        <input type="text" placeholder="Link einfügen – YouTube, Twitch, Drive …" aria-label="Link zu deinem Video" />
+        <input type="text" placeholder="Google-Drive-Link einfügen oder Datei wählen …" aria-label="Link zu deinem Video" />
         <label class="lb-file" title="Eigene Datei hochladen"><input type="file" id="heroFile" accept="video/*,audio/*,image/*" hidden /><span aria-hidden="true">📁</span><span class="lb-file-txt">Datei</span></label>
         <button class="btn btn-acc" type="submit"><span class="lb-txt">Kostenlos starten</span> <span aria-hidden="true">→</span></button>
       </form>
@@ -153,7 +153,7 @@
           <ul class="aud-list"><li>Clips aus Podcasts, Streams und Interviews</li><li>Hook-Score: nur Clips, die Views bringen</li><li>Kampagnen-Modus mit Pflicht-Caption</li><li>Zehn und mehr Clips aus einem Video</li></ul>
           <div class="aud-foot">
             <span class="aud-plan">Passt dazu: <b>Starter</b> · 14,90 € / Monat</span>
-            <a href="#kontakt" class="btn btn-acc" data-topic="beta">Kostenlos testen →</a>
+            <a href="/registrieren" class="btn btn-acc">Kostenlos testen →</a>
           </div>
         </div>
         <div class="aud-visual">
@@ -169,7 +169,7 @@
           <ul class="aud-list"><li>Rohmaterial wird automatisch geschnitten</li><li>20 Untertitel-Stile in jeder Farbe</li><li>Aus einem YouTube-Video werden zehn Shorts</li><li>Split-Screen- und Story-Formate</li></ul>
           <div class="aud-foot">
             <span class="aud-plan">Passt dazu: <b>Pro</b> · 29,90 € / Monat</span>
-            <a href="#kontakt" class="btn btn-acc" data-topic="beta">Kostenlos testen →</a>
+            <a href="/registrieren" class="btn btn-acc">Kostenlos testen →</a>
           </div>
         </div>
         <div class="aud-visual">
@@ -185,7 +185,7 @@
           <ul class="aud-list"><li>Handyvideos werden zu Profi-Reels</li><li>Pausen und Versprecher fliegen raus</li><li>Alle Formate: 9:16, 1:1 und 16:9</li><li>Rechnung für die Buchhaltung</li></ul>
           <div class="aud-foot">
             <span class="aud-plan">Passt dazu: <b>Business</b> · 59,90 € / Monat</span>
-            <a href="#kontakt" class="btn btn-acc" data-topic="beta">Kostenlos testen →</a>
+            <a href="/registrieren" class="btn btn-acc">Kostenlos testen →</a>
           </div>
         </div>
         <div class="aud-visual">
@@ -201,7 +201,7 @@
           <ul class="aud-list"><li>Viele Handyvideos werden zu einem Film</li><li>Wackler und langweilige Stellen fliegen raus</li><li>Titel und Übergänge automatisch</li><li>Kein Vorwissen nötig</li></ul>
           <div class="aud-foot">
             <span class="aud-plan">Passt dazu: <b>Free</b> · 0 €</span>
-            <a href="#kontakt" class="btn btn-acc" data-topic="beta">Kostenlos testen →</a>
+            <a href="/registrieren" class="btn btn-acc">Kostenlos testen →</a>
           </div>
         </div>
         <div class="aud-visual">
@@ -373,7 +373,7 @@
           <div class="per-video">10 Credits geschenkt</div>
           <div class="price"><b>0 €</b><span>/ Monat</span></div>
           <p class="yearly-note" data-m="Für immer kostenlos" data-y="Für immer kostenlos">Für immer kostenlos</p>
-          <a href="#kontakt" class="btn btn-outline full" data-topic="beta">Kostenlos starten</a>
+          <a href="/registrieren?paket=free" class="btn btn-outline full plan-cta" data-plan="free">Kostenlos starten</a>
           <ul><li><b>10 Credits</b> / Monat<br><small class="cr-eq">bis zu 1 Video</small></li><li>Clipping & Split-Screen</li><li>720p-Export</li><li class="no">Mit Wasserzeichen</li></ul>
         </div>
         <div class="plan tilt">
@@ -382,7 +382,7 @@
           <div class="per-video">nur 0,75 € pro Video</div>
           <div class="price"><b data-m="14,90 €" data-y="12,42 €">14,90 €</b><span>/ Monat</span></div>
           <p class="yearly-note" data-m="Ideal für den Einstieg" data-y="149 € jährlich abgerechnet">Ideal für den Einstieg</p>
-          <a href="#kontakt" class="btn btn-outline full" data-topic="beta">Mit Starter loslegen</a>
+          <a href="/registrieren?paket=starter&amp;intervall=monthly" class="btn btn-outline full plan-cta" data-plan="starter">Mit Starter loslegen</a>
           <ul><li><b>200 Credits</b> / Monat<br><small class="cr-eq">bis zu 20 Videos</small></li><li>Alle Clipping-Tools</li><li>Zooms, SFX & Hook-Titel</li><li>Kampagnen-Modus</li><li>1080p ohne Wasserzeichen</li></ul>
         </div>
         <div class="plan plan-hot tilt">
@@ -392,7 +392,7 @@
           <div class="per-video">nur 0,60 € pro Video</div>
           <div class="price"><b data-m="29,90 €" data-y="24,92 €">29,90 €</b><span>/ Monat</span></div>
           <p class="yearly-note" data-m="Alle Tools, frei mischbar" data-y="299 € jährlich abgerechnet">Alle Tools, frei mischbar</p>
-          <a href="#kontakt" class="btn btn-acc full" data-topic="beta">Mit Pro loslegen</a>
+          <a href="/registrieren?paket=pro&amp;intervall=monthly" class="btn btn-acc full plan-cta" data-plan="pro">Mit Pro loslegen</a>
           <ul><li><b>500 Credits</b> / Monat<br><small class="cr-eq">bis zu 50 Videos</small></li><li>Alle Formate &amp; Stile</li><li>KI-Stimmen</li><li>Auto-Posting & Kalender</li><li>Caption- & Hashtag-Generator</li><li>Bevorzugtes Rendering</li></ul>
         </div>
         <div class="plan tilt">
@@ -401,7 +401,7 @@
           <div class="per-video">nur 0,67 € pro Video</div>
           <div class="price"><b data-m="59,90 €" data-y="49,92 €">59,90 €</b><span>/ Monat</span></div>
           <p class="yearly-note" data-m="Rechnung für die Buchhaltung" data-y="599 € jährlich abgerechnet">Rechnung für die Buchhaltung</p>
-          <a href="#kontakt" class="btn btn-outline full" data-topic="beta">Mit Business loslegen</a>
+          <a href="/registrieren?paket=business&amp;intervall=monthly" class="btn btn-outline full plan-cta" data-plan="business">Mit Business loslegen</a>
           <ul><li><b>900 Credits</b> / Monat<br><small class="cr-eq">bis zu 90 Videos</small></li><li>Alles aus Pro</li><li>Rohmaterial-Autoschnitt</li><li>Alle Formate: 9:16, 1:1, 16:9</li><li>Support in 24 h</li></ul>
         </div>
       </div>
@@ -461,7 +461,8 @@
     <div class="contact-copy">
       <p class="eyebrow reveal">Kontakt</p>
       <h2 class="h2 reveal">Starte jetzt – gratis.</h2>
-      <p class="lead reveal">Velox Cut Studio öffnet schrittweise. Trag dich ein – wir melden uns innerhalb von 24 Stunden mit deinem Zugang.</p>
+      <p class="lead reveal">Konto anlegen dauert eine Minute – dein erstes Video ist gratis. Fragen vorab? Schreib uns, wir antworten innerhalb von 24 Stunden.</p>
+      <p class="reveal"><a href="/registrieren" class="btn btn-acc">Jetzt kostenlos starten →</a></p>
       <ul class="get reveal">
         <li><b>Beta-Preis für immer</b> – steigt für dich nie</li>
         <li><b>1 Video gratis</b> an deinem eigenen Material</li>
@@ -480,7 +481,7 @@
       <p class="hp" aria-hidden="true"><label>Nicht ausfüllen<input name="bot-field" tabindex="-1" autocomplete="off" /></label></p>
       <label>Worum geht's?
         <select name="topic" id="topicSelect">
-          <option value="beta">Beta-Zugang Velox Cut Studio</option>
+          <option value="beta">Frage zu Paketen &amp; Preisen</option>
           <option value="other">Frage zum Studio</option>
         </select>
       </label>
@@ -490,9 +491,9 @@
       </div>
       <label>Nachricht<textarea name="msg" rows="4" placeholder="Was möchtest du erstellen? (z. B. Clipping, Split-Screen, Storys)"></textarea></label>
       <button class="btn btn-acc big full" type="submit">Gratis-Zugang sichern →</button>
-      <p class="form-note">Deine Angaben nutzen wir nur, um dir den Beta-Zugang zu schicken. Mehr dazu in der <a href="datenschutz.html">Datenschutzerklärung</a>.</p>
+      <p class="form-note">Deine Angaben nutzen wir nur, um deine Anfrage zu beantworten. Mehr dazu in der <a href="datenschutz.html">Datenschutzerklärung</a>.</p>
       <p class="form-err" id="formErr" hidden>Bitte gib deinen Namen und eine gültige E-Mail-Adresse ein.</p>
-      <div class="form-ok" id="formOk" hidden role="status"><b>🎉 Angekommen!</b> Wir melden uns innerhalb von 24 Stunden per E-Mail mit deinem Beta-Zugang.</div>
+      <div class="form-ok" id="formOk" hidden role="status"><b>🎉 Angekommen!</b> Wir melden uns innerhalb von 24 Stunden per E-Mail.</div>
     </form>
   </div>
 </section>
@@ -500,7 +501,7 @@
 
 </main>
 
-<div class="sticky-cta" id="stickyCta" aria-hidden="true"><span>🔒 Beta-Preis für immer</span><a href="#kontakt" class="btn btn-acc" data-topic="beta" tabindex="-1">Jetzt sichern →</a></div>
+<div class="sticky-cta" id="stickyCta" aria-hidden="true"><span>🔒 Beta-Preis für immer</span><a href="/registrieren" class="btn btn-acc" tabindex="-1">Jetzt sichern →</a></div>
 
 <footer class="footer">
   <div class="wrap foot-inner">

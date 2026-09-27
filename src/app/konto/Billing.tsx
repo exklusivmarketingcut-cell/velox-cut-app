@@ -1,5 +1,5 @@
 'use client';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { loadStripe } from '@stripe/stripe-js';
 
 type Plan = { id: 'starter' | 'pro' | 'business'; name: string; credits: number; monthlyTxt: string; yearlyTxt: string };
@@ -7,10 +7,19 @@ type Pack = { id: 'p100' | 'p300' | 'p600'; credits: number; priceTxt: string };
 
 const CONSENT = 'Ich verlange ausdrücklich, dass Velox Cut sofort mit der Leistung beginnt. Mir ist bekannt, dass ich bei einem Widerruf die bis dahin erbrachte Leistung anteilig bezahle.';
 
-export default function Billing({ current, hasSub, plans, packs, publishableKey }: { current: string; hasSub: boolean; plans: Plan[]; packs: Pack[]; publishableKey: string }) {
+export default function Billing({ current, hasSub, plans, packs, publishableKey, choice }: {
+  current: string; hasSub: boolean; plans: Plan[]; packs: Pack[]; publishableKey: string;
+  /** Paket, das auf der Website gewählt wurde (letzter Schritt nach der Anmeldung) */
+  choice?: { plan: Plan['id']; interval: 'monthly' | 'yearly' } | null;
+}) {
   const stripePromise = useMemo(() => loadStripe(publishableKey), [publishableKey]);
-  const [interval, setInterval] = useState<'monthly' | 'yearly'>('monthly');
-  const [plan, setPlan] = useState<Plan['id']>('pro');
+  const [interval, setInterval] = useState<'monthly' | 'yearly'>(choice?.interval ?? 'monthly');
+  const [plan, setPlan] = useState<Plan['id']>(choice?.plan ?? 'pro');
+  const aboRef = useRef<HTMLElement>(null);
+  const focus = !!choice && !hasSub;
+  useEffect(() => {
+    if (focus) aboRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [focus]);
   const [pack, setPack] = useState<Pack['id']>('p100');
   const [c1, setC1] = useState(false);
   const [c2, setC2] = useState(false);
@@ -69,7 +78,8 @@ export default function Billing({ current, hasSub, plans, packs, publishableKey 
         <Note m={msg} at="pack" />
       </section>
 
-      <section className="card stack">
+      <section className={`card stack${focus ? ' focus' : ''}`} id="abo" ref={aboRef}>
+        {focus ? <p className="ok" style={{ margin: 0 }}>Letzter Schritt: Paket prüfen, Häkchen setzen und bestätigen. Abgebucht wird erst jetzt.</p> : null}
         <div className="row" style={{ justifyContent: 'space-between' }}>
           <h2 style={{ font: '700 20px var(--display)' }}>{hasSub ? 'Dein Abo' : 'Paket wählen'}</h2>
           {!hasSub ? (

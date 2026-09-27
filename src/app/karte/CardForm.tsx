@@ -9,7 +9,7 @@ const appearance = {
   variables: { colorPrimary: '#4F9EFF', colorBackground: '#0b0d13', borderRadius: '12px', fontFamily: 'Inter, system-ui, sans-serif' },
 };
 
-export default function CardForm({ publishableKey }: { publishableKey: string }) {
+export default function CardForm({ publishableKey, next }: { publishableKey: string; next: string }) {
   const stripePromise = useMemo(() => loadStripe(publishableKey), [publishableKey]);
   const [secret, setSecret] = useState('');
   const [err, setErr] = useState('');
@@ -23,12 +23,12 @@ export default function CardForm({ publishableKey }: { publishableKey: string })
   if (!secret) return <p className="muted" style={{ textAlign: 'center' }}>Lädt …</p>;
   return (
     <Elements stripe={stripePromise} options={{ clientSecret: secret, appearance, locale: 'de' }}>
-      <Inner />
+      <Inner next={next} />
     </Elements>
   );
 }
 
-function Inner() {
+function Inner({ next }: { next: string }) {
   const router = useRouter();
   const stripe = useStripe();
   const elements = useElements();
@@ -42,7 +42,7 @@ function Inner() {
     setErr('');
     const { error, setupIntent } = await stripe.confirmSetup({
       elements,
-      confirmParams: { return_url: `${location.origin}/karte/fertig` },
+      confirmParams: { return_url: `${location.origin}/karte/fertig?weiter=${encodeURIComponent(next)}` },
       redirect: 'if_required',
     });
     if (error || !setupIntent) {
@@ -54,7 +54,7 @@ function Inner() {
       setBusy(false);
       return setErr('Die Karte konnte nicht bestätigt werden. Bitte versuch es noch einmal.');
     }
-    router.replace('/studio?willkommen=1');
+    router.replace(next);
     router.refresh();
   }
 

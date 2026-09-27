@@ -56,6 +56,10 @@ document.querySelectorAll('.bill').forEach(btn => btn.addEventListener('click', 
   const y = btn.dataset.bill === 'y';
   document.querySelectorAll('b[data-m]').forEach(p => { p.textContent = y ? p.dataset.y : p.dataset.m; });
   document.querySelectorAll('.yearly-note').forEach(n => { n.textContent = y ? n.dataset.y : (n.dataset.m || ''); });
+  // Paket-Buttons: gewähltes Intervall mit zur Anmeldung geben
+  document.querySelectorAll('.plan-cta[data-plan]:not([data-plan="free"])').forEach(b => {
+    b.href = `/registrieren?paket=${b.dataset.plan}&intervall=${y ? 'yearly' : 'monthly'}`;
+  });
 }));
 
 // ---------- caption studio ----------
@@ -203,16 +207,14 @@ document.querySelectorAll('.tt').forEach(tab => tab.addEventListener('click', ()
 }));
 showCat('clip');
 
-// ---------- hero-formular: führt zur Beta-Anfrage ----------
+// ---------- hero-formular: führt zur Anmeldung (Drive-Link wird fürs Studio gemerkt) ----------
 document.getElementById('linkBar').addEventListener('submit', e => {
   e.preventDefault();
-  setTopic('beta');
-  // Eingabe aus dem Hero in die Beta-Anfrage übernehmen, damit nichts verloren geht
-  const msg = document.querySelector('#contactForm textarea[name="msg"]');
   const val = linkInput.value.trim();
-  if (msg && !msg.value.trim() && val) msg.value = linkBar.classList.contains('has-file') ? 'Ich möchte meine Datei schneiden lassen: ' + val.replace('📁 ', '') : 'Ich möchte daraus Clips machen: ' + val;
-  document.getElementById('kontakt').scrollIntoView({ behavior: 'smooth' });
-  setTimeout(() => document.querySelector('#contactForm input[name="name"]')?.focus({ preventScroll: true }), 700);
+  try {
+    if (val && !linkBar.classList.contains('has-file')) sessionStorage.setItem('velox_link', val);
+  } catch { /* privater Modus: dann eben ohne */ }
+  location.href = '/registrieren';
 });
 
 // ---------- 3D-Handyfächer: klappt beim Scrollen auf ----------

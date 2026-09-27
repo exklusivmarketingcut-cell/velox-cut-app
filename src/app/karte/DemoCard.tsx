@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 
 // NUR im Demo-Durchlauf (NEXT_PUBLIC_DEMO=1): ersetzt das Stripe-Kartenfeld, das ohne echtes Stripe-Konto nicht lädt.
 // Der Ablauf danach (SetupIntent prüfen, Karte als Standard setzen) ist derselbe wie live.
-export default function DemoCard() {
+export default function DemoCard({ next }: { next: string }) {
   const router = useRouter();
   const [secret, setSecret] = useState('');
   const [busy, setBusy] = useState(false);
@@ -28,7 +28,7 @@ export default function DemoCard() {
     if (!r.ok) { setBusy(false); return setErr(d.error?.message || 'Die Karte konnte nicht gespeichert werden.'); }
     const ok = await fetch('/api/stripe/card-saved', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ setupIntentId: d.setupIntent.id }) });
     if (!ok.ok) { setBusy(false); return setErr('Die Karte konnte nicht bestätigt werden. Bitte versuch es noch einmal.'); }
-    router.replace('/studio?willkommen=1');
+    router.replace(next);
     router.refresh();
   }
 

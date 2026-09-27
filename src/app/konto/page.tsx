@@ -3,6 +3,7 @@ import { requireProfile } from '@/lib/profile';
 import { createClient } from '@/lib/supabase/server';
 import { PACKS, PLANS, euro } from '@/lib/pricing';
 import Billing from './Billing';
+import { parseChoice } from '@/lib/choice';
 
 export const metadata = { title: 'Abo & Credits' };
 
@@ -11,7 +12,9 @@ const REASON: Record<string, string> = {
   topup: 'Nachkauf', job: 'Video geschnitten', refund: 'Erstattung', downgrade: 'Wechsel zu Free',
 };
 
-export default async function Page() {
+export default async function Page({ searchParams }: PageProps<'/konto'>) {
+  const q = await searchParams;
+  const choice = parseChoice(q);
   const p = await requireProfile({ needCard: true });
   const supabase = await createClient();
   const { data: ledger } = await supabase.from('credit_ledger').select('*').order('created_at', { ascending: false }).limit(15);
@@ -36,6 +39,7 @@ export default async function Page() {
             plans={plans.map((x) => ({ ...x, monthlyTxt: euro(x.monthly), yearlyTxt: euro(x.yearly) }))}
             packs={packs.map((x) => ({ ...x, priceTxt: euro(x.price) }))}
             publishableKey={process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY!}
+            choice={choice.paket === 'free' ? null : { plan: choice.paket, interval: choice.intervall }}
           />
           <section className="card">
             <h2 style={{ font: '700 20px var(--display)', marginBottom: 10 }}>Verlauf</h2>

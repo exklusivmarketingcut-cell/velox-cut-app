@@ -10,7 +10,7 @@ import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 const env = Object.fromEntries(
-  readFileSync(join(import.meta.dirname, '..', '.env.local'), 'utf8')
+  readFileSync(join(import.meta.dirname, '..', '.env.development.local'), 'utf8')
     .split('\n').filter((l) => /^\w+=/.test(l)).map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1).trim()]),
 );
 const SERVICE_KEY = env.SUPABASE_SERVICE_ROLE_KEY;

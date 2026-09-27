@@ -4,7 +4,7 @@ import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
 
-export default function SignupForm() {
+export default function SignupForm({ next, loginHref }: { next: string; loginHref: string }) {
   const router = useRouter();
   const [err, setErr] = useState('');
   const [sent, setSent] = useState(false);
@@ -25,12 +25,12 @@ export default function SignupForm() {
     const { data, error } = await supabase.auth.signUp({
       email,
       password,
-      options: { data: { name }, emailRedirectTo: `${location.origin}/auth/callback?weiter=/karte` },
+      options: { data: { name }, emailRedirectTo: `${location.origin}/auth/callback?weiter=${encodeURIComponent(next)}` },
     });
     setBusy(false);
     if (error) return setErr(error.message.includes('registered') ? 'Diese E-Mail hat schon ein Konto. Bitte einloggen.' : 'Das hat nicht geklappt. Bitte versuch es noch einmal.');
     if (data.session) {
-      router.replace('/karte');
+      router.replace(next);
       router.refresh();
     }
     else setSent(true);
@@ -55,7 +55,7 @@ export default function SignupForm() {
       {err ? <p className="err">{err}</p> : null}
       <button className="btn btn-acc full" disabled={busy}>{busy ? 'Einen Moment …' : 'Konto erstellen →'}</button>
       <p className="note">Im nächsten Schritt hinterlegst du deine Karte. Dabei wird nichts abgebucht.</p>
-      <p className="alt">Schon ein Konto? <Link href="/login">Einloggen</Link></p>
+      <p className="alt">Schon ein Konto? <Link href={loginHref}>Einloggen</Link></p>
     </form>
   );
 }

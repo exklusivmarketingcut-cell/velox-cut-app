@@ -22,7 +22,18 @@ Protokoll aller Schnitte: `/Volumes/PortableSSD/velox-worker/logs/jobs.jsonl` (w
     sonst Anfang/Mitte/Ende kürzen – die Variante, bei der das Wort danach am klarsten erkannt wird, gewinnt.
 11. **Hörprobe**: fertigen Clip neu transkribieren und mit dem Text vergleichen. Fehlen Wörter → automatisch im sicheren
     Modus neu schneiden. Gehörte Füllwörter werden protokolliert.
-12. **Qualitäts-Check** vor Auslieferung: Untertitel vorhanden, Pausen/Füller wirklich entfernt, Datei 1080×1920 mit Ton,
+12. **Story:** Das Video beginnt erst mit der eigentlichen Szene (wenn die Person die andere anspricht bzw. wirklich
+    zur Kamera spricht). Vorbereitung, Absprachen mit dem Kameramann, Fehlversuche raus – bei „nochmal von vorne“ gilt
+    nur der letzte Versuch. Es endet nach dem Abschluss/Abschied; alles danach („okay, super, passt?“) fliegt raus.
+    KI entscheidet (Gemini, mit Wiederholungen bei Überlastung), sonst Regeln (Neustart-Wörter, Abschiedswörter).
+13. **Flüssig statt abgehackt:** kurze Pausen bleiben natürlich stehen, an geschnittenen Pausen bleiben 0,1 s Luft
+    je Seite (Viral 0,06 s); Schnitte bildgenau; Ton wird an jedem Schnitt 25 ms überblendet; Abschnitte unter 0,3 s werden
+    mit dem Nachbarn verbunden. Bildausschnitt bei Clean fest (Gruppen/Totalen nie Zoom-Sprünge), Zoom-Wechsel nur bei
+    einer Person in Nahaufnahme.
+14. **Untertitel exakt synchron:** Zeiten kommen aus dem FERTIGEN Ton (zweite Abhörung nach dem Schnitt), Text aus dem
+    Original. Bei Clean ruhig (nur Farbe, kein Springen/Wackeln), Pop-Animation nur bei Viral. Position weicht allen
+    erkannten Gesichtern aus.
+15. **Qualitäts-Check** vor Auslieferung: Untertitel vorhanden, Pausen/Füller wirklich entfernt, Datei 1080×1920 mit Ton,
    Länge stimmt. Sonst: Auftrag fehlgeschlagen → Credits automatisch zurück.
 
 ## Stile
@@ -39,4 +50,5 @@ Protokoll aller Schnitte: `/Volumes/PortableSSD/velox-worker/logs/jobs.jsonl` (w
 | 27.09.2026 | dto. | Untertitel zu klein, lagen auf dem Kinn | Größen wie Website-Vorschau, Position weicht Gesicht aus |
 | 27.09.2026 | dto. | Video zu dunkel | automatische Aufhellung nach gemessener Helligkeit |
 | 28.09.2026 | dto. | Test: Wortenden abgeschnitten („Novosmir“, „dabei“ fehlte, „Durchziele“) | Regeln 7, 8, 11 |
+| 28.09.2026 | Kaiserschmarrn-Straßeninterview (Kollege) | Start mit Vorbereitung/„nochmal von vorne“, Ende mit „okay super, passt?“ zum Kameramann, Übergänge abgehackt, Untertitel sollen genau passen und nicht springen | Regeln 12, 13, 14 – Ergebnis: Szene startet bei „Hallo, wollt ihr …“, endet bei „Tschüss“, 4 weiche Schnitte |
 | 28.09.2026 | dto. | Test: „Ähm“ nach „Stand jetzt“ blieb hörbar, gedehntes „aaaber“/„uuund“ | Regeln 9, 10 – Ergebnis: 51,4 → 44,8 s, keine Füllwörter, alle Wörter da |

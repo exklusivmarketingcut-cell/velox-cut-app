@@ -182,3 +182,5 @@ label.f { display: grid; gap: 6px; font-size: 14px; font-weight: 600; color: #c9
   .prev-mobile { display: grid; justify-items: center; padding: 6px 0; }
   .studio-side { display: none; }
 }
+.job-live { grid-column: 1 / -1; display: grid; gap: 6px; }
+.job-live .m b { color: var(--txt); }

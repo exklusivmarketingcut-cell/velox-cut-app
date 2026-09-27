@@ -30,6 +30,13 @@ const r2del = (key) => r2.fetch(r2url(key), { method: 'DELETE' }).catch(() => nu
 
 const log = (...a) => console.log(new Date().toLocaleTimeString('de-DE'), ...a);
 const setJob = (id, patch) => sb.from('jobs').update(patch).eq('id', id);
+// Arbeitsschritt fürs Studio melden (Spalte „stage“ – fehlt sie noch, einfach weglassen)
+let stageOk = true;
+const setStage = async (id, stage) => {
+  if (!stageOk) return;
+  const { error } = await setJob(id, { stage });
+  if (error) stageOk = false;
+};
 
 /** Google-Drive-Freigabelink → direkter Download */
 function driveDirect(url) {
@@ -64,7 +71,9 @@ function runPipeline(job, src, dir) {
     p.stdout.on('data', (b) => {
       for (const line of String(b).split('\n')) {
         const m = /^PROGRESS (\d+)/.exec(line);
+        const st = /^STAGE (.+)$/.exec(line);
         if (m) setJob(job.id, { progress: Math.min(99, +m[1]) });
+        else if (st) setStage(job.id, st[1].trim());
         else if (line.trim()) last = line.trim();
       }
     });
@@ -81,6 +90,7 @@ async function processJob(job) {
   await mkdir(dir, { recursive: true });
   log('▶', job.id, job.style, `${job.clips} Clip(s)`, job.source_name ?? '');
   try {
+    await setStage(job.id, 'Lädt dein Video …');
     const src = await download(job, dir);
     await setJob(job.id, { progress: 10 });
     const result = await runPipeline(job, src, dir); // { clips: [{file, title, seconds}] }

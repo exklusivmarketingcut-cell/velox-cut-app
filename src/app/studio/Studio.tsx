@@ -8,6 +8,7 @@ import { jobCost, MAX_CLIPS_PER_JOB, MAX_UPLOAD_BYTES, STYLES, type StyleId } fr
 type Job = {
   id: string; status: 'queued' | 'processing' | 'done' | 'failed'; style: StyleId; clips: number; source_name: string | null;
   source_kind: string; credits_charged: number; progress: number; error: string | null; created_at: string; outputs: unknown[];
+  started_at?: string | null; stage?: string | null;
 };
 
 const CAPTIONS = [
@@ -17,6 +18,14 @@ const CAPTION_HINT: Record<string, string> = {
   rise: 'weich, modern', hormozi: 'groß, knallig', clean: 'Wort für Wort', neon: 'leuchtend', comic: 'verspielt', serif: 'elegant',
 };
 const COLORS = ['#F6E27F', '#FF3D7F', '#4F9EFF', '#3DFF9A', '#FF7A3D', '#FFFFFF'];
+/** Restzeit grob aus bisherigem Tempo schätzen (erst ab 15 %, vorher „wird berechnet“) */
+function eta(j: Job): string {
+  if (!j.started_at || j.progress < 15) return 'Restzeit wird berechnet …';
+  const elapsed = (Date.now() - new Date(j.started_at).getTime()) / 1000;
+  const left = Math.max(10, (elapsed * (100 - j.progress)) / j.progress);
+  return left < 60 ? 'noch ca. 1 Min.' : `noch ca. ${Math.round(left / 60)} Min.`;
+}
+
 const STATUS: Record<Job['status'], string> = { queued: 'In der Warteschlange', processing: 'Wird geschnitten', done: 'Fertig', failed: 'Fehlgeschlagen' };
 
 /** Datei direkt in den Speicher hochladen (signierter Link, mit Fortschritt) */
@@ -248,7 +257,13 @@ export default function Studio({ credits, initialJobs }: { credits: number; init
                 <div className="m">{STYLES[j.style]?.name} · {j.clips} Clip{j.clips > 1 ? 's' : ''} · {new Date(j.created_at).toLocaleString('de-DE', { dateStyle: 'short', timeStyle: 'short' })}</div>
               </div>
               <span className={`badge ${j.status}`}>{STATUS[j.status]}</span>
-              {j.status === 'processing' ? <div style={{ gridColumn: '1 / -1' }} className="bar"><i style={{ width: `${Math.max(5, j.progress)}%` }} /></div> : null}
+              {j.status === 'processing' ? (
+                <div className="job-live">
+                  <div className="bar"><i style={{ width: `${Math.max(5, j.progress)}%` }} /></div>
+                  <p className="m"><b>{Math.max(1, j.progress)} %</b> · {eta(j)}{j.stage ? <> · {j.stage}</> : null}</p>
+                </div>
+              ) : null}
+              {j.status === 'queued' ? <p className="m" style={{ gridColumn: '1 / -1' }}>Startet gleich – die Schnitt-Maschine holt sich deinen Auftrag.</p> : null}
               {j.status === 'failed' ? <p className="m" style={{ gridColumn: '1 / -1' }}>{j.error || 'Unbekannter Fehler'} – Credits wurden erstattet.</p> : null}
               {j.status === 'done' ? <div className="dl"><button className="btn" style={{ padding: '7px 14px', fontSize: 14 }} onClick={() => download(j.id)}>⬇ Herunterladen</button></div> : null}
             </div>

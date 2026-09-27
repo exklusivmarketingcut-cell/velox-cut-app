@@ -34,7 +34,7 @@ export default function PlanPicker({ plans, paket, intervall }: { plans: PickerP
         <div className="picker-list" role="listbox" aria-label="Paket wählen">
           <div className="tabs picker-iv">
             <button type="button" className={intervall === 'monthly' ? 'on' : ''} onClick={() => choose(paket === 'free' ? 'pro' : paket, 'monthly', false)}>Monatlich</button>
-            <button type="button" className={intervall === 'yearly' ? 'on' : ''} onClick={() => choose(paket === 'free' ? 'pro' : paket, 'yearly', false)}>Jährlich · 17 % günstiger</button>
+            <button type="button" className={intervall === 'yearly' ? 'on' : ''} onClick={() => choose(paket === 'free' ? 'pro' : paket, 'yearly', false)}>Jährlich · 2 Monate gratis</button>
           </div>
           {plans.map((p) => (
             <button key={p.id} type="button" role="option" aria-selected={p.id === paket} className={`picker-item${p.id === paket ? ' on' : ''}`} onClick={() => choose(p.id, intervall)}>

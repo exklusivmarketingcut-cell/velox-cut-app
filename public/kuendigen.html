@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Vertrag kündigen – Velox Cut</title>
+<meta name="robots" content="noindex" />
+<link rel="stylesheet" href="assets/fonts.css" />
+<link rel="stylesheet" href="style.css" />
+<link rel="stylesheet" href="velox.css" />
+<link rel="icon" href="assets/img/favicon.png" type="image/png" />
+<style>
+.legal { max-width: 780px; margin: 0 auto; padding: 140px 20px 100px; }
+.legal h1 { font: 800 clamp(36px, 5vw, 56px)/1.05 var(--display); letter-spacing: -.03em; margin-bottom: 36px; }
+.legal h2 { font: 700 21px var(--display); margin: 34px 0 10px; }
+.legal p, .legal li { color: #b9bcc8; margin-bottom: 10px; }
+.legal ul { padding-left: 20px; }
+.legal a { color: var(--acc); }
+.legal .stand { color: #6b6f7c; margin: -26px 0 30px; font-size: 14px; }
+.legal .formular { border: 1px dashed #3a3e4c; border-radius: 14px; padding: 20px 22px; margin-top: 14px; }
+.kue-form { margin-top: 28px; }
+.kue-form fieldset { border: 0; padding: 0; margin: 0; display: grid; gap: 8px; }
+.kue-form legend { font-size: 14px; font-weight: 600; color: #c9cbd6; margin-bottom: 6px; }
+.kue-form .opt { display: flex; align-items: center; gap: 10px; font-weight: 500; color: #d9dbe4; cursor: pointer; }
+.kue-form .opt input { width: 18px; height: 18px; accent-color: var(--acc); }
+.kue-form .grund { margin-top: 6px; }
+.kue-ok { margin-top: 28px; padding: 26px; border-radius: 22px; background: rgba(46,204,113,.08); border: 1px solid rgba(46,204,113,.35); outline: none; }
+.kue-ok h2 { margin-top: 0 !important; }
+.kue-ok pre { white-space: pre-wrap; font: 500 14px/1.6 ui-monospace, Menlo, monospace; color: #d7f5e3; background: #0b0d13; border-radius: 12px; padding: 16px; margin: 16px 0; }
+.kue-actions { display: flex; gap: 12px; flex-wrap: wrap; }
+@media print { .nav, .footer, .kue-actions, .legal > p, .legal > h1, .stand { display: none !important; } body { background: #fff !important; } .kue-ok, .kue-ok pre { background: #fff !important; color: #000 !important; border: 0; } .legal .kue-ok h2 { color: #000; } }
+</style>
+</head>
+<body>
+<header class="nav scrolled"><div class="wrap nav-inner">
+  <a href="index.html" class="logo" aria-label="Zur Startseite"><img src="assets/img/logo-full-white.png" alt="Velox Cut" class="logo-img" /></a>
+  <div class="nav-cta" style="display:flex"><a href="index.html" class="btn btn-outline">← Zur Startseite</a></div>
+</div></header>
+<main class="legal">
+<h1>Vertrag kündigen</h1>
+<p class="stand">Kündigung deines Velox-Cut-Abos · ohne Login möglich</p>
+<p>Fülle die Felder aus und klicke auf „Jetzt kündigen“. Du bekommst sofort eine Bestätigung mit Datum und Uhrzeit, die du speichern kannst. Zusätzlich bestätigen wir dir die Kündigung per E-Mail.</p>
+
+<form class="contact-form kue-form" id="kueForm" name="kuendigung" method="POST" data-netlify="true" netlify-honeypot="bot-field" novalidate>
+  <input type="hidden" name="form-name" value="kuendigung" />
+  <input type="hidden" name="abgesendet" id="kueZeit" />
+  <p class="hp" aria-hidden="true"><label>Nicht ausfüllen<input name="bot-field" tabindex="-1" autocomplete="off" /></label></p>
+
+  <fieldset>
+    <legend>Art der Kündigung *</legend>
+    <label class="opt"><input type="radio" name="art" value="Ordentliche Kündigung" checked /> Ordentliche Kündigung</label>
+    <label class="opt"><input type="radio" name="art" value="Außerordentliche Kündigung (aus wichtigem Grund)" /> Außerordentliche Kündigung (aus wichtigem Grund)</label>
+    <label class="grund" id="kueGrundWrap" hidden>Kündigungsgrund *<textarea name="grund" id="kueGrund" rows="3"></textarea></label>
+  </fieldset>
+
+  <div class="row2">
+    <label>Vor- und Nachname *<input name="name" required autocomplete="name" /></label>
+    <label>E-Mail-Adresse deines Kontos *<input name="email" type="email" required autocomplete="email" /></label>
+  </div>
+
+  <div class="row2">
+    <label>Welches Paket? *
+      <select name="paket" required>
+        <option value="">Bitte wählen</option>
+        <option>Starter</option><option>Pro</option><option>Business</option><option>Free (Gratis-Zugang)</option><option>Weiß ich nicht genau</option>
+      </select>
+    </label>
+    <label>Kunden- oder Rechnungsnummer (optional)<input name="vertragsnummer" /></label>
+  </div>
+
+  <fieldset>
+    <legend>Wann soll der Vertrag enden? *</legend>
+    <label class="opt"><input type="radio" name="zeitpunkt" value="Zum nächstmöglichen Zeitpunkt" checked /> Zum nächstmöglichen Zeitpunkt</label>
+    <label class="opt"><input type="radio" name="zeitpunkt" value="Zu einem bestimmten Datum" /> Zu einem bestimmten Datum</label>
+    <label class="grund" id="kueDatumWrap" hidden>Datum *<input type="date" name="datum" id="kueDatum" /></label>
+  </fieldset>
+
+  <p class="form-note">Die Kündigungsbestätigung senden wir an die oben angegebene E-Mail-Adresse. Mehr zum Datenschutz in der <a href="datenschutz.html">Datenschutzerklärung</a>.</p>
+  <p class="form-err" id="kueErr" hidden></p>
+  <button class="btn btn-acc big full" type="submit">Jetzt kündigen</button>
+</form>
+
+<div class="kue-ok" id="kueOk" hidden role="status" tabindex="-1">
+  <h2>✅ Deine Kündigung ist eingegangen</h2>
+  <p>Abgegeben am <b id="kueOkZeit"></b>. Wir bestätigen sie dir zusätzlich per E-Mail – dort steht auch, wann dein Vertrag endet.</p>
+  <pre id="kueOkText"></pre>
+  <div class="kue-actions">
+    <button class="btn btn-acc" type="button" id="kueSave">Bestätigung speichern</button>
+    <button class="btn btn-outline" type="button" onclick="window.print()">Drucken / als PDF</button>
+  </div>
+</div>
+
+<noscript><p>Ohne JavaScript kannst du uns deine Kündigung auch per E-Mail an <a href="mailto:infoveloxcut@gmail.com">infoveloxcut@gmail.com</a> schicken.</p></noscript>
+</main>
+<footer class="footer"><div class="wrap foot-bottom" style="border:0;margin:0;padding:0">© 2026 Velox Cut · <a href="impressum.html">Impressum</a> · <a href="datenschutz.html">Datenschutz</a> · <a href="agb.html">AGB</a> · <a href="widerruf.html">Widerruf</a> · <a href="kuendigen.html" class="kue-link">Verträge hier kündigen</a></div></footer>
+<script src="assets/js/kuendigen.js"></script>
+</body>
+</html>

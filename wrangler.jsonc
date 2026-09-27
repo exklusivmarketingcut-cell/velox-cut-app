@@ -6,5 +6,13 @@
   "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
   // Website (public/) und Next-Dateien als statische Assets – kostenlos und ohne Rechenzeit
   "assets": { "directory": ".open-next/assets", "binding": "ASSETS" },
-  "observability": { "enabled": true }
+  "observability": { "enabled": true },
+  // Nicht geheime Einstellungen. Schlüssel liegen als Secrets bei Cloudflare (scripts/cloudflare-setup.sh)
+  "vars": {
+    "R2_ACCOUNT_ID": "76d5b0b846cbdf7fce5dda5913d5078e",
+    "R2_BUCKET": "veloxcut-videos",
+    "R2_ENDPOINT": "https://76d5b0b846cbdf7fce5dda5913d5078e.eu.r2.cloudflarestorage.com",
+    "OWNER_EMAIL": "infoveloxcut@gmail.com",
+    "EMAIL_FROM": "Velox Cut <noreply@velox-cut.de>"
+  }
 }

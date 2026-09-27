@@ -1,0 +1,13 @@
+{
+  "rules": [
+    {
+      "allowed": {
+        "origins": ["https://veloxcut.veloxcut-app.workers.dev", "https://velox-cut.de", "https://www.velox-cut.de", "http://localhost:3010"],
+        "methods": ["PUT", "GET", "HEAD"],
+        "headers": ["content-type"]
+      },
+      "exposeHeaders": ["ETag"],
+      "maxAgeSeconds": 3600
+    }
+  ]
+}

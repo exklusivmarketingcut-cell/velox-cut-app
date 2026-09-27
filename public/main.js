@@ -481,7 +481,7 @@ if (styleVid) {
     document.querySelectorAll('.style-pick .sp').forEach(x => { x.classList.toggle('active', x === b); x.setAttribute('aria-selected', x === b); });
     styleVid.poster = `assets/demo/style_${k}.jpg`;
     styleVid.style.backgroundImage = `url("assets/demo/style_${k}.jpg")`;
-    styleVid.src = `assets/demo/style_${k}.mp4`;
+    styleVid.src = `https://pub-4248ade5d1614698af46b6f901c7bbd8.r2.dev/assets/demo/style_${k}.mp4`;
     tryPlay(styleVid);
     document.getElementById('styleCap').innerHTML = `<b>${STYLES[k][0]}</b> ${STYLES[k][1]}`;
   }));

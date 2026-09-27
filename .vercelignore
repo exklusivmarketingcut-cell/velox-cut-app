@@ -1,9 +1,0 @@
-# Nicht zu Vercel hochladen: lokale Schlüssel/Demo-Werte, Demo-Server, Schnitt-Maschine (läuft auf dem Mac).
-# Wichtig: mit führendem / – sonst würden auch public/assets/demo (Website-Videos) ausgeschlossen.
-.env*
-!.env.example
-/demo/
-/worker/
-/scripts/
-/.next/
-/node_modules/

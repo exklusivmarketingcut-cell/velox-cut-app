@@ -14,10 +14,11 @@ import { Readable } from 'node:stream';
 const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } });
 const WORKER = process.env.WORKER_NAME || hostname();
 const PIPELINE = process.env.PIPELINE || join(import.meta.dirname, 'pipeline.py');
-// Python mit mlx-whisper + OpenCV (eigene Umgebung auf der externen SSD, siehe SETUP.md)
-const PYTHON = process.env.PYTHON || '/Volumes/PortableSSD/velox-worker/venv/bin/python';
-// Zwischendateien auf die externe SSD (die interne Festplatte ist fast voll), sonst ins System-Temp
-const TMP = process.env.WORKER_TMP || (existsSync('/Volumes/PortableSSD') ? '/Volumes/PortableSSD/velox-worker-tmp' : join(tmpdir(), 'velox-worker'));
+// Alles liegt in EINEM Ordner auf der SSD: …/app (dieser Code) und daneben …/schnitt-maschine
+// (Python-Umgebung mit mlx-whisper + OpenCV, Schriften, Protokolle, Zwischendateien)
+const MASCHINE = process.env.VELOX_MASCHINE || join(import.meta.dirname, '..', '..', 'schnitt-maschine');
+const PYTHON = process.env.PYTHON || join(MASCHINE, 'venv', 'bin', 'python');
+const TMP = process.env.WORKER_TMP || (existsSync(MASCHINE) ? join(MASCHINE, 'tmp') : join(tmpdir(), 'velox-worker'));
 const POLL_MS = 8000;
 
 // Video-Speicher Cloudflare R2 (S3-kompatibel): uploads/<pfad> und outputs/<pfad>
@@ -38,6 +39,23 @@ const setStage = async (id, stage) => {
   if (error) stageOk = false;
 };
 
+// Lebenszeichen für den Wächter in der Datenbank (alle 30 Sekunden): lebt die Maschine, woran arbeitet sie, hängt die Pipeline?
+const beat = { busy_job: null, last_output: null };
+const STARTED = new Date().toISOString();
+async function heartbeat(patch = {}) {
+  Object.assign(beat, patch);
+  const { error } = await sb.from('workers').upsert({ name: WORKER, last_seen: new Date().toISOString(), started_at: STARTED, ...beat });
+  if (error && !heartbeat.warned) { heartbeat.warned = true; log('Lebenszeichen nicht möglich:', error.message); }
+}
+setInterval(() => heartbeat().catch(() => null), 30_000);
+
+// Fehlermeldungen für Kunden: eigene (deutsche) Meldungen der Pipeline durchreichen, technische Fehler freundlich umschreiben
+const friendly = (msg) => (/Traceback|Error\b|Exception|errno|ffmpeg|\.py\b|undefined|null|Pipeline|fetch failed|ECONN|ETIMEDOUT/i.test(msg) || !msg
+  ? 'Beim Schneiden ist ein Fehler aufgetreten. Bitte starte den Auftrag noch einmal'
+  : msg.replace(/[.\s]+$/, ''));
+// Pipeline hängt (keine Rückmeldung) → abbrechen, damit die Maschine frei wird
+const HANG_MS = 30 * 60e3;
+
 /** Google-Drive-Freigabelink → direkter Download */
 function driveDirect(url) {
   const id = /\/d\/([\w-]{20,})/.exec(url)?.[1] || new URL(url).searchParams.get('id');
@@ -46,6 +64,21 @@ function driveDirect(url) {
 }
 
 async function download(job, dir) {
+  if (job.source_kind === 'folder') { // mehrere Clips + Bilder → eigener Eingangsordner
+    const inDir = join(dir, 'eingang');
+    await mkdir(inDir, { recursive: true });
+    for (const p of job.source_paths || []) {
+      const r = await r2get(`uploads/${p}`);
+      if (!r.ok) throw new Error('Eine hochgeladene Datei fehlt.');
+      await streamPipeline(Readable.fromWeb(r.body), createWriteStream(join(inDir, p.split('/').pop())));
+    }
+    return inDir;
+  }
+  if (job.source_kind === 'drive' && /\/folders\//.test(job.source_url || '')) { // ganzer Drive-Ordner → wie Ordner-Upload
+    const inDir = join(dir, 'eingang');
+    await runPy(job, [join(import.meta.dirname, 'drive.py'), job.source_url, inDir]);
+    return inDir;
+  }
   const file = join(dir, 'source.mp4');
   if (job.source_kind === 'upload') {
     const r = await r2get(`uploads/${job.source_path}`);
@@ -61,14 +94,83 @@ async function download(job, dir) {
   return file;
 }
 
+/** Logo des Kunden aus dem Speicher holen (liegt unter logos/<user>/…) */
+async function downloadLogo(job, dir) {
+  const { data } = await sb.from('profiles').select('logo_path').eq('id', job.user_id).single();
+  if (!data?.logo_path) return null;
+  const r = await r2get(data.logo_path);
+  if (!r.ok) return null;
+  const file = join(dir, `logo.${data.logo_path.split('.').pop()}`);
+  await streamPipeline(Readable.fromWeb(r.body), createWriteStream(file));
+  return file;
+}
+
+/** Trend-Songs (Shazam-Charts DE) einmal pro Woche auffrischen – für die Song-Vorschläge zu jedem Video */
+async function refreshTrends() {
+  const file = join(MASCHINE, 'trends.json');
+  const age = existsSync(file) ? Date.now() - (await stat(file)).mtimeMs : Infinity;
+  if (age < 7 * 864e5) return;
+  await new Promise((resolve) => {
+    const p = spawn(PYTHON, [join(import.meta.dirname, 'trends.py')], { stdio: ['ignore', 'pipe', 'pipe'], env: { VELOX_MASCHINE: MASCHINE, ...process.env } });
+    p.stdout.on('data', (b) => log('🎵', String(b).trim()));
+    p.stderr.on('data', (b) => log('🎵', String(b).trim().slice(0, 200)));
+    p.on('close', resolve);
+  });
+}
+
 /** Pipeline starten (Python). Meldet Fortschritt als Zeilen „PROGRESS 42“, Ergebnis als letzte JSON-Zeile. */
-function runPipeline(job, src, dir) {
+/** Mehrere Clips: montage.py plant den Schnitt und setzt die Sprech-Stellen zu EINER Datei zusammen → { src, plan } */
+function runMontage(job, inDir, dir, words = '') {
   return new Promise((resolve, reject) => {
-    const args = [PIPELINE, '--src', src, '--out', dir, '--style', job.style, '--clips', String(job.clips), '--caption', job.caption_style, '--color', job.caption_color];
-    const p = spawn(PYTHON, args, { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, PYTHONUNBUFFERED: '1' } });
+    const args = [join(import.meta.dirname, 'montage.py'), '--out', join(dir, 'montage'), '--style', job.style, ...(words ? ['--words', words.slice(0, 300)] : []), inDir];
+    const p = spawn(PYTHON, args, { stdio: ['ignore', 'pipe', 'pipe'], env: { VELOX_MASCHINE: MASCHINE, ...process.env, PYTHONUNBUFFERED: '1' } });
     let last = '';
     let errTxt = '';
     p.stdout.on('data', (b) => {
+      beat.last_output = new Date().toISOString();
+      for (const line of String(b).split('\n')) {
+        const st = /^STAGE (.+)$/.exec(line);
+        if (st) setStage(job.id, st[1].trim());
+        else if (line.trim()) last = line.trim();
+      }
+    });
+    p.stderr.on('data', (b) => { beat.last_output = new Date().toISOString(); errTxt = (errTxt + b).slice(-2000); });
+    p.on('close', (code) => {
+      if (code !== 0) return reject(new Error(errTxt.split('\n').filter(Boolean).pop() || `Montage-Fehler ${code}`));
+      try { resolve(JSON.parse(last)); } catch { reject(new Error('Montage lieferte kein Ergebnis.')); }
+    });
+  });
+}
+
+function runPipeline(job, src, dir, logo, words = '', plan = null) {
+  const args = [PIPELINE, '--src', src, '--out', dir, '--style', job.style, '--clips', String(job.clips), '--caption', job.caption_style, '--color', job.caption_color];
+  if (plan) args.push('--plan', plan); // Schnittplan aus mehreren Clips (B-Rolls, Bilder, Clip-Grenzen)
+  if (job.music === 'auto') args.push('--music', 'auto'); // lizenzfreie Hintergrundmusik (schnitt-maschine/musik)
+  if (logo) args.push('--logo', logo); // Kunden-Logo oben links
+  if (words) args.push('--words', words.slice(0, 300)); // Namen & Marken → richtige Untertitel
+  return runPy(job, args);
+}
+
+/** Nur B-Roll (niemand spricht): musikschnitt.py schneidet auf den Beat – Ergebnis im selben Format wie die Pipeline */
+function runMusikschnitt(job, inDir, dir, logo, words = '') {
+  const args = [join(import.meta.dirname, 'musikschnitt.py'), '--out', join(dir, 'musik'), '--style', job.style];
+  if (logo) args.push('--logo', logo);
+  if (words) args.push('--words', words.slice(0, 300));
+  return runPy(job, [...args, inDir]);
+}
+
+function runPy(job, args) {
+  return new Promise((resolve, reject) => {
+    const p = spawn(PYTHON, args, { stdio: ['ignore', 'pipe', 'pipe'], env: { VELOX_MASCHINE: MASCHINE, ...process.env, PYTHONUNBUFFERED: '1' } });
+    let last = '';
+    let errTxt = '';
+    let lastOut = Date.now();
+    const touch = () => { lastOut = Date.now(); beat.last_output = new Date().toISOString(); };
+    const hang = setInterval(() => {
+      if (Date.now() - lastOut > HANG_MS) { errTxt += '\nPipeline hing (keine Rückmeldung) – abgebrochen'; p.kill('SIGKILL'); }
+    }, 60_000);
+    p.stdout.on('data', (b) => {
+      touch();
       for (const line of String(b).split('\n')) {
         const m = /^PROGRESS (\d+)/.exec(line);
         const st = /^STAGE (.+)$/.exec(line);
@@ -77,8 +179,9 @@ function runPipeline(job, src, dir) {
         else if (line.trim()) last = line.trim();
       }
     });
-    p.stderr.on('data', (b) => (errTxt = (errTxt + b).slice(-2000)));
+    p.stderr.on('data', (b) => { touch(); errTxt = (errTxt + b).slice(-2000); });
     p.on('close', (code) => {
+      clearInterval(hang);
       if (code !== 0) return reject(new Error(errTxt.split('\n').filter(Boolean).pop() || `Pipeline-Fehler ${code}`));
       try { resolve(JSON.parse(last)); } catch { reject(new Error('Pipeline lieferte kein Ergebnis.')); }
     });
@@ -89,33 +192,63 @@ async function processJob(job) {
   const dir = join(TMP, job.id);
   await mkdir(dir, { recursive: true });
   log('▶', job.id, job.style, `${job.clips} Clip(s)`, job.source_name ?? '');
+  await heartbeat({ busy_job: job.id, last_output: new Date().toISOString() });
   try {
     await setStage(job.id, 'Lädt dein Video …');
-    const src = await download(job, dir);
+    let src = await download(job, dir);
     await setJob(job.id, { progress: 10 });
-    const result = await runPipeline(job, src, dir); // { clips: [{file, title, seconds}] }
+    const logo = job.use_logo ? await downloadLogo(job, dir).catch(() => null) : null;
+    // Namen & Marken des Kunden (Spalte fehlt evtl. noch → einfach ohne)
+    const { data: pw } = await sb.from('profiles').select('brand_words').eq('id', job.user_id).single();
+    let plan = null;
+    let result = null; // { clips: [{file, title, seconds, songs}] }
+    const many = job.source_kind === 'folder' || (await stat(src)).isDirectory(); // Ordner-Upload oder Drive-Ordner
+    if (many) {
+      const m = await runMontage(job, src, dir, pw?.brand_words || '');
+      if (m.musik) result = await runMusikschnitt(job, src, dir, logo, pw?.brand_words || ''); // nur B-Roll → auf den Beat
+      else {
+        src = m.src;
+        plan = m.plan;
+      }
+    }
+    if (!result) {
+      try {
+        result = await runPipeline(job, src, dir, logo, pw?.brand_words || '', plan);
+      } catch (e) { // einzelnes Video ohne Sprache (nur B-Roll) → Musik-Schnitt statt Fehlermeldung
+        if (plan || !/keine Sprache|keine Tonspur/.test(String(e?.message))) throw e;
+        result = await runMusikschnitt(job, src, dir, logo, pw?.brand_words || '');
+      }
+    }
     if (!result.clips?.length) throw new Error('Es konnten keine Clips erstellt werden.');
     const outputs = [];
     for (const [i, c] of result.clips.entries()) {
       const path = `${job.user_id}/${job.id}/clip-${i + 1}.mp4`;
       const up = await r2put(`outputs/${path}`, await readFile(c.file));
       if (!up.ok) throw new Error('Hochladen des Clips fehlgeschlagen.');
-      outputs.push({ path, title: c.title || `Clip ${i + 1}`, seconds: c.seconds });
+      outputs.push({ path, title: c.title || `Clip ${i + 1}`, seconds: c.seconds, songs: c.songs ?? [] });
     }
     // weniger Clips als bezahlt → Differenz erstatten
     if (outputs.length < job.clips) {
       const per = Math.round(job.credits_charged / job.clips);
       await sb.rpc('refund_credits', { p_user: job.user_id, p_amount: per * (job.clips - outputs.length), p_ref: `${job.id}-teil` });
     }
-    await setJob(job.id, { status: 'done', progress: 100, outputs, finished_at: new Date().toISOString() });
+    // nur abschließen, wenn der Wächter den Auftrag nicht schon beendet (und erstattet) hat
+    const { data: fin } = await setJob(job.id, { status: 'done', progress: 100, outputs, finished_at: new Date().toISOString() }).eq('status', 'processing').select('id');
+    if (!fin?.length) {
+      log('⚠', job.id, 'war schon vom Wächter beendet – Clips verworfen');
+      for (const o of outputs) await r2del(`outputs/${o.path}`);
+      return;
+    }
     // Rohvideo sofort löschen – wird nicht mehr gebraucht (Datenschutz, Speicherplatz)
     if (job.source_path) { await r2del(`uploads/${job.source_path}`); await setJob(job.id, { source_path: null }); }
+    if (job.source_paths?.length) { for (const p of job.source_paths) await r2del(`uploads/${p}`); await setJob(job.id, { source_paths: [] }); }
     log('✓', job.id, `${outputs.length} Clip(s)`);
   } catch (e) {
     log('✗', job.id, e.message);
-    await setJob(job.id, { status: 'failed', error: String(e.message).slice(0, 300), finished_at: new Date().toISOString() });
+    await setJob(job.id, { status: 'failed', error: friendly(String(e.message)).slice(0, 300), finished_at: new Date().toISOString() }).eq('status', 'processing');
     await sb.rpc('refund_job', { p_job: job.id });
   } finally {
+    await heartbeat({ busy_job: null, last_output: null }).catch(() => null);
     await rm(dir, { recursive: true, force: true });
   }
 }
@@ -139,11 +272,12 @@ async function cleanup() {
 
 // Hängengebliebene Aufträge dieser Maschine (z. B. nach Absturz) wieder freigeben
 await sb.from('jobs').update({ status: 'queued', progress: 0 }).eq('status', 'processing').eq('worker', WORKER);
+await heartbeat({ busy_job: null, last_output: null }).catch(() => null);
 log(`Schnitt-Maschine „${WORKER}“ läuft. Warte auf Aufträge …`);
 let lastCleanup = 0;
 for (;;) {
   try {
-    if (Date.now() - lastCleanup > 6 * 3600e3) { await cleanup(); lastCleanup = Date.now(); }
+    if (Date.now() - lastCleanup > 6 * 3600e3) { await cleanup(); await refreshTrends().catch(() => null); lastCleanup = Date.now(); }
     const { data, error } = await sb.rpc('claim_next_job', { p_worker: WORKER });
     if (error) log('Fehler beim Abholen:', error.message);
     const job = data?.[0];

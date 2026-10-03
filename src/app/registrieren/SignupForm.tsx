@@ -25,7 +25,7 @@ export default function SignupForm({ next, loginHref }: { next: string; loginHre
     const { data, error } = await supabase.auth.signUp({
       email,
       password,
-      options: { data: { name }, emailRedirectTo: `${location.origin}/auth/callback?weiter=${encodeURIComponent(next)}` },
+      options: { data: { name }, emailRedirectTo: `${location.origin}/auth/bestaetigen?weiter=${encodeURIComponent(next)}` },
     });
     setBusy(false);
     if (error) return setErr(error.message.includes('registered') ? 'Diese E-Mail hat schon ein Konto. Bitte einloggen.' : 'Das hat nicht geklappt. Bitte versuch es noch einmal.');

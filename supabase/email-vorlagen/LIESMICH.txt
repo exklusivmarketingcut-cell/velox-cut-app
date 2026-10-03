@@ -1,0 +1,11 @@
+Velox Cut – E-Mail-Vorlagen für Supabase (Authentication → Emails → Templates)
+
+1-registrierung-bestaetigen.html  →  Vorlage „Confirm signup“
+   Betreff: Bestätige deine E-Mail-Adresse für Velox Cut
+
+2-passwort-zuruecksetzen.html     →  Vorlage „Reset password“
+   Betreff: Dein neues Passwort für Velox Cut
+
+Der Link führt auf velox-cut.de/auth/bestaetigen (nicht auf supabase.co). Dort bestätigt der Kunde per Knopf –
+Mail-Scanner, die Links vorab öffnen, verbrauchen den Einmal-Code so nicht.
+Voraussetzung: Die Redirect-URLs in Supabase (Authentication → URL Configuration) erlauben https://velox-cut.de/**.

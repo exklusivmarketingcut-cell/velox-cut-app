@@ -78,7 +78,7 @@ durch die echte Clean-/Viral-Pipeline (mlx-whisper + Gemini + Remotion).
 
 ## 7. Website aktualisieren
 
-Die Website-Quelle bleibt `~/veloxcut-studio`. Nach Änderungen: `scripts/sync-site.sh` ausführen, dann deployen.
+Die Website-Quelle liegt im Ordner `webseite` neben `app` (SSD: Ordner `Velox Cut`). Nach Änderungen: `scripts/sync-site.sh` ausführen, dann deployen.
 
 ## 8. Vor dem Live-Gang
 

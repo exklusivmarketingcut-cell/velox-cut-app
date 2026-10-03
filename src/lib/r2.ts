@@ -33,3 +33,12 @@ export const uploadUrl = (key: string) => presign('PUT', key, 2 * 3600);
 /** Download-Link für einen fertigen Clip (1 Stunde gültig, speichert unter dem angegebenen Namen) */
 export const downloadUrl = (key: string, filename: string) =>
   presign('GET', key, 3600, { 'response-content-disposition': `attachment; filename="${filename}"` });
+
+/** Link zum Anzeigen einer Datei im Browser (z. B. Logo-Vorschau, 1 Stunde gültig) */
+export const viewUrl = (key: string) => presign('GET', key, 3600);
+
+/** Datei löschen (z. B. altes Logo) */
+export async function removeObject(key: string) {
+  const signed = await r2().sign(objectUrl(key), { method: 'DELETE' });
+  await fetch(signed).catch(() => null);
+}

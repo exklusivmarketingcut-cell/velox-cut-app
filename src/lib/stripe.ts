@@ -34,7 +34,8 @@ export async function ensureCustomer(userId: string, email: string, name?: strin
   const admin = createAdmin();
   const { data: p } = await admin.from('profiles').select('stripe_customer_id').eq('id', userId).single();
   if (p?.stripe_customer_id) return p.stripe_customer_id;
-  const c = await stripe.customers.create({ email, name: name ?? undefined, metadata: { user_id: userId } });
+  // preferred_locales: Belege und Rechnungs-Mails von Stripe auf Deutsch
+  const c = await stripe.customers.create({ email, name: name ?? undefined, preferred_locales: ['de'], metadata: { user_id: userId } });
   await admin.from('profiles').update({ stripe_customer_id: c.id }).eq('id', userId);
   return c.id;
 }

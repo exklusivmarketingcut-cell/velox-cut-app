@@ -7,7 +7,8 @@ import { jobCost, MAX_CLIPS_PER_JOB, MAX_UPLOAD_BYTES, STYLES, type StyleId } fr
 
 type Job = {
   id: string; status: 'queued' | 'processing' | 'done' | 'failed'; style: StyleId; clips: number; source_name: string | null;
-  source_kind: string; credits_charged: number; progress: number; error: string | null; created_at: string; outputs: unknown[];
+  source_kind: string; credits_charged: number; progress: number; error: string | null; created_at: string;
+  outputs: { title?: string; songs?: { song: string; artist: string; warum?: string }[] }[];
   started_at?: string | null; stage?: string | null;
 };
 
@@ -41,6 +42,30 @@ function putFile(signedUrl: string, file: File, onProgress: (p: number) => void)
   });
 }
 
+const MEDIA = (f: File) => f.type.startsWith('video/') || f.type.startsWith('image/') || /\.(mp4|mov|m4v|mts|jpe?g|png|webp|heic)$/i.test(f.name);
+
+/** Gezogene Dateien UND Ordner (auch Unterordner) einsammeln */
+async function droppedFiles(dt: DataTransfer): Promise<File[]> {
+  type Entry = { isFile: boolean; isDirectory: boolean; file?: (cb: (f: File) => void, err: () => void) => void;
+    createReader?: () => { readEntries: (cb: (e: Entry[]) => void, err: () => void) => void } };
+  const items = Array.from(dt.items ?? []).map((i) => (i as unknown as { webkitGetAsEntry?: () => Entry | null }).webkitGetAsEntry?.() ?? null);
+  if (!items.some(Boolean)) return Array.from(dt.files);
+  const out: File[] = [];
+  const walk = async (e: Entry): Promise<void> => {
+    if (e.isFile && e.file) out.push(await new Promise<File>((res, rej) => e.file!(res, rej)));
+    else if (e.isDirectory && e.createReader) {
+      const r = e.createReader();
+      for (;;) {
+        const batch = await new Promise<Entry[]>((res, rej) => r.readEntries(res, rej));
+        if (!batch.length) break;
+        for (const x of batch) await walk(x);
+      }
+    }
+  };
+  for (const e of items) if (e) await walk(e);
+  return out;
+}
+
 /** Link, den jemand auf der Startseite eingefügt hat (wird dort in sessionStorage gemerkt) */
 const readHeroLink = () => {
   try { return sessionStorage.getItem('velox_link'); } catch { return null; }
@@ -50,16 +75,25 @@ const DRIVE_RE = /^https:\/\/(drive|docs)\.google\.com\//;
 
 export default function Studio({ credits, initialJobs }: { credits: number; initialJobs: Job[] }) {
   const [tab, setTab] = useState<'upload' | 'drive'>('upload');
-  const [file, setFile] = useState<File | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
+  const file = files.find((f) => f.type.startsWith('video/') || /\.(mp4|mov|m4v)$/i.test(f.name)) ?? null; // Vorschau: erstes Video
   const [drive, setDrive] = useState('');
   const [style, setStyle] = useState<StyleId>('clean');
   const [caption, setCaption] = useState('rise');
   const [color, setColor] = useState(COLORS[0]);
   const [clips, setClips] = useState(1);
+  const [useLogo, setUseLogo] = useState(false);
+  const [logoUrl, setLogoUrl] = useState<string | null>(null);
+  const [logoBusy, setLogoBusy] = useState(false);
+  const [music, setMusic] = useState<'none' | 'auto'>('none');
+  const [brand, setBrand] = useState('');
+  const brandSaved = useRef('');
+  const logoInput = useRef<HTMLInputElement>(null);
   const [up, setUp] = useState(-1);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<React.ReactNode>('');
   const [jobs, setJobs] = useState<Job[]>(initialJobs);
+  const [online, setOnline] = useState<boolean | null>(null);
   const [balance, setBalance] = useState(credits);
   const [over, setOver] = useState(false);
   const heroLink = useSyncExternalStore(noSubscribe, readHeroLink, () => null);
@@ -70,6 +104,7 @@ export default function Studio({ credits, initialJobs }: { credits: number; init
     setHeroDone(true);
   };
   const input = useRef<HTMLInputElement>(null);
+  const folderInput = useRef<HTMLInputElement>(null);
   const router = useRouter();
   const failedSeen = useRef(new Set(initialJobs.filter((j) => j.status === 'failed').map((j) => j.id)));
 
@@ -77,8 +112,10 @@ export default function Studio({ credits, initialJobs }: { credits: number; init
   const reload = useCallback(async () => {
     const r = await fetch('/api/jobs', { cache: 'no-store' });
     if (!r.ok) return;
-    const next: Job[] = (await r.json()).jobs;
+    const d = await r.json();
+    const next: Job[] = d.jobs;
     setJobs(next);
+    setOnline(d.online ?? null);
     // Neu fehlgeschlagen → Credits wurden erstattet: Stand oben neu laden
     const fresh = next.filter((j) => j.status === 'failed' && !failedSeen.current.has(j.id));
     fresh.forEach((j) => failedSeen.current.add(j.id));
@@ -91,23 +128,80 @@ export default function Studio({ credits, initialJobs }: { credits: number; init
     return () => clearInterval(t);
   }, [active, reload]);
 
-  function pick(f?: File | null) {
-    setErr('');
+  // Logo aus dem Konto laden (für die Vorschau)
+  useEffect(() => {
+    fetch('/api/logo').then((r) => (r.ok ? r.json() : null)).then((d) => d && setLogoUrl(d.url)).catch(() => null);
+    fetch('/api/marken').then((r) => (r.ok ? r.json() : null)).then((d) => { if (d) { setBrand(d.words); brandSaved.current = d.words; } }).catch(() => null);
+  }, []);
+
+  async function uploadLogo(f?: File | null) {
     if (!f) return;
-    if (!f.type.startsWith('video/') && !f.type.startsWith('audio/')) return setErr('Bitte wähle ein Video aus.');
-    if (f.size > MAX_UPLOAD_BYTES) return setErr('Die Datei ist größer als 2 GB.');
-    setFile(f);
+    setErr('');
+    setLogoBusy(true);
+    try {
+      const s = await fetch('/api/logo', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ size: f.size, type: f.type }) }).then((r) => r.json());
+      if (!s.signedUrl) throw new Error(s.error || 'Logo konnte nicht hochgeladen werden.');
+      await putFile(s.signedUrl, f, () => {});
+      const d = await fetch('/api/logo', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: s.path }) }).then((r) => r.json());
+      if (d.error) throw new Error(d.error);
+      setLogoUrl(d.url);
+      setUseLogo(true);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Logo konnte nicht hochgeladen werden.');
+    } finally {
+      setLogoBusy(false);
+    }
+  }
+
+  /** Namen & Marken speichern (einmal im Konto, gilt für alle Videos) */
+  async function saveBrand() {
+    const w = brand.trim();
+    if (w === brandSaved.current) return;
+    const r = await fetch('/api/marken', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ words: w }) }).catch(() => null);
+    if (r?.ok) brandSaved.current = w;
+  }
+
+  function pick(list?: FileList | File[] | null) {
+    setErr('');
+    const all = Array.from(list ?? []).filter((f) => !f.name.startsWith('.') && MEDIA(f));
+    if (!all.length) return setErr('Bitte wähle Videos (und gern passende Bilder) aus.');
+    if (!all.some((f) => f.type.startsWith('video/') || /\.(mp4|mov|m4v|mts)$/i.test(f.name))) return setErr('Es muss mindestens ein Video dabei sein.');
+    if (all.some((f) => f.size > MAX_UPLOAD_BYTES)) return setErr('Eine Datei ist größer als 4 GB – bitte als Google-Drive-Link einfügen.');
+    if (all.length > 300) return setErr('Bitte höchstens 300 Dateien auf einmal.');
+    setFiles(all);
   }
 
   async function start() {
     setErr('');
     if (cost > balance)
       return setErr(<>Dafür brauchst du {cost} Credits, du hast {balance}. <Link href="/konto#nachkauf">Credits nachkaufen →</Link></>);
+    if (useLogo && !logoUrl) return setErr('Bitte lade zuerst dein Logo hoch – oder nimm den Haken bei „Logo einbauen“ raus.');
+    await saveBrand();
     let sourcePath: string | undefined;
     let sourceName: string | undefined;
     setBusy(true);
     try {
-      if (tab === 'upload') {
+      let sourcePaths: string[] | undefined;
+      if (tab === 'upload' && files.length > 1) {
+        // mehrere Clips (Ordner) → gemeinsamer Stapel, Gesamtfortschritt über alle Bytes
+        const batch = crypto.randomUUID();
+        const total = files.reduce((a, f) => a + f.size, 0);
+        let done = 0;
+        sourcePaths = [];
+        setUp(0);
+        for (const f of files) {
+          const type = f.type || (/\.(jpe?g)$/i.test(f.name) ? 'image/jpeg' : /\.png$/i.test(f.name) ? 'image/png' : 'video/mp4');
+          const s = await fetch('/api/uploads/sign', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: f.name, size: f.size, type, batch }),
+          }).then((r) => r.json());
+          if (!s.signedUrl) throw new Error(s.error || `${f.name} konnte nicht hochgeladen werden.`);
+          await putFile(s.signedUrl, f, (p) => setUp(Math.round(((done + (f.size * p) / 100) / total) * 100)));
+          done += f.size;
+          sourcePaths.push(s.path);
+        }
+        sourceName = `${files.length} Dateien`;
+      } else if (tab === 'upload') {
         if (!file) throw new Error('Bitte wähle zuerst ein Video aus.');
         const s = await fetch('/api/uploads/sign', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -120,10 +214,10 @@ export default function Studio({ credits, initialJobs }: { credits: number; init
         sourceName = file.name;
       } else if (!/^https:\/\/(drive|docs)\.google\.com\//.test(drive.trim())) {
         throw new Error('Bitte füge einen Google-Drive-Link ein (Freigabe: „Jeder mit dem Link“).');
-      } else sourceName = 'Google Drive';
+      } else sourceName = /\/folders\//.test(drive) ? 'Google-Drive-Ordner' : 'Google Drive';
       const r = await fetch('/api/jobs', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sourceKind: tab, sourcePath, driveUrl: tab === 'drive' ? drive.trim() : undefined, sourceName, style, captionStyle: caption, captionColor: color, clips }),
+        body: JSON.stringify({ sourceKind: sourcePaths ? 'folder' : tab, sourcePath, sourcePaths, driveUrl: tab === 'drive' ? drive.trim() : undefined, sourceName, style, captionStyle: caption, captionColor: color, clips, useLogo, music }),
       });
       const d = await r.json();
       if (!r.ok) {
@@ -132,7 +226,7 @@ export default function Studio({ credits, initialJobs }: { credits: number; init
       }
       setBalance((b) => b - d.cost);
       router.refresh(); // Credit-Anzeige oben aktualisieren
-      setFile(null);
+      setFiles([]);
       setDrive('');
       await reload();
     } catch (e) {
@@ -175,17 +269,29 @@ export default function Studio({ credits, initialJobs }: { credits: number; init
             onClick={() => input.current?.click()}
             onDragOver={(e) => { e.preventDefault(); setOver(true); }}
             onDragLeave={() => setOver(false)}
-            onDrop={(e) => { e.preventDefault(); setOver(false); pick(e.dataTransfer.files[0]); }}
+            onDrop={async (e) => { e.preventDefault(); setOver(false); pick(await droppedFiles(e.dataTransfer)); }}
           >
-            <input ref={input} type="file" accept="video/*" hidden onChange={(e) => pick(e.target.files?.[0])} />
-            <b>{file ? `🎬 ${file.name}` : 'Video hierher ziehen oder klicken'}</b>
-            <small>{file ? `${(file.size / 1024 / 1024).toFixed(0)} MB` : 'MP4, MOV … bis 2 GB'}</small>
+            <input ref={input} type="file" accept="video/*,image/*" multiple hidden onChange={(e) => pick(e.target.files)} />
+            <b>{files.length > 1 ? `📂 ${files.length} Dateien` : file ? `🎬 ${file.name}` : 'Video – oder ganzen Ordner – hierher ziehen'}</b>
+            <small>
+              {files.length
+                ? `${(files.reduce((a, f) => a + f.size, 0) / 1024 / 1024).toFixed(0)} MB${files.length > 1 ? ` · ${files.filter((f) => f.type.startsWith('image/')).length} Bilder` : ''}`
+                : 'Ein Video oder mehrere Clips + Produktbilder – wir machen daraus EIN fertiges Video'}
+            </small>
+          </div>
+        ) : null}
+        {tab === 'upload' ? (
+          <div className="row" style={{ gap: 8, marginTop: -6 }}>
+            <button type="button" className="btn" style={{ padding: '6px 12px', fontSize: 13 }} onClick={() => input.current?.click()}>Dateien wählen</button>
+            <button type="button" className="btn" style={{ padding: '6px 12px', fontSize: 13 }} onClick={() => folderInput.current?.click()}>Ordner wählen</button>
+            <input ref={folderInput} type="file" hidden multiple onChange={(e) => pick(e.target.files)}
+              {...({ webkitdirectory: '', directory: '' } as Record<string, string>)} />
           </div>
         ) : (
           <label className="f">
-            Google-Drive-Link
-            <input className="inp" value={drive} onChange={(e) => setDrive(e.target.value)} placeholder="https://drive.google.com/file/d/…" />
-            <span className="note">In Drive: Rechtsklick → Freigeben → „Jeder mit dem Link“.</span>
+            Google-Drive-Link (Video oder ganzer Ordner)
+            <input className="inp" value={drive} onChange={(e) => setDrive(e.target.value)} placeholder="https://drive.google.com/drive/folders/…" />
+            <span className="note">In Drive: Rechtsklick → Freigeben → „Jeder mit dem Link“. Bei einem Ordner schneiden wir alle Clips und Bilder darin zu einem Video.</span>
           </label>
         )}
 
@@ -231,6 +337,38 @@ export default function Studio({ credits, initialJobs }: { credits: number; init
           ))}
         </div>
 
+        <div className="stack" style={{ gap: 10 }}>
+          <p className="f" style={{ marginBottom: -4 }}>Extras <span className="muted" style={{ fontWeight: 400 }}>(freiwillig)</span></p>
+          <label className="check">
+            <input type="checkbox" checked={useLogo} onChange={(e) => setUseLogo(e.target.checked)} />
+            <span>Mein Logo einbauen – oben links, schützt dein Video vor Kopieren</span>
+          </label>
+          {useLogo ? (
+            <div className="row" style={{ alignItems: 'center', gap: 12, paddingLeft: 28 }}>
+              {logoUrl ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={logoUrl} alt="Dein Logo" style={{ width: 48, height: 48, objectFit: 'contain', borderRadius: 8, background: 'rgba(255,255,255,.06)' }} />
+              ) : null}
+              <input ref={logoInput} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(e) => uploadLogo(e.target.files?.[0])} />
+              <button type="button" className="btn" style={{ padding: '7px 14px', fontSize: 14 }} disabled={logoBusy} onClick={() => logoInput.current?.click()}>
+                {logoBusy ? 'Lädt hoch …' : logoUrl ? 'Logo ändern' : 'Logo hochladen'}
+              </button>
+              <span className="note" style={{ margin: 0 }}>Am besten PNG mit transparentem Hintergrund.</span>
+            </div>
+          ) : null}
+          <label className="check">
+            <input type="checkbox" checked={music === 'auto'} onChange={(e) => setMusic(e.target.checked ? 'auto' : 'none')} />
+            <span>Lizenzfreie Hintergrundmusik einbauen – passend zum Video, wird automatisch leiser, wenn jemand spricht</span>
+          </label>
+          <label className="f" style={{ marginTop: 4 }}>
+            Namen &amp; Marken in deinen Videos <span className="muted" style={{ fontWeight: 400 }}>(für richtige Untertitel)</span>
+            <input className="inp" value={brand} maxLength={300} onChange={(e) => setBrand(e.target.value)} onBlur={saveBrand}
+              placeholder="z. B. Malo's, Corndogs, Smashburger, Mannheim" />
+            <span className="note">Wird in deinem Konto gespeichert und gilt für alle Videos.</span>
+          </label>
+          <p className="note" style={{ margin: 0 }}>Außerdem schlagen wir dir zu jedem fertigen Video 3 aktuelle Trend-Songs vor, die du beim Posten direkt in TikTok hinzufügen kannst.</p>
+        </div>
+
         <div className="prev-mobile"><CaptionPreview caption={caption} color={color} file={tab === 'upload' ? file : null} /></div>
 
         {up >= 0 ? <div><div className="bar"><i style={{ width: `${up}%` }} /></div><p className="note">Upload {up} %</p></div> : null}
@@ -263,8 +401,25 @@ export default function Studio({ credits, initialJobs }: { credits: number; init
                   <p className="m"><b>{Math.max(1, j.progress)} %</b> · {eta(j)}{j.stage ? <> · {j.stage}</> : null}</p>
                 </div>
               ) : null}
-              {j.status === 'queued' ? <p className="m" style={{ gridColumn: '1 / -1' }}>Startet gleich – die Schnitt-Maschine holt sich deinen Auftrag.</p> : null}
+              {j.status === 'queued' ? (
+                <p className="m" style={{ gridColumn: '1 / -1' }}>
+                  {online === false
+                    ? 'Die Schnitt-Maschine ist gerade kurz nicht erreichbar. Dein Auftrag startet automatisch, sobald sie wieder da ist – sonst bekommst du nach spätestens 10 Minuten deine Credits automatisch zurück.'
+                    : 'Startet gleich – die Schnitt-Maschine holt sich deinen Auftrag.'}
+                </p>
+              ) : null}
               {j.status === 'failed' ? <p className="m" style={{ gridColumn: '1 / -1' }}>{j.error || 'Unbekannter Fehler'} – Credits wurden erstattet.</p> : null}
+              {j.status === 'done' && j.outputs?.some((o) => o.songs?.length) ? (
+                <div className="m" style={{ gridColumn: '1 / -1' }}>
+                  <b>🎵 Song-Tipps für TikTok</b> (beim Posten unter „Sounds“ suchen und leise unter deinen Ton legen):
+                  <ul style={{ margin: '4px 0 0 18px' }}>
+                    {j.outputs.flatMap((o) => o.songs ?? []).slice(0, 3).map((x) => (
+                      <li key={x.song + x.artist}>{x.song} – {x.artist}{x.warum ? <span className="muted"> · {x.warum}</span> : null}</li>
+                    ))}
+                  </ul>
+                  <span className="note">Firmenkonten sehen in TikTok nur Songs aus der „Commercial Music Library“ – ist ein Tipp dort nicht zu finden, nimm einen ähnlichen von dort.</span>
+                </div>
+              ) : null}
               {j.status === 'done' ? <div className="dl"><button className="btn" style={{ padding: '7px 14px', fontSize: 14 }} onClick={() => download(j.id)}>⬇ Herunterladen</button></div> : null}
             </div>
           ))}

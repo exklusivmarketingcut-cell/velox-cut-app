@@ -13,21 +13,33 @@ Ablauf pro Auftrag:
 Ausgabe: Zeilen „PROGRESS n“, am Ende eine JSON-Zeile {"clips": [{"file", "title", "seconds"}]}.
 Umgebung: GEMINI_API_KEY (optional), VELOX_FONTS (Ordner mit TTF/OTF), VELOX_WHISPER (Modell).
 """
-import argparse, json, os, re, subprocess, sys, urllib.error, urllib.request
+import argparse, difflib, json, os, re, subprocess, sys, urllib.error, urllib.request
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--src", required=True)
 ap.add_argument("--out", required=True)
-ap.add_argument("--style", default="clean", choices=["clean", "viral"])
+ap.add_argument("--style", default="clean", choices=["clean", "viral", "premium"])
 ap.add_argument("--clips", type=int, default=1)
 ap.add_argument("--caption", default="rise")
 ap.add_argument("--color", default="#F6E27F")
 ap.add_argument("--keep-work", action="store_true", help="Zwischendateien behalten (Fehlersuche)")
+ap.add_argument("--no-review", action="store_true", help="ohne KI-Abnahme (nur für schnelle Tests)")
+ap.add_argument("--music", default="none", help="Hintergrundmusik: none | auto (KI wählt passend) | Name aus schnitt-maschine/musik")
+ap.add_argument("--logo", default="", help="Logo des Kunden (PNG mit Transparenz) – steht oben links im Video")
+ap.add_argument("--plan", default="", help="Schnittplan aus montage.py (mehrere Clips → ein Video): B-Rolls, Bilder, Clip-Grenzen")
+ap.add_argument("--words", default="", help="Namen & Marken des Kunden (z. B. „Malo's, Corndogs, Smashburger“) – richtige Schreibweise")
 A = ap.parse_args()
+PLAN = json.load(open(A.plan)) if A.plan and os.path.exists(A.plan) else None
+BRAND = re.sub(r"\s+", " ", A.words).strip()[:300]  # Namen/Marken, die im Video vorkommen (Kunde trägt sie im Studio ein)
+LOUD = A.style in ("viral", "premium")  # Viral und Premium: harte Zoom-Schnitte, Punches, Sounds, Hook-Titel
+PREM = A.style == "premium"             # Premium zusätzlich: 3D-Titel, Motion Graphics (Schlüsselwörter), Zähler, Kino-Look
 
-FONTS = os.environ.get("VELOX_FONTS", "/Volumes/PortableSSD/velox-worker/fonts")
+# Ordner „schnitt-maschine“ liegt neben „app“ (alles in einem Ordner auf der SSD)
+MASCHINE = os.environ.get("VELOX_MASCHINE", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "schnitt-maschine"))
+FONTS = os.environ.get("VELOX_FONTS", os.path.join(MASCHINE, "fonts"))
 WHISPER = os.environ.get("VELOX_WHISPER", "mlx-community/whisper-large-v3-turbo")
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
+STATS = {}  # Protokoll je Auftrag (jobs.jsonl) – früh anlegen, gemini() schreibt schon beim Story-Schritt hinein
 os.makedirs(A.out, exist_ok=True)
 
 
@@ -35,9 +47,13 @@ def progress(p):
     print(f"PROGRESS {int(p)}", flush=True)
 
 
+_T0 = __import__("time").time()
+
+
 def stage(text, p=None):
-    """Was gerade passiert – erscheint im Studio beim Auftrag."""
+    """Was gerade passiert – erscheint im Studio beim Auftrag. Zeitpunkt je Schritt landet im Protokoll (wo geht Zeit hin?)."""
     print(f"STAGE {text}", flush=True)
+    STATS.setdefault("timing", []).append((text[:28], round(__import__("time").time() - _T0)))
     if p is not None:
         progress(p)
 
@@ -73,16 +89,78 @@ W, H, FPS, DUR, HAS_AUDIO = probe(A.src)
 if not HAS_AUDIO:
     sys.exit("Das Video hat keine Tonspur – für den automatischen Schnitt brauchen wir Sprache.")
 log(f"Quelle {W}x{H} @ {FPS:.2f} fps, {DUR:.1f} s")
+
+
+def work_copy():
+    """Große Dateien (4K/3K, HEVC von DJI/iPhone, 50–100 Mbit/s) zuerst in eine schlanke Arbeitskopie umwandeln:
+    längste Seite 1920 px (= Endformat, kein Qualitätsverlust im Ergebnis), ca. 12 Mbit/s H.264, über den Grafikchip
+    des Macs (VideoToolbox). Alle weiteren Schritte laufen dann auf der kleinen Datei – der ganze Schnitt wird schneller."""
+    mbit = os.path.getsize(A.src) * 8 / max(DUR, 1.0) / 1e6
+    if max(W, H) <= 1920 and mbit <= 16:
+        return None
+    stage("Bereitet dein Video vor (große Datei wird verkleinert) …", 6)
+    out = os.path.join(A.out, "arbeitskopie.mp4")
+    common = ["-map", "0:v:0", "-map", "0:a:0?", "-dn", "-map_metadata", "-1",
+              "-vf", f"scale='if(gt(iw,ih),1920,-2)':'if(gt(iw,ih),-2,1920)',fps={min(FPS, 60):.3f}",
+              "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", out]
+    try:
+        run(["ffmpeg", "-v", "error", "-y", "-hwaccel", "videotoolbox", "-i", A.src,
+             "-c:v", "h264_videotoolbox", "-b:v", "12M", "-maxrate", "16M", "-bufsize", "24M", "-profile:v", "high", *common])
+    except RuntimeError:  # kein Grafikchip-Encoder verfügbar → Software (langsamer, gleiches Ergebnis)
+        run(["ffmpeg", "-v", "error", "-y", "-i", A.src, "-c:v", "libx264", "-preset", "veryfast", "-crf", "19",
+             "-maxrate", "16M", "-bufsize", "24M", *common])
+    before, after = os.path.getsize(A.src), os.path.getsize(out)
+    log(f"Arbeitskopie: {before / 1e6:.0f} MB ({mbit:.0f} Mbit/s, {W}x{H}) → {after / 1e6:.0f} MB")
+    STATS.update(work_copy_mb=[round(before / 1e6), round(after / 1e6)])
+    return out
+
+
+_wc = work_copy()
+if _wc:
+    A.src = _wc
+    W, H, FPS, DUR, HAS_AUDIO = probe(A.src)
 stage("Hört sich dein Video an (Sprache erkennen) …", 12)
 
 # ─────────────────────────────── 2. Transkript ───────────────────────────────
 wav = os.path.join(A.out, "audio.wav")
 run(["ffmpeg", "-v", "error", "-y", "-i", A.src, "-vn", "-ac", "1", "-ar", "16000", wav])
+# Spracherkennung auf dem Original-Ton: Tests (29.09.) zeigten, dass eine künstlich angehobene Spur mehr Wörter verhört
+# („Mansell“ statt „Mandeln“). Leise Stellen fängt stattdessen die Hörprobe am fertigen, ausgeglichenen Ton auf (align).
+wav_asr = wav
 
 import mlx_whisper  # noqa: E402  (erst hier laden – dauert)
 
-tr = mlx_whisper.transcribe(wav, path_or_hf_repo=WHISPER, word_timestamps=True, condition_on_previous_text=False,
-                            initial_prompt="Ähm, also, äh, ich wollte … ähm, ja. Genau.")
+
+def detect_lang():
+    """Sprache EINMAL für das ganze Video festlegen – aus drei Stellen (Anfang, Mitte, Ende), nicht nur den ersten 30 s
+    (die sind oft Musik oder Rauschen). Danach hört jede Nachprüfung in genau dieser Sprache, sonst tauchen in kurzen
+    Schnipseln englische Wörter auf („Thank you.“, „Cheering“). Deutsch gewinnt knappe Fälle (unser Markt)."""
+    try:
+        import mlx.core as mx
+        from mlx_whisper.audio import load_audio, log_mel_spectrogram, pad_or_trim, N_FRAMES, N_SAMPLES
+        from mlx_whisper.transcribe import ModelHolder
+        model = ModelHolder.get_model(WHISPER, mx.float16)
+        mel = log_mel_spectrogram(load_audio(wav_asr), n_mels=model.dims.n_mels, padding=N_SAMPLES)
+        total = max(1, mel.shape[-2] - N_FRAMES)
+        votes = {}
+        for f in (0.15, 0.5, 0.82):
+            f0 = int(max(0, min(total - N_FRAMES, total * f - N_FRAMES / 2)))
+            _, probs = model.detect_language(pad_or_trim(mel[f0:f0 + N_FRAMES], N_FRAMES, axis=-2).astype(mx.float16))
+            for k, v in probs.items():
+                votes[k] = votes.get(k, 0.0) + v / 3
+        best = max(votes, key=votes.get)
+        STATS["lang_votes"] = {k: round(v, 2) for k, v in sorted(votes.items(), key=lambda x: -x[1])[:3]}
+        return "de" if votes.get("de", 0) >= 0.3 else best
+    except Exception as ex:  # noqa: BLE001
+        log(f"Spracherkennung vorab nicht möglich ({ex}) – Deutsch")
+        return "de"
+
+
+LANG = detect_lang()
+# alle Nachprüfungen: gleiche Sprache, lauter Ton
+ASR = dict(path_or_hf_repo=WHISPER, word_timestamps=True, condition_on_previous_text=False, language=LANG)
+tr = mlx_whisper.transcribe(wav_asr, **ASR, hallucination_silence_threshold=2.0,
+                            initial_prompt=((BRAND + ". ") if BRAND else "") + ("Ähm, also, äh, ich wollte … ähm, ja. Genau." if LANG == "de" else ""))
 WORDS = []
 for seg in tr["segments"]:
     for w in seg.get("words", []):
@@ -91,9 +169,19 @@ for seg in tr["segments"]:
             WORDS.append({"t": t, "s": float(w["start"]), "e": float(w["end"])})
 if len(WORDS) < 3:
     sys.exit("Im Video wurde keine Sprache erkannt.")
+# Datum/Zahlen, die die Spracherkennung zerlegt („11.“ „05.“ → „11.05.“, „19“ „:30“ → „19:30“), wieder zusammenfügen
+_m = []
+for w in WORDS:
+    if _m and re.fullmatch(r"\d{1,2}\.?", _m[-1]["t"]) and (re.fullmatch(r"[.:]\d{2}\.?[,!?]?", w["t"]) or (
+            _m[-1]["t"].endswith(".") and re.fullmatch(r"\d{1,4}\.?[,!?]?", w["t"]))) \
+            and w["s"] - _m[-1]["e"] < 0.35:
+        _m[-1] = {**_m[-1], "t": _m[-1]["t"] + w["t"].lstrip("."), "e": w["e"]}
+    else:
+        _m.append(w)
+WORDS = _m
 for i, w in enumerate(WORDS):
     w["i"] = i
-log(f"{len(WORDS)} Wörter, Sprache {tr.get('language')}")
+log(f"{len(WORDS)} Wörter, Sprache {LANG} {STATS.get('lang_votes', '')}")
 stage("Versteht den Inhalt und sucht Anfang und Ende …", 35)
 
 # ─────────────────────────────── 3. Stille messen ───────────────────────────────
@@ -136,6 +224,71 @@ def measure_silence():
 NOISE_DB, SIL = measure_silence()
 log(f"Stille-Schwelle {NOISE_DB} dB, {len(SIL)} Pausen gefunden")
 
+
+def syllables(t):
+    return max(1, len(re.findall(r"[aeiouyäöü]+", t.lower())))
+
+
+def expected_len(t):
+    return 0.16 * syllables(t) + 0.12
+
+
+def speech_frac(a, b):
+    """Anteil 50-ms-Schritte zwischen a und b, in denen gesprochen wird (über der Stille-Schwelle)."""
+    i0, i1 = max(0, int(a / 0.05)), min(len(LV), int(b / 0.05))
+    return sum(1 for v in LV[i0:i1] if v >= NOISE_DB) / max(1, i1 - i0)
+
+
+def recover_swallowed():
+    """Whisper „verschluckt“ wiederholte Anläufe: aus „Wir sind 21 Jahre alt … wir sind 21 Jahre alt und …“ wird EIN Satz,
+    der zweite Anlauf steckt unsichtbar in einem 3 s langen „und“ oder in einer Lücke. Solche Stellen einzeln neu abhören
+    und die fehlenden Wörter einsetzen – sonst kann der Cutter den Fehlversuch gar nicht erkennen."""
+    spots = []
+    for k, w in enumerate(WORDS):
+        if w["e"] - w["s"] > expected_len(w["t"]) + 0.8 and speech_frac(w["s"], w["e"]) > 0.5:
+            spots.append((k, k, w["s"], w["e"]))
+        if k + 1 < len(WORDS):
+            g0, g1 = w["e"], WORDS[k + 1]["s"]
+            if g1 - g0 > 1.0 and speech_frac(g0, g1) > 0.5:
+                spots.append((k + 1, k, g0, g1))  # Lücke: nichts ersetzen, nur einfügen
+    if not spots:
+        return 0
+    snip, added = os.path.join(A.out, "recover.wav"), 0
+    for k0, k1, a, b in reversed(spots):  # von hinten, damit die Positionen stimmen
+        x0, x1 = max(0.0, a - 0.15), min(DUR, b + 0.15)
+        run(["ffmpeg", "-v", "error", "-y", "-ss", f"{x0:.3f}", "-to", f"{x1:.3f}", "-i", wav_asr, snip])
+        try:
+            r = mlx_whisper.transcribe(snip, **ASR, temperature=0.0)
+            ws = [x for sg in r["segments"] for x in sg.get("words", []) if x["word"].strip()]
+        except Exception:  # noqa: BLE001
+            continue
+        if len(ws) < 2 or _looks_hallucinated(ws):
+            continue
+        new = [{"t": x["word"].strip(), "s": x0 + x["start"], "e": x0 + x["end"]} for x in ws if x0 + x["end"] > a - 0.05]
+        if k1 >= k0:  # langes Wort ersetzen – nur wenn das Wort selbst wieder vorkommt (sonst eher Fehlhörer)
+            if len(new) < 2 or norm(WORDS[k0]["t"]) not in {norm(x["t"]) for x in new}:
+                continue
+            WORDS[k0:k1 + 1] = new
+            added += len(new) - 1
+        else:
+            if len(new) < 2:
+                continue
+            WORDS[k0:k0] = new
+            added += len(new)
+    for i, w in enumerate(WORDS):
+        w["i"] = i
+    return added
+
+
+def _looks_hallucinated(ws):
+    toks = [norm(w["word"]) for w in ws]
+    zero = sum(1 for w in ws if w["end"] - w["start"] <= 0.001)
+    if len(ws) > 30 or (len(ws) > 6 and zero > len(ws) * 0.3):
+        return True
+    return any(toks[i] and toks[i] == toks[i + 2] == toks[i + 4] for i in range(len(toks) - 4))
+
+
+
 # ─────────────────────────────── 4. Was fliegt raus? ───────────────────────────────
 def norm(s):
     return re.sub(r"[^\wäöüß]", "", s.lower())
@@ -175,19 +328,20 @@ def repeat_idx(words):
     return out
 
 
-def gemini(system, user, schema):
-    """Gemini (optional). None, wenn kein Schlüssel oder Fehler – dann gelten nur die Regeln."""
+def gemini(system, user, schema, parts=None, timeout=45, models=None):
+    """Gemini (optional). None, wenn kein Schlüssel oder Fehler – dann gelten nur die Regeln. parts: z. B. ein Video."""
     if not GEMINI_KEY:
         return None
-    body = json.dumps({"systemInstruction": {"parts": [{"text": system}]}, "contents": [{"role": "user", "parts": [{"text": user}]}],
+    body = json.dumps({"systemInstruction": {"parts": [{"text": system}]},
+                       "contents": [{"role": "user", "parts": (parts or []) + [{"text": user}]}],
                        "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json", "responseSchema": schema}}).encode()
     import time
-    for model in ("gemini-flash-latest", "gemini-3-flash-preview", "gemini-3.1-flash-lite", "gemini-flash-lite-latest"):
+    for model in models or ("gemini-flash-latest", "gemini-3-flash-preview", "gemini-3.1-flash-lite", "gemini-flash-lite-latest"):
         for attempt in range(3):  # bei Überlastung (503/429) kurz warten und erneut versuchen
             try:
                 req = urllib.request.Request(f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent", data=body,
                                              headers={"x-goog-api-key": GEMINI_KEY, "Content-Type": "application/json"})
-                with urllib.request.urlopen(req, timeout=60) as resp:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
                     d = json.loads(resp.read())
                 STATS["gemini_model"] = model
                 return json.loads("".join(p.get("text", "") for p in d["candidates"][0]["content"]["parts"]))
@@ -259,37 +413,209 @@ def rule_moments(words, n):
     return [{"start": a, "end": b, "title": ""} for _, a, b in picked] or [{"start": 0, "end": len(words) - 1, "title": ""}]
 
 
+CUTTER = (
+    "Du bist ein erfahrener persönlicher Cutter für Kurzvideos (TikTok, Reels, Shorts). Kunden laden KOMPLETTES Rohmaterial hoch: "
+    "Die Kamera läuft schon, bevor die Szene beginnt, und läuft danach weiter. Mittendrin versprechen sich Leute, brechen ab und "
+    "sagen denselben Satz einfach nochmal, ohne neu anzufangen; sie reden mit dem Kameramann oder sagen Dinge, die nicht zum Video "
+    "gehören. Der Zuschauer darf NIE merken, dass gedreht, abgesprochen oder wiederholt wurde – das fertige Video wirkt wie aus einem Guss. ")
 STORY_RULES = (
-    "Regeln für einen professionellen Kurzvideo-Schnitt: "
-    "1) Das Video beginnt erst, wenn die eigentliche Szene beginnt – z. B. wenn die Person die andere Person anspricht "
-    "oder wirklich zur Zuschauerin/zum Zuschauer spricht. Vorbereitungsgerede, Absprachen mit dem Kameramann und "
-    "Fehlversuche fliegen raus. Sagt jemand „nochmal von vorne“, „noch mal“, „neu“, „cut“ o. Ä., gilt nur der LETZTE Versuch. "
-    "2) Das Video endet, sobald der Inhalt abgeschlossen ist bzw. bevor die Aufmerksamkeit sinkt – spätestens nach dem "
-    "Abschied. Alles danach (z. B. „okay, super, passt?“ zum Kameramann, Umdrehen, Nachgespräch) fliegt raus. "
-    "3) Mittendrin raus: Sätze, die erkennbar an Kameramann/Team gerichtet sind, abgebrochene Anläufe, Wiederholungen. "
-    "4) Nie mitten im Satz beginnen oder enden. Inhaltlich Wichtiges bleibt immer drin.")
+    "Regeln: "
+    "1) START erst mit der eigentlichen Szene – wenn die Person die andere anspricht bzw. wirklich zum Zuschauer spricht. Alles davor "
+    "raus: Vorgespräch, Absprachen („nehmt ihr dann den?“, „bist du so weit?“, „läuft?“), Fehlstarts. Bei „nochmal von vorne“, "
+    "„noch mal“, „cut“ o. Ä. gilt nur der LETZTE Versuch. "
+    "2) ENDE, sobald der Inhalt abgeschlossen ist: nach der Auflösung/dem Gewinn plus höchstens EINEM abschließenden Satz. "
+    "Danksagungen und Verabschiedungs-Pingpong („Danke fürs Mitmachen“ – „Gerne“ – „Tschüss“ – „Tschüss“) raus, außer sie sind "
+    "selbst die Pointe; auch „Tschüss“, „Ciao“, „Danke dir“, „Schönen Abend noch“ am Ende raus – das Video endet hart auf der "
+    "Auflösung oder dem Aufruf („kommt vorbei“). Alles danach sowieso raus (Umdrehen zum Kameramann, „okay super, passt?“, Nachgespräch). "
+    "3) MITTENDRIN raus: abgebrochene oder verpatzte Anläufe, wenn der Satz danach nochmal (besser) gesagt wird – nur die letzte "
+    "vollständige Fassung bleibt; Sätze an Kameramann/Team; Bemerkungen, die nicht zum Thema gehören oder ohne Vorwissen keinen Sinn ergeben. "
+    "4) Test für jeden Satz: Würde ein Zuschauer ihn vermissen, oder wird ohne ihn etwas unverständlich? Wenn nein und er stört – raus. "
+    "Antworten und Reaktionen der anderen Person, Lacher und Pointen gehören zur Szene und bleiben. Inhaltlich Wichtiges bleibt immer. "
+    "5) Nie mitten im Satz beginnen oder enden. "
+    "6) LÄNGE: so kurz wie möglich bei vollem Inhalt. Straßen-Umfrage mit EINER Person/Runde (Herkunft/Hook → Probieren → "
+    "Bewertung → Preis raten + Auflösung): 15–25 Sekunden, das sind meist nur 25–35 % des Rohmaterials (so schneidet der Nutzer "
+    "– 18 von 18 Umfragen). Quiz mit mehreren Fragen, Vorstellung, Erklärung: 30–60 Sekunden, höchstens 90. Bei langem Rohmaterial die stärkste "
+    "zusammenhängende Geschichte behalten: Aufhänger (Frage/Aktion) → Hauptteil → AUFLÖSUNG (Ergebnis, Gewinner, Bewertung, "
+    "Reaktion). Nie vor der Auflösung aufhören (z. B. nicht bei „3, 2, 1, los!“ enden). Wiederholte oder schwächere Passagen "
+    "(z. B. dieselbe Frage an die dritte Person mit gleicher Antwort) dürfen raus. "
+    "7) TEMPO wie ein Profi-Cutter (gelernt aus den Schnitten des Nutzers, 117 s Rohmaterial → 51 s): Begrüßung höchstens ein "
+    "kurzer Satz, dann SOFORT der Aufhänger (Spielregeln, Frage, Versprechen) – Smalltalk und Erklärungen davor raus. "
+    "Rate- und Verhandlungsschleifen („70er? – höher – 80er? – bisschen mehr – 86? – höher – 87?“) auf die letzten 1–2 Tipps "
+    "plus Auflösung kürzen. Einzelne Bestätigungen/Füllsätze zwischen den Abschnitten („Okay.“, „Ja.“, „Dann,“, „Passt.“, "
+    "„Mach auf.“, „Okay.“ nach einer Antwort) raus, wenn sie nichts beitragen. Erklärungen von Spielregeln/Skalen („1 ist "
+    "schlecht, 10 ist gut“), Rückfragen („Was?“, „1 oder 10?“) und Mikrofon-/Technik-Sätze raus. Hilfen/Tipps des Moderators nur behalten, wenn die Antwort sonst unverständlich ist. "
+    "Die Kern-Schritte des Formats (bei Umfragen: Bewertung UND Preis raten + Auflösung) bleiben, wenn sie verständlich sind – "
+    "auch eine falsche Schätzung mit kurzer Auflösung („5 Euro? – Nein, tatsächlich 3,99“) ist Inhalt. Faustregel: Frage + "
+    "Antwort + Auflösung in höchstens ca. 3 Wortwechseln bzw. 8 Sekunden → bleibt. Ufert der Teil aus (mehr Wortwechsel, "
+    "Rückfragen, Missverständnis, Korrekturen, Abschweifen zu anderen Produkten), diesen Teil GANZ weglassen – eine kurze, "
+    "klare Geschichte ist besser als eine vollständige, verworrene. Ortsangabe/Aufruf am Ende („Weißt du, wo wir sind? – C1 8“, "
+    "„Kommt vorbei“) gehört zum Abschluss und bleibt.")
+STORY_EXAMPLES = (
+    "Beispiele (| trennt Sätze): "
+    "A) „Nehmt ihr dann den? | Ja. | Okay. | Hallo. | Hallo, ich hab gehört … | Nochmal von vorne. | Hallo! Wollt ihr einen "
+    "Kaiserschmarrn probieren? | Ja, bitte. …“ → Start bei „Hallo! Wollt ihr einen Kaiserschmarrn probieren?“. "
+    "B) „… Dankeschön, es hat uns gefreut. Tschüss! | Tschüss! | Okay super, passt? | Ja, passt.“ → Ende nach dem letzten „Tschüss!“. "
+    "C) „Heute zeige ich euch, wie man in fünf. | Warte. | Heute zeige ich euch, wie man in fünf Minuten Pizza macht.“ → die ersten "
+    "zwei Sätze raus. "
+    "D) „Das kostet nur zehn Euro, äh, nee, zwölf. | Das kostet nur zwölf Euro.“ → nur der zweite Satz bleibt. "
+    "E) Quiz: „In welchem Jahr ist die Mauer gefallen? | 19-hundert irgendwas? | Ich habe keine Ahnung. | Vielleicht so im 70er, "
+    "60er Bereich? | Bisschen mehr. | Also höher? | Höher, ja. | 80er Bereich? | Ja. | Vielleicht 86. | Bisschen höher. | 88. | 89. "
+    "| Richtig!“ → bleibt: Frage | „19-hundert irgendwas?“ | „88.“ | „89.“ | „Richtig!“. "
+    "F) Mehrfach-Take: „Hallo. | Wir sind ja hier am Paradeplatz. | Was? | Wir sind ja gerade hier am Paradeplatz. | Kommst du aus "
+    "Mannheim? | Ja.“ → bleibt: „Wir sind ja gerade hier am Paradeplatz. | Kommst du aus Mannheim? | Ja.“ "
+    "G) Ende: „Tatsächlich kostet er 1,99 Euro. | Wir freuen uns, wenn du vorbeikommst. | Okay, komm ich vorbei. | Tschüss! | "
+    "Ciao!“ → Ende nach „Okay, komm ich vorbei.“ "
+    "H) Regel-Erklärung: „Bewerte ihn von 1 bis 10. | Das ist gut, 1 oder 10? | 1 ist nicht so gut und 10 ist sehr gut. | Ganz "
+    "gut, gell? | 8.“ → bleibt: „Bewerte ihn von 1 bis 10.“ | „8.“ ")
 
 
 def gemini_story(words):
-    """Rohmaterial: KI bestimmt, wo die eigentliche Szene beginnt/endet und was nicht dazugehört."""
-    res = gemini(
-        "Du bist ein Profi-Editor für TikTok/Reels. Du bekommst das Transkript eines ungeschnittenen Videos, jedes Wort als "
-        "[Nummer|Sekunde]Wort. Bestimme den Teil, der als fertiges Video veröffentlicht wird. " + STORY_RULES +
-        " Antworte mit der ersten und letzten Wortnummer der Szene (inklusive) und Wortbereichen innerhalb, die raus sollen.",
-        " ".join(f"[{w['i']}|{w['s']:.1f}s]{w['t']}" for w in words),
+    """Rohmaterial: KI entscheidet Satz für Satz wie ein Cutter, was ins fertige Video gehört (Anfang, Ende, Mittendrin)."""
+    sents = sentences(words)
+    ask = lambda: gemini(
+        CUTTER + "Du bekommst das Transkript Satz für Satz als [Nummer|Sekunde] Text. " + STORY_RULES + " " + STORY_EXAMPLES +
+        "Bestimme zuerst das Format (z. B. „Straßen-Umfrage, eine Person“, „Quiz mit mehreren Fragen“, „Vorstellung“, "
+        "„Monolog“) und die ideale Länge des fertigen Videos in Sekunden (ziel_s). Antworte dann mit den Nummern ALLER Sätze, "
+        "die ins fertige Video gehören (in Reihenfolge), und für jeden entfernten Satz einen kurzen Grund.",
+        "\n".join(f"[{k}|{s[0]['s']:.1f}s] {' '.join(w['t'] for w in s)}" for k, s in enumerate(sents)),
         {"type": "object", "properties": {
-            "start": {"type": "integer"}, "end": {"type": "integer"},
-            "drop": {"type": "array", "items": {"type": "object", "properties": {"from": {"type": "integer"}, "to": {"type": "integer"}},
-                                                  "required": ["from", "to"]}},
-            "reason": {"type": "string"}}, "required": ["start", "end"]})
-    if not res or not (0 <= res.get("start", -1) <= res.get("end", -1) < len(words)):
+            "format": {"type": "string"}, "ziel_s": {"type": "integer"},
+            "keep": {"type": "array", "items": {"type": "integer"}},
+            "removed": {"type": "array", "items": {"type": "object", "properties": {
+                "n": {"type": "integer"}, "why": {"type": "string"}}, "required": ["n", "why"]}}},
+         "required": ["format", "ziel_s", "keep"]})
+    # Drei unabhängige Entscheidungen, ein Satz bleibt bei Mehrheit (Prüfstand 01.10.: einzelne Durchläufe schwankten
+    # bei derselben Umfrage zwischen 17 und 31 s) – parallel, kostet kaum Zeit
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(3) as ex:
+        runs = [r for r in ex.map(lambda _: ask(), range(3)) if r and r.get("keep")]
+    if not runs:
         return None
-    drop = set()
-    for d in res.get("drop") or []:
-        if 0 <= d["from"] <= d["to"] < len(words) and d["to"] - d["from"] < len(words) * 0.5:
-            drop.update(range(d["from"], d["to"] + 1))
-    log(f"Story (KI): Wort {res['start']}–{res['end']}, {len(drop)} Wörter mittendrin raus – {res.get('reason', '')[:160]}")
-    return {"start": res["start"], "end": res["end"], "title": "", "drop": drop}
+    votes = {}
+    for r in runs:
+        for k in {k for k in r["keep"] if isinstance(k, int) and 0 <= k < len(sents)}:
+            votes[k] = votes.get(k, 0) + 1
+    keep = sorted(k for k, v in votes.items() if 2 * v > len(runs))
+    if not keep:
+        return None
+    res = max(runs, key=lambda r: len(set(r["keep"]) & set(keep)))  # Begründungen aus dem Durchlauf, der der Mehrheit am nächsten ist
+    ziele = sorted(int(r.get("ziel_s") or 0) for r in runs if 8 <= int(r.get("ziel_s") or 0) <= 90)
+    ziel = ziele[len(ziele) // 2] if ziele else 45
+    span = lambda ks: sum(sents[k][-1]["e"] - sents[k][0]["s"] for k in ks)
+    kept_words = sum(len(sents[k]) for k in keep)
+    if span(keep) < 0.25 * span(range(len(sents))) and (span(keep) < 2.0 or kept_words < 4):  # Sicherung: KI wirft fast alles weg
+        log(f"Story (KI) verworfen: nur {span(keep):.1f} s von {span(range(len(sents))):.1f} s behalten")
+        return None
+    def est_len(ks):
+        ws = [w for k in ks for w in sents[k]]
+        tot = sum(w["e"] - w["s"] for w in ws)
+        for a, b in zip(ws, ws[1:]):
+            g = b["s"] - a["e"]
+            if g > 0:
+                tot += min(g, 2.0) if speech_frac(a["e"], b["s"]) > 0.3 else min(g, 0.2)  # Pausen bleiben nur als kurze Luft
+        return tot
+    STATS["story_format"] = {"format": (res.get("format") or "")[:60], "ziel_s": ziel, "laeufe": len(runs)}
+    goal = min(70, ziel)
+    if est_len(keep) / 1.1 > max(goal * 1.3, goal + 6):  # deutlich länger als das Format verträgt → gezielt straffen
+        res2 = gemini(
+            CUTTER + f"Die ausgewählte Szene ist ca. {est_len(keep):.0f} Sekunden lang – zu lang für dieses Format ({res.get('format') or 'Kurzvideo'}). "
+            f"Kürze sie auf ca. {goal} Sekunden: Behalte den Aufhänger am Anfang und die Auflösung am Ende (Ergebnis, Gewinner, Bewertung, "
+            "Preis, Ortsangabe/„kommt vorbei“) und die stärksten Momente dazwischen; streiche Wiederholungen, Nebensächliches, lange Erklärungen, "
+            "schwächere Antworten. Die Geschichte muss ohne die gestrichenen Sätze verständlich bleiben. Satz-Nummern der Sätze, "
+            "die bleiben, in Reihenfolge. Sätze als [Nummer|Dauer] Text.",
+            "\n".join(f"[{k}|{sents[k][-1]['e'] - sents[k][0]['s']:.1f}s] {' '.join(w['t'] for w in sents[k])}" for k in keep),
+            {"type": "object", "properties": {"keep": {"type": "array", "items": {"type": "integer"}}}, "required": ["keep"]})
+        k2 = sorted({k for k in (res2 or {}).get("keep") or [] if k in keep})
+        if k2 and min(12, goal * 0.6) <= est_len(k2) <= 90:
+            log(f"Story (KI) gestrafft: ca. {est_len(keep):.0f} s → {est_len(k2):.0f} s")
+            keep = k2
+    keep = drop_doubles(sents, keep)
+    drop = {w["i"] for k in range(keep[0], keep[-1] + 1) if k not in keep for w in sents[k]}
+    why = [f"{' '.join(w['t'] for w in sents[r['n']])[:50]} → {r['why'][:60]}"
+           for r in res.get("removed") or [] if isinstance(r.get("n"), int) and 0 <= r["n"] < len(sents)]
+    STATS["story"] = {"start": sents[keep[0]][0]["t"] + " …", "kept": len(keep), "of": len(sents), "removed": why[:20]}
+    log(f"Story (KI): Satz {keep[0]}–{keep[-1]} von {len(sents)}, {len(drop)} Wörter mittendrin raus")
+    for x in why[:12]:
+        log("  raus:", x)
+    return {"start": sents[keep[0]][0]["i"], "end": sents[keep[-1]][-1]["i"], "title": "", "drop": drop}
+
+
+def drop_doubles(sents, keep):
+    """Doppelt-Check (Prüfstand 03.10.: unsere Umfragen 14 % länger als die des Nutzers – meist wegen Doppeltem): dieselbe
+    Frage zweimal gestellt (auch anders formuliert), korrigierte Antworten („8. – 9.“), dieselbe Info nochmal. Nur die
+    LETZTE/beste Fassung bleibt. Zwei unabhängige KI-Durchläufe – raus fliegt nur, worin beide übereinstimmen."""
+    if len(keep) < 4:
+        return keep
+    ask = lambda: gemini(
+        CUTTER + "Diese Sätze sind schon für das fertige Video ausgewählt. Finde nur noch DOPPELTES: dieselbe Frage zweimal "
+        "gestellt (auch anders formuliert, z. B. „Was denkst du, was der kostet?“ … „Wie viel kostet der wohl?“), eine Antwort, "
+        "die gleich danach korrigiert oder wiederholt wird („8. – 9.“, „2 Euro? – Ja, 2 Euro.“), dieselbe Info zweimal. "
+        "Gib die Nummern der FRÜHEREN/schwächeren Fassungen zurück, die raus sollen – die letzte, vollständige Fassung bleibt. "
+        "Nichts anderes streichen; wenn nichts doppelt ist, leere Liste.",
+        "\n".join(f"[{k}] {' '.join(w['t'] for w in sents[k])}" for k in keep),
+        {"type": "object", "properties": {"raus": {"type": "array", "items": {"type": "integer"}}}, "required": ["raus"]})
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(2) as ex:
+        runs = [set((r or {}).get("raus") or []) for r in ex.map(lambda _: ask(), range(2))]
+    if len(runs) < 2:
+        return keep
+    raus = (runs[0] & runs[1]) & set(keep[:-1])  # nie den letzten Satz (Auflösung/Aufruf)
+    if not raus or len(raus) > 0.3 * len(keep):
+        return keep
+    STATS["doppelt"] = [" ".join(w["t"] for w in sents[k])[:50] for k in sorted(raus)]
+    log("Doppelt raus:", " | ".join(STATS["doppelt"]))
+    return [k for k in keep if k not in raus]
+
+
+# Sätze an Kameramann/Team: eindeutige Formulierungen (Satz bis 6 Wörter) bzw. kurze Einwürfe (bis 3 Wörter)
+CREW = re.compile(r"(\bpasst( das| es| so)?\s*\?|^passt[.!]?$|\bläuft('?s| es| die kamera)?\s*\?|nimmst du (schon )?auf|"
+                  r"(bist du|seid ihr) (so ?weit|bereit)|hast du('?s| es) (drauf|drin)|ist (das|es) drin|kamera läuft|"
+                  r"noch ?mal (bitte|von vorne)|von vorne|\baction\b|\bcut\b)", re.I)
+CREW_SHORT = re.compile(r"^(sorry|warte|wartet|moment|stopp?|nee warte|sekunde)\b", re.I)
+
+
+def retake_idx(words):
+    """Ohne KI (immer aktiv): Anläufe, die gleich danach nochmal gesagt werden – auch ohne „von vorne“ –
+    und kurze Sätze an den Kameramann → raus. Nur die letzte vollständige Fassung bleibt."""
+    sents = sentences(words)
+    toks = [[norm(w["t"]) for w in s if norm(w["t"]) and norm(w["t"]) not in FILLER] for s in sents]
+    text = [" ".join(w["t"] for w in s).strip() for s in sents]
+    crew = {k for k in range(len(sents)) if (len(toks[k]) <= 6 and CREW.search(text[k])) or
+            (len(toks[k]) <= 3 and CREW_SHORT.search(text[k]))}
+    out = {w["i"] for k in crew for w in sents[k]}
+    keep = set()  # die letzte, vollständige Fassung – darf von niemandem (auch nicht von der KI) entfernt werden
+    for a in range(len(sents)):
+        ta = toks[a]
+        if len(ta) < 3 or a in crew:
+            continue
+        for b in range(a + 1, min(len(sents), a + 4)):
+            tb = toks[b]
+            if sents[b][0]["s"] - sents[a][-1]["e"] > 15:
+                break
+            if len(tb) >= 3 and b not in crew:
+                sm = difflib.SequenceMatcher(None, ta, tb, autojunk=False)
+                covered = sum(m.size for m in sm.get_matching_blocks())
+                abandoned = len(ta) < len(tb) and covered >= 0.8 * len(ta) and ta[:2] == tb[:2]  # „wie man in fünf.“ → „wie man in fünf Minuten …“
+                same = sm.ratio() >= 0.85  # fast wortgleich nochmal gesagt
+                if abandoned or same:
+                    out.update(w["i"] for k in range(a, b) for w in sents[k])
+                    keep.update(w["i"] for w in sents[b])
+                    break
+            if b not in crew and len(tb) > 3:
+                break  # dazwischen echter Inhalt → keine Wiederholung (z. B. gleiche Frage an eine andere Person)
+    # Neustart innerhalb eines Satzes: „ich war gestern in der ich war gestern in der Stadt“ → erster Anlauf raus
+    tk, j = [norm(w["t"]) for w in words], 0
+    while j < len(words):
+        k = next((k for k in range(j + 1, min(len(words) - 3, j + 13)) if tk[j] and tk[j:j + 3] == tk[k:k + 3]
+                  and (k - j <= 7 or tk[j + 3] == tk[k + 3])
+                  and not any(SENT_END.search(w["t"]) for w in words[j:k])), None)
+        if k is None:
+            j += 1
+            continue
+        out.update(w["i"] for w in words[j:k])
+        keep.update(w["i"] for w in words[k:k + (k - j)])
+        j = k  # ab dem neuen Anlauf weitersuchen (nicht den neuen Anlauf selbst wegschneiden)
+    return out - keep, keep
 
 
 RETAKE = re.compile(r"(noch ?mal von vorne|von vorne|noch ?mal neu|neuer versuch|\bcut\b|ich fang (noch ?mal )?neu an)", re.I)
@@ -314,8 +640,71 @@ def rule_story(words):
     return {"start": start, "end": end, "title": "", "drop": set()}
 
 
-SHORT = DUR <= 150  # Rohmaterial → ein Clip aus dem Ganzen
-if SHORT:
+_n = recover_swallowed()
+if _n:
+    log(f"Nachgehört: {_n} verschluckte Wörter wiederhergestellt")
+    STATS["recovered"] = _n
+
+def gemini_proofread(words):
+    """KI-Lektorat: Die Spracherkennung verhört sich bei Straßenlärm („Schmarm“, „kommst du aus Mandel?“) und schreibt manchmal
+    alles klein ohne Satzzeichen. Die KI schreibt den Text als sauberen Fließtext (darin sind Sprachmodelle am zuverlässigsten),
+    die Software ordnet ihn Wort für Wort wieder zu (gleiche Wörter → Schreibweise/Satzzeichen übernehmen, 1:1 ersetzte Wörter
+    → Korrektur übernehmen). Unverständlicher Kauderwelsch bekommt KEINEN Untertitel (lieber keiner als ein falscher)."""
+    import difflib
+    fixed = unclear = 0
+    for c0 in range(0, len(words), 150):
+        chunk = words[c0:c0 + 150]
+        res = gemini(
+            "Du bist Lektor:in für Untertitel deutscher Kurzvideos (Straßeninterviews, Restaurants, Food, Monologe). Unten steht ein "
+            "automatisches Transkript (evtl. kleingeschrieben, ohne Satzzeichen, teils verhört). Schreibe es als sauberen "
+            "Untertiteltext: korrekte Rechtschreibung, Groß-/Kleinschreibung, Satzzeichen; offensichtlich verhörte Wörter und "
+            "verstümmelte Namen aus dem Zusammenhang korrigieren (z. B. „Schmarm“ → „Schmarrn“ an einem Kaiserschmarrn-Stand). "
+            "Umgangssprache/Dialekt bleibt. Wörter NICHT umstellen, nichts weglassen, nichts hinzufügen. Zusätzlich: Liste der "
+            "Wortfolgen aus dem ORIGINAL, die sinnloser Kauderwelsch sind und sich nicht sicher korrigieren lassen." +
+            (f" Diese Namen/Marken kommen im Video vor – verhörte Varianten genau so schreiben: {BRAND}." if BRAND else ""),
+            " ".join(w["t"] for w in chunk),
+            {"type": "object", "properties": {
+                "text": {"type": "string"},
+                "unclear": {"type": "array", "items": {"type": "string"}}}, "required": ["text"]})
+        if not res or not (res.get("text") or "").strip():
+            continue
+        new = res["text"].split()
+        sm = difflib.SequenceMatcher(a=[norm(w["t"]) for w in chunk], b=[norm(t) for t in new], autojunk=False)
+        for tag, i1, i2, j1, j2 in sm.get_opcodes():
+            if tag == "equal" or (tag == "replace" and i2 - i1 == j2 - j1):
+                for d in range(i2 - i1):
+                    w, t = chunk[i1 + d], new[j1 + d]
+                    if t != w["t"]:
+                        w["t"] = t
+                        fixed += 1
+            elif tag == "replace" and i2 - i1 == 2 and j2 - j1 == 1:  # zusammengeschrieben („weiter empfehlen“ → „weiterempfehlen“)
+                t = new[j1]
+                a0, a1 = chunk[i1]["t"], chunk[i1 + 1]["t"]
+                if norm(a0 + a1) == norm(t):  # Schreibweise vom Original, Satzzeichen/Großschreibung von der Korrektur
+                    head = a0.lower() if t[:1].islower() else a0[:1].upper() + a0[1:].lower()
+                    tail = re.search(r"[.,!?;:…]+$", t)
+                    chunk[i1]["t"], chunk[i1 + 1]["t"] = head, a1.lower() + (tail.group(0) if tail else "")
+                    fixed += 2
+        toks = [norm(w["t"]) for w in chunk]
+        for ph in res.get("unclear") or []:
+            pn = [norm(x) for x in str(ph).split() if norm(x)]
+            for k in range(len(toks) - len(pn) + 1):
+                if pn and toks[k:k + len(pn)] == pn:
+                    for w in chunk[k:k + len(pn)]:
+                        if not w.get("unclear"):
+                            w["unclear"] = True
+                            unclear += 1
+    if fixed or unclear:
+        log(f"Lektorat (KI): {fixed} Wörter korrigiert, {unclear} unverständliche ohne Untertitel")
+    STATS.update(proofread_fixed=fixed, proofread_unclear=unclear)
+
+
+gemini_proofread(WORDS)
+
+SHORT = DUR <= 300  # Rohmaterial bis 5 Min. = eine Szene → ein Clip, der die ganze Geschichte erzählt (inkl. Auflösung)
+if PLAN:  # mehrere Clips: die Auswahl der Sätze hat montage.py schon getroffen → alles nehmen, nur noch sauber schneiden
+    MOMENTS = [{"start": 0, "end": len(WORDS) - 1, "title": PLAN.get("titel") or "", "drop": set()}]
+elif SHORT:
     MOMENTS = [gemini_story(WORDS) or rule_story(WORDS)]
 else:
     MOMENTS = [m for m in (gemini_moments(WORDS, A.clips) or []) if 0 <= m["start"] <= m["end"] < len(WORDS)][:A.clips]
@@ -323,40 +712,40 @@ else:
 stage("Schneidet Pausen, Füllwörter und Versprecher raus …", 45)
 
 
-STATS = {}
+def word_gaps():
+    """Pausen zwischen zwei Wörtern, die zwar nicht still sind (Straße, Wind, Musik), aber deutlich leiser als die Stimmen
+    davor/danach (≥ 6 dB) – der Nutzer schneidet auch dort hart zusammen (Median 0,08 s Luft an Schnitten)."""
+    lv = lambda a, b: LV[max(0, int(a / 0.05)):max(int(a / 0.05) + 1, int(b / 0.05))]
+    out = []
+    for a, b in zip(WORDS, WORDS[1:]):
+        g0, g1 = a["e"] + 0.03, b["s"] - 0.03
+        if g1 - g0 < 0.3 or not LV:
+            continue
+        gap, voice = lv(g0, g1), lv(a["s"], a["e"]) + lv(b["s"], b["e"])
+        if gap and voice and sorted(gap)[len(gap) // 2] <= sorted(voice)[len(voice) // 2] - 6.0:
+            out.append((g0, g1))
+    return out
+
+
+GAPS = word_gaps()
+log(f"Leise Stellen zwischen Wörtern: {len(GAPS)} ({sum(b - a for a, b in GAPS):.1f} s)")
+
 # Luft, die an jeder geschnittenen Pause stehen bleibt (je Seite) – Clean natürlich, Viral knackiger
-PAUSE_SIDE = 0.06 if A.style == "viral" else 0.1
-
-
-def syllables(t):
-    return max(1, len(re.findall(r"[aeiouyäöü]+", t.lower())))
-
-
-def expected_len(t):
-    return 0.16 * syllables(t) + 0.12
+PAUSE_SIDE = 0.06 if LOUD else 0.1
 
 
 def _clip_wav(a, b, path):
-    run(["ffmpeg", "-v", "error", "-y", "-ss", f"{max(0.0, a):.3f}", "-to", f"{b:.3f}", "-i", wav, path])
-
-
-def _looks_hallucinated(ws):
-    toks = [norm(w["word"]) for w in ws]
-    zero = sum(1 for w in ws if w["end"] - w["start"] <= 0.001)
-    if len(ws) > 30 or (len(ws) > 6 and zero > len(ws) * 0.3):
-        return True
-    return any(toks[i] and toks[i] == toks[i + 2] == toks[i + 4] for i in range(len(toks) - 4))
+    run(["ffmpeg", "-v", "error", "-y", "-ss", f"{max(0.0, a):.3f}", "-to", f"{b:.3f}", "-i", wav_asr, path])
 
 
 def cut_score(w, a, b):
     """Stelle (mit Kontext) ohne [a, b] neu abhören. 0 = Wort nicht mehr erkennbar, sonst Erkennungs-Sicherheit (0..1)."""
     x0, x1 = max(0.0, w["s"] - 0.8), min(DUR, w["e"] + 0.8)
     tmp = os.path.join(A.out, "check.wav")
-    run(["ffmpeg", "-v", "error", "-y", "-i", wav, "-af",
+    run(["ffmpeg", "-v", "error", "-y", "-i", wav_asr, "-af",
          f"aselect='between(t,{x0:.3f},{a:.3f})+between(t,{b:.3f},{x1:.3f})',asetpts=N/SR/TB", tmp])
     try:
-        r = mlx_whisper.transcribe(tmp, path_or_hf_repo=WHISPER, word_timestamps=True, temperature=0.0,
-                                   condition_on_previous_text=False)
+        r = mlx_whisper.transcribe(tmp, **ASR, temperature=0.0)
     except Exception:  # noqa: BLE001
         return 0.0
     target = norm(w["t"])
@@ -381,8 +770,7 @@ def hidden_cuts(words):
         a, b = max(0.0, w["s"] - 1.2), min(DUR, w["e"] + 1.2)
         _clip_wav(a, b, snip)
         try:
-            r = mlx_whisper.transcribe(snip, path_or_hf_repo=WHISPER, word_timestamps=True, temperature=0.0,
-                                       condition_on_previous_text=False, initial_prompt="Äh, ähm, also.")
+            r = mlx_whisper.transcribe(snip, **ASR, temperature=0.0, initial_prompt="Äh, ähm, also." if LANG == "de" else None)
             ws = [x for sg in r["segments"] for x in sg.get("words", [])]
         except Exception:  # noqa: BLE001
             ws = []
@@ -434,20 +822,23 @@ def subtract(ranges, cuts):
 def keep_ranges(words, safe=False, extra_drop=frozenset()):
     """Zeitbereiche, die bleiben: ohne Füllwörter/Wiederholungen, Stille raus, Schnitte nur zwischen Wörtern."""
     fil, rep, gem = filler_idx(words), repeat_idx(words), gemini_cuts(words)
-    drop = fil | rep | gem | set(extra_drop)
-    STATS.update(filler=len(fil), repeats=len(rep), gemini=len(gem), gemini_on=bool(GEMINI_KEY),
+    ret, final = retake_idx(words)
+    drop = (fil | rep | gem | ret | set(extra_drop)) - (final - fil)  # letzte Fassung einer Wiederholung bleibt immer
+    STATS.update(filler=len(fil), repeats=len(rep), gemini=len(gem), retakes=len(ret), gemini_on=bool(GEMINI_KEY),
                  removed=[w["t"] for w in words if w["i"] in drop][:80])
     kept = [w for w in words if w["i"] not in drop]
     PAD_IN, PAD_OUT, MAX_GAP = (0.08, 0.2, 0.2) if safe else (0.05, 0.1, 0.14)
     ranges = []
     for w in kept:
         tail = PAD_OUT + (0.08 if SENT_END.search(w["t"]) or w["t"].endswith(",") else 0)  # Satzende darf ausklingen
+        if w is kept[-1]:  # letztes Wort des Videos: Whisper setzt das Ende oft zu früh („Capri-Son-“) – lieber kurz ausklingen
+            tail = max(tail, 0.45)
         s, e = max(0.0, w["s"] - PAD_IN), min(DUR, w["e"] + tail)
         need = min(w["e"] - w["s"], expected_len(w["t"]))  # jedes Wort behält mindestens seine normale Länge
         for a, b in ([] if safe else SIL):  # Whisper dehnt Wörter gern über Pausen – Stille am Rand abschneiden
             if a <= s + 0.04 < b < e:
                 s = min(b - PAD_IN, w["e"] - need - PAD_IN)
-            if s < a < e - 0.04 <= b:
+            if s < a < e - 0.04 <= b and w is not kept[-1]:
                 e = max(a + tail, w["s"] + need + tail)
         if e - s < 0.08:
             continue
@@ -475,7 +866,7 @@ def keep_ranges(words, safe=False, extra_drop=frozenset()):
     for k, (s, e) in enumerate(ranges):
         if filled:
             gap_a, gap_b = filled[-1][1], s
-            cuts_in_gap = sorted([(max(a, gap_a), min(b, gap_b)) for a, b in SIL + dropped if b > gap_a and a < gap_b])
+            cuts_in_gap = sorted([(max(a, gap_a), min(b, gap_b)) for a, b in SIL + GAPS + dropped if b > gap_a and a < gap_b])
             pos, keep_parts = gap_a, []
             for a, b in cuts_in_gap:
                 if b - a < 2 * PAUSE_SIDE + 0.12:  # kurze Pause: natürlich lassen, kein Mini-Schnitt
@@ -510,11 +901,26 @@ def keep_ranges(words, safe=False, extra_drop=frozenset()):
     out = [r for r in out if r[1] - r[0] > 0.08]
     if not safe:
         out = subtract(out, hidden_cuts(kept))
+    # Lange Strecken ohne Worte (Essen, Jubel, Warten, Musik): ein Profi zeigt davon ~2 s und springt weiter.
+    # Anfang (0,8 s) und Ende (0,5 s) der Strecke bleiben – so bleibt die Handlung sichtbar (Nutzer zeigt Kauen kaum).
+    # Unverständliches Gemurmel (Kauen, Nuscheln – ohne Untertitel) zählt dabei wie Stille: sonst bleiben 10 s „mhm“ stehen
+    clear = [w for w in kept if not w.get("unclear")]
+    long_gaps = [(a["e"] + 0.8, b["s"] - 0.5) for a, b in zip(clear, clear[1:]) if b["s"] - a["e"] > 2.4]
+    if long_gaps:
+        out = [r for r in subtract(out, long_gaps) if r[1] - r[0] > 0.08]
+        kept = [w for w in kept if not any(a <= w["s"] and w["e"] <= b for a, b in long_gaps)]  # weggeraffte Wörter
+        STATS["long_gaps_cut_s"] = round(sum(y - x for x, y in long_gaps), 1)
+    for a, b in out:  # Diagnose: lange Abschnitte mit wenig Text (Pausen, die nicht gerafft wurden)
+        inside = [w for w in kept if a <= w["s"] < b]
+        if b - a > 8:
+            log(f"Diagnose: {a:.1f}–{b:.1f} s, {len(inside)} Wörter: " +
+                " ".join(f"{w['t']}{'?' if w.get('unclear') else ''}@{w['s']:.1f}" for w in inside)[:900])
     return out, kept
 
 
 # ─────────────────────────────── 5. Bildausschnitt (Gesicht) ───────────────────────────────
 import cv2  # noqa: E402
+import numpy as np  # noqa: E402
 
 CAPV = cv2.VideoCapture(A.src)
 FACE = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
@@ -562,6 +968,8 @@ elif LUMA < 85:
     GRADE = "eq=gamma=1.2:contrast=1.05:saturation=1.1"
 else:
     GRADE = "eq=contrast=1.03:saturation=1.07"
+if PREM:  # Kino-Look: etwas mehr Kontrast, weiche Vignette, feine Körnung
+    GRADE += ",eq=contrast=1.04,vignette=angle=PI/5,noise=alls=3:allf=t"
 log(f"Helligkeit {LUMA:.0f} → {GRADE}")
 
 
@@ -594,38 +1002,298 @@ def med(v):
     return v[len(v) // 2]
 
 
-def plan_crops(ranges):
-    """Bildausschnitt je Abschnitt. Clean: ruhig (fester Ausschnitt, Zoom-Wechsel nur bei einer Person in Nahaufnahme).
-    Viral: Zoom-Punches. Gruppen/Totalen: nie springen."""
-    viral = A.style == "viral"
-    infos = [face_info(s, e) for s, e in ranges]
+_FACE_CACHE = {}
+
+
+def plan_crops(ranges, zs=1.0, shift=None, pad=None):
+    """Bildausschnitt je Abschnitt. Clean: ruhig – gleicher Ausschnitt, kleine Schnitte werden weich überblendet; nur bei
+    einem großen Zeitsprung (Pose ändert sich deutlich) ein leichter Zoom-Wechsel, damit der Schnitt gewollt wirkt.
+    Viral: Zoom-Punches. Gruppen/Totalen: nie springen. zs = Zusatz-Zoom für die Stabilisierung (Rand zum Ausgleichen).
+    shift = mittlere Stabilisierungs-Verschiebung je Abschnitt (Quell-Pixel): Gesichter werden in „ruhigen“ Koordinaten
+    geplant – sonst würde der Ausschnitt dem Kamerawackeln UND der Stabilisierung folgen (doppelt, Ruckler am Schnitt)."""
+    viral = LOUD
+    infos = []
+    for k, (s, e) in enumerate(ranges):
+        if (s, e) not in _FACE_CACHE:
+            _FACE_CACHE[(s, e)] = face_info(s, e)
+        i = _FACE_CACHE[(s, e)]
+        if i and shift:
+            mx, my = shift[k][0] / W, shift[k][1] / H
+            i = {"c": (i["c"][0] - mx, i["c"][1] - my, i["c"][2]), "n": i["n"],
+                 "boxes": [(bx - mx, by - my, bh) for bx, by, bh in i["boxes"]]}
+        infos.append(i)
     found = [i for i in infos if i]
     closeup = bool(found) and sum(1 for i in found if i["n"] == 1 and i["c"][2] > 0.12) >= 0.6 * len(found)
     base = (med([i["c"][0] for i in found]), med([i["c"][1] for i in found]), med([i["c"][2] for i in found])) if found else (0.5, 0.4, 0.0)
     moving = bool(found) and max(i["c"][0] for i in found) - min(i["c"][0] for i in found) > 0.25
     STATS.update(closeup=closeup, faces=round(med([i["n"] for i in found]), 1) if found else 0)
     FACES_OUT.clear()
-    crops, prev = [], None
+    crops, prev, zc = [], None, 1.0
     for k, (s, e) in enumerate(ranges):
-        jump = k > 0 and s - ranges[k - 1][1] > 0.25
+        gap = s - ranges[k - 1][1] if k else 0.0
         if viral:
-            zoom = [1.0, 1.16, 1.06, 1.22][k % 4] if closeup else [1.0, 1.08][k % 2]
+            # Schnitt-Zooms etwas dezenter als früher – die großen Punches sitzen jetzt gezielt auf den Pointen (zoom_punches)
+            zoom = [1.0, 1.1, 1.04, 1.14][k % 4] if closeup else [1.0, 1.06][k % 2]
         else:
-            zoom = 1.06 if closeup and jump and k % 2 else 1.0
+            if closeup and gap >= BIG_JUMP:
+                zc = 1.07 if zc == 1.0 else 1.0
+            zoom = zc
+        cw, ch = BW / (zoom * zs), BH / (zoom * zs)
         c = base
-        if moving and infos[k]:  # Person bewegt sich stark → folgen, aber geglättet
-            c = infos[k]["c"] if prev is None else tuple(0.6 * a + 0.4 * b for a, b in zip(infos[k]["c"], prev))
+        if moving and infos[k]:
+            # Person bewegt sich: Ausschnitt bleibt stehen, solange das Gesicht bequem im Bild ist (kein Nachruckeln an
+            # jedem Schnitt); erst wenn es aus der Mitte wandert, wird am Schnitt neu ausgerichtet
+            c = infos[k]["c"]
+            if prev is not None:
+                if abs(c[0] - prev[0]) * W < 0.2 * cw and abs(c[1] - prev[1]) * H < 0.1 * ch:
+                    c = prev
+                else:
+                    c = tuple(0.8 * a + 0.2 * b for a, b in zip(c, prev))
         prev = c
-        cw, ch = BW / zoom, BH / zoom
-        x = min(max(c[0] * W - cw / 2, 0), W - cw)
-        y = min(max(c[1] * H - ch * 0.36, 0), H - ch)
+        # Rand für die Stabilisierung freihalten (Ausschnitt nie ganz an den Bildrand – sonst kann dort nichts ausgeglichen werden)
+        px, py = (min(pad[0], (W - cw) / 2), min(pad[1], (H - ch) / 2)) if pad else (0.0, 0.0)
+        x = min(max(c[0] * W - cw / 2, px), W - cw - px)
+        y = min(max(c[1] * H - ch * 0.36, py), H - ch - py)
         for bx, by, bh in (infos[k]["boxes"] if infos[k] else []):
             cy, fh = (by * H - y) / ch * 1920, bh * H / ch * 1920
             if 0 < cy < 1920:
-                FACES_OUT.append((cy - fh * 0.75, cy + fh * 0.85))
-        ev = lambda v: int(v) // 2 * 2
-        crops.append(f"crop={ev(cw)}:{ev(ch)}:{ev(x)}:{ev(y)},scale=1080:1920:flags=lanczos,setsar=1,{GRADE}")
+                FACES_OUT.append((cy - fh * 0.75, cy + fh * 0.85, (bx * W - x) / cw * 1080))  # oben, unten, Mitte x
+        crops.append({"w": int(cw) // 2 * 2, "h": int(ch) // 2 * 2, "x": int(x) // 2 * 2, "y": int(y) // 2 * 2,
+                      "fx": x, "fy": y, "fw": cw, "fh": ch, "zoom": zoom, "c": c})
     return crops
+
+
+# ─────────────────────────────── 5b. Bildstabilisierung ───────────────────────────────
+# Wie „Stabilisieren“ in CapCut/Premiere, aber über Schnitte hinweg: Die Kamerabahn (Verschiebung + Drehung des
+# HINTERGRUNDS) wird für den fertigen Clip am Stück berechnet und stark geglättet. Das Bild folgt nur der ruhigen Bahn –
+# Handwackeln, leichtes Kippen und der Sprung des Hintergrunds an Jump-Cuts (Kamera ist in der weggeschnittenen Zeit
+# verrutscht) verschwinden. Alles subpixel-genau (kein Stufen-Ruckeln wie bei ganzzahligem Zuschneiden).
+STAB_RATE = min(30.0, FPS)
+STAB_SIGMA = 1.0 if LOUD else 1.4  # Glättung (s): Clean fast wie vom Stativ, Viral/Premium etwas lebendiger
+STAB_ZOOM_MAX = 1.10               # höchstens 10 % Zusatz-Zoom für den Ausgleichsrand (CapCut „empfohlen“ ≈ 1,1)
+TRACK_W = 320
+
+
+def _bg_mask(g):
+    """Gesichter und Körper ausblenden – verfolgt wird nur der Hintergrund (sonst würde Bewegung „wegstabilisiert“, z. B.
+    ein gemustertes Hemd). Gesichter auf einem größeren Bild suchen; wird keins gefunden, die Bildmitte ausblenden
+    (dort steht fast immer die Person)."""
+    sh, sw = g.shape
+    mask = np.full(g.shape, 255, np.uint8)
+    big = cv2.resize(g, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_LINEAR)
+    faces = FACE.detectMultiScale(big, 1.1, 4, minSize=(int(sw * .07),) * 2)
+    for fx, fy, fw, fh in faces:
+        fx, fy, fw, fh = fx / 2, fy / 2, fw / 2, fh / 2
+        cv2.rectangle(mask, (int(fx - 1.8 * fw), int(fy - 0.9 * fh)), (int(fx + 2.8 * fw), sh), 0, -1)
+    if not len(faces):
+        cv2.rectangle(mask, (int(sw * 0.22), int(sh * 0.12)), (int(sw * 0.78), sh), 0, -1)
+    return mask
+
+
+def _motion(a, b, mask, far=False):
+    """Bewegung des Hintergrunds von Bild a nach b: (dx, dy der Bildmitte in Quell-Pixeln, Drehung in Rad) oder None."""
+    p0 = cv2.goodFeaturesToTrack(a, 250, 0.005, 6, mask=mask)
+    if p0 is None or len(p0) < 15:
+        return None
+    win, lvl = ((31, 31), 4) if far else ((21, 21), 3)
+    p1, st, _ = cv2.calcOpticalFlowPyrLK(a, b, p0, None, winSize=win, maxLevel=lvl)
+    ok = st.ravel() == 1
+    if ok.sum() < 15:
+        return None
+    m, inl = cv2.estimateAffinePartial2D(p0[ok], p1[ok], method=cv2.RANSAC, ransacReprojThreshold=0.8 if not far else 1.5)
+    if m is None or inl is None or inl.sum() < (25 if far else 12) or (far and inl.sum() < 0.4 * ok.sum()):
+        return None
+    sh, sw = a.shape
+    ang = float(np.arctan2(m[1, 0], m[0, 0]))
+    cx, cy = sw / 2, sh / 2
+    dx = m[0, 0] * cx + m[0, 1] * cy + m[0, 2] - cx
+    dy = m[1, 0] * cx + m[1, 1] * cy + m[1, 2] - cy
+    if abs(ang) > (0.05 if far else 0.02):
+        return None
+    return dx * W / sw, dy * W / sw, ang
+
+
+def _track(t0, t1):
+    """Kamerabahn zwischen t0 und t1 (STAB_RATE Bilder/s): kumuliert (x, y, Winkel) – Hintergrund, Personen ausgeblendet."""
+    SW = TRACK_W
+    SH = int(H * SW / W) // 2 * 2
+    proc = subprocess.Popen(["ffmpeg", "-v", "error", "-ss", f"{t0:.3f}", "-to", f"{t1:.3f}", "-i", A.src, "-vf",
+                             f"fps={STAB_RATE:.3f},scale={SW}:{SH},format=gray", "-f", "rawvideo", "-"], stdout=subprocess.PIPE)
+    prev, mask, path, n = None, None, [], 0
+    cur = np.zeros(3)
+    while True:
+        buf = proc.stdout.read(SW * SH)
+        if len(buf) < SW * SH:
+            break
+        g = np.frombuffer(buf, np.uint8).reshape(SH, SW)
+        if n % 10 == 0:
+            mask = _bg_mask(g)
+        n += 1
+        if prev is not None:
+            d = _motion(prev, g, mask)
+            if d is not None:
+                cur = cur + d
+        path.append(cur.copy())
+        prev = g
+    proc.wait()
+    return np.array(path, dtype=float).reshape(-1, 3)
+
+
+def _small(t):
+    CAPV.set(cv2.CAP_PROP_POS_MSEC, max(0.0, t) * 1000)
+    ok, fr = CAPV.read()
+    if not ok:
+        return None
+    g = cv2.cvtColor(fr, cv2.COLOR_BGR2GRAY)
+    return cv2.resize(g, (TRACK_W, int(H * TRACK_W / W) // 2 * 2), interpolation=cv2.INTER_AREA)
+
+
+def _gauss(a, sig):
+    """Gauß-Glättung entlang der Zeit."""
+    r = max(1, int(3 * sig))
+    ker = np.exp(-0.5 * (np.arange(-r, r + 1) / max(sig, 1e-3)) ** 2)
+    ker /= ker.sum()
+    # Ränder punktgespiegelt fortsetzen: eine gewollte Kamerafahrt am Anfang/Ende bleibt erhalten (kein Nachziehen)
+    return np.stack([np.convolve(np.pad(a[:, i], r, mode="reflect", reflect_type="odd"), ker, "valid")
+                     for i in range(a.shape[1])], 1)
+
+
+SPEED = [1.0]  # Abspieltempo des fertigen Clips (1,0 = Original)
+
+
+def olen(s, e):
+    """Länge eines Abschnitts im FERTIGEN Clip (Quellzeit ÷ Tempo)."""
+    return (e - s) / SPEED[0]
+
+
+def choose_speed(kept):
+    """Tempo wie der Nutzer: Er beschleunigt Umfragen im Mittel ×1,27 (20 Vorher-Nachher-Paare) – fertig wird mit ≈ 6,3 Silben/s
+    gesprochen (Rohmaterial ≈ 5,5). Ziel je Stil; schnelle Sprecher werden nicht weiter beschleunigt; Tonhöhe bleibt (atempo)."""
+    syl = lambda t: max(1, len(re.findall(r"[aeiouäöüy]+", t.lower())))
+    n = d = 0.0
+    for a, b in zip(kept, kept[1:]):
+        if b["s"] - a["e"] < 0.3:
+            n += syl(a["t"])
+            d += b["s"] - a["s"]
+    rate = n / d if d > 4.0 else 0.0  # zu wenig zusammenhängende Sprache → Messung unsicher → Originaltempo
+    target, mx = (6.6, 1.3) if LOUD else (6.2, 1.2)
+    f = min(mx, max(1.0, target / rate)) if rate else 1.0
+    f = round(f * 20) / 20
+    SPEED[0] = f if f >= 1.05 else 1.0
+    STATS.update(speech_rate=round(rate, 1), speed=SPEED[0])
+    if SPEED[0] > 1.0:
+        log(f"Tempo: {rate:.1f} Silben/s → ×{SPEED[0]:.2f} (wie der Nutzer: knackig, Tonhöhe bleibt)")
+    return SPEED[0]
+
+
+def seg_frames(ranges):
+    """Anzahl Bilder je Abschnitt im fertigen Clip (aufaddiert gerundet – Bild und Ton bleiben exakt gleich lang)."""
+    out, acc = [], 0.0
+    for s, e in ranges:
+        a = int(round(acc * OF))
+        acc += olen(s, e)
+        out.append(max(1, int(round(acc * OF)) - a))
+    return out
+
+
+def plan_stab(ranges):
+    """Rückgabe None (ruhiges Stativbild) oder dict: corr[k] = Korrektur (x, y, Winkel) je Ausgabebild von Abschnitt k,
+    ext(k, t) = Korrektur für Überblend-Bilder hinter dem Abschnitt, mean[k] = mittlere Verschiebung (für die Planung)."""
+    blocks = []  # nahe beieinander liegende Abschnitte am Stück verfolgen – der Sprung am Schnitt ist dann genau bekannt
+    for k, (s, e) in enumerate(ranges):
+        if blocks and s - ranges[k - 1][1] < 2.0:
+            blocks[-1]["ks"].append(k)
+        else:
+            blocks.append({"ks": [k]})
+    for b in blocks:
+        b["t0"] = max(0.0, ranges[b["ks"][0]][0] - 0.1)
+        b["path"] = _track(b["t0"], min(DUR, ranges[b["ks"][-1]][1] + 0.4))
+    nf = seg_frames(ranges)
+    seq, scene, off, breaks = [], [], np.zeros(3), 0
+    P = {}
+
+    def pos(k, t):
+        b = P[k]
+        p = b["path"]
+        if not len(p):
+            return np.zeros(3)
+        i = min(max((t - b["t0"]) * STAB_RATE, 0.0), len(p) - 1.0)
+        j = int(i)
+        f = i - j
+        return p[j] * (1 - f) + p[min(j + 1, len(p) - 1)] * f
+    sid = 0
+    for bi, b in enumerate(blocks):
+        for k in b["ks"]:
+            P[k] = b
+        k0 = b["ks"][0]
+        if bi:
+            # neuer Block (große Lücke): Sprung des Hintergrunds direkt zwischen letztem und nächstem Bild messen
+            kp = k0 - 1
+            fa, fb = _small(ranges[kp][1] - 1 / OF), _small(ranges[k0][0])
+            d = _motion(fa, fb, cv2.bitwise_and(_bg_mask(fa), _bg_mask(fb)), far=True) if fa is not None and fb is not None else None
+            last = pos(kp, ranges[kp][1] - 1 / OF) + off
+            if d is None:  # anderer Ort/Blickwinkel → neue Szene, nichts angleichen
+                sid += 1
+                breaks += 1
+                off = last - pos(k0, ranges[k0][0])
+            else:
+                off = last + np.array(d) - pos(k0, ranges[k0][0])
+        for k in b["ks"]:
+            s = ranges[k][0]
+            for i in range(nf[k]):
+                seq.append(pos(k, s + i * SPEED[0] / OF) + off)
+                scene.append(sid)
+            b.setdefault("off", {})[k] = off.copy()
+    Q = np.array(seq)
+    scene = np.array(scene)
+    # Ruhige Bahn in einem „Schlauch“ um die echte Bahn: so glatt wie möglich, aber nie weiter weg, als der Rand des
+    # Ausschnitts hergibt (sonst stößt die Korrektur an den Bildrand und es ruckelt trotzdem)
+    zl = STAB_ZOOM_MAX - 0.02
+    lim = np.array([0.8 * W * (1 - 1 / zl) / 2 if BW >= W - 2 else 0.12 * BW, 0.8 * H * (1 - 1 / zl) / 2, 0.02])
+    T = np.zeros_like(Q)
+    sig = STAB_SIGMA * OF
+    for sc in np.unique(scene):
+        m = scene == sc
+        q = Q[m]
+        t = _gauss(q, sig)
+        for _ in range(25):
+            t = _gauss(np.clip(t, q - lim, q + lim), sig / 3)
+        T[m] = _gauss(np.clip(t, q - lim, q + lim), 0.08 * OF)
+    C = np.clip(Q - T, -lim * 1.05, lim * 1.05)
+    amp = np.hypot(C[:, 0], C[:, 1]) * 1920 / BH
+    raw = Q - _gauss(Q, 0.12 * OF)  # schnelles Zittern (nur für das Protokoll)
+    STATS["shake"] = round(float(np.sqrt((np.hypot(raw[:, 0], raw[:, 1]) ** 2).mean())) * 1920 / BH, 1)
+    STATS["stab_corr_p95"] = round(float(np.percentile(amp, 95)), 1)
+    STATS["stab_breaks"] = breaks
+    if np.percentile(amp, 95) < 1.2 and np.degrees(np.abs(C[:, 2]).max()) < 0.15:
+        log(f"Stabilisierung: Bild ist ruhig (Korrektur < 1,2 px) – nicht nötig")
+        return None
+    corr, mean, a = [], [], 0
+    for k in range(len(ranges)):
+        corr.append(C[a:a + nf[k]])
+        mean.append(tuple(C[a:a + nf[k], :2].mean(0)))
+        a += nf[k]
+
+    def ext(k, t):
+        return pos(k, t) + P[k]["off"][k] - T[sum(nf[:k + 1]) - 1]
+    log(f"Stabilisierung: Korrektur p95 {STATS['stab_corr_p95']} px, Zittern {STATS['shake']} px, {breaks} Szenenwechsel")
+    pad = np.percentile(np.abs(C[:, :2]), 98, axis=0) + 2.0  # so viel Rand braucht der Ausschnitt je Seite
+    return {"corr": corr, "ext": ext, "mean": mean, "lim": tuple(pad)}
+
+
+def stab_zoom(stab, crops):
+    """Zusatz-Zoom, damit der verschobene/gedrehte Ausschnitt fast immer im Bild bleibt (97 % der Bilder)."""
+    need = []
+    for k, c in enumerate(crops):
+        z = c["zoom"]
+        for cx, cy, a in stab["corr"][k][::3]:
+            sa, ca = abs(np.sin(a)), np.cos(a)
+            ny = (BH * ca + BW * sa) / (z * max(1.0, H - 2 * abs(cy)))
+            nx = (BW * ca + BH * sa) / (z * max(1.0, W - 2 * abs(cx))) if BW >= W - 2 else 0.0
+            need.append(max(ny, nx))
+    zs = float(min(STAB_ZOOM_MAX, max(1.0, np.percentile(need, 97) + 0.003))) if need else 1.0
+    STATS["stab_zoom"] = round(zs, 3)
+    return zs
 
 
 # ─────────────────────────────── 6. Untertitel (ASS) ───────────────────────────────
@@ -637,14 +1305,28 @@ def ass_color(hex_):
 ACC, WHITE, BLACK = ass_color(A.color), "&H00FFFFFF", "&H00000000"
 # wie die Vorschau auf der Website: Schrift, Größe, Kontur, Wörter pro Einblendung
 CAP = {
-    "rise":    dict(font="Poppins SemiBold", size=150, bold=0, ital=0, bord=0, shad=5, back="&H80000000", n=4, chars=16, case="lower", pop=False, blur=0),
-    "clean":   dict(font="Montserrat", size=138, bold=1, ital=0, bord=10, shad=0, back=BLACK, n=4, chars=14, case=None, pop=True, blur=0),
-    "hormozi": dict(font="Montserrat Thin Black", size=160, bold=0, ital=0, bord=13, shad=6, back=BLACK, n=3, chars=11, case="upper", pop=True, blur=0),
-    "neon":    dict(font="Bebas Neue", size=230, bold=0, ital=0, bord=5, shad=0, back=BLACK, n=3, chars=14, case="upper", pop=False, blur=2, glow=True),
-    "comic":   dict(font="Bangers", size=220, bold=0, ital=0, bord=12, shad=8, back=BLACK, n=2, chars=10, case="upper", pop=True, blur=0),
-    "serif":   dict(font="Playfair Display", size=158, bold=1, ital=1, bord=0, shad=5, back="&H80000000", n=4, chars=16, case=None, pop=False, blur=0),
+    "rise":    dict(font="Poppins SemiBold", size=150, bold=0, ital=0, bord=0, shad=5, back="&H80000000", n=4, chars=16, case="lower", pop=False, blur=0, file="Poppins-normal-600.ttf", k=0.564),
+    "clean":   dict(font="Montserrat", size=138, bold=1, ital=0, bord=10, shad=0, back=BLACK, n=4, chars=14, case=None, pop=True, blur=0, file="Montserrat-Bold.otf", k=0.643),
+    "hormozi": dict(font="Montserrat Thin Black", size=160, bold=0, ital=0, bord=13, shad=6, back=BLACK, n=3, chars=11, case="upper", pop=True, blur=0, file="Montserrat-normal-900.ttf", k=0.637),
+    "neon":    dict(font="Bebas Neue", size=230, bold=0, ital=0, bord=5, shad=0, back=BLACK, n=3, chars=14, case="upper", pop=False, blur=2, glow=True, file="BebasNeue-normal-400.ttf", k=0.763),
+    "comic":   dict(font="Bangers", size=220, bold=0, ital=0, bord=12, shad=8, back=BLACK, n=2, chars=10, case="upper", pop=True, blur=0, file="Bangers-normal-400.ttf", k=0.568),
+    "serif":   dict(font="Playfair Display", size=158, bold=1, ital=1, bord=0, shad=5, back="&H80000000", n=4, chars=16, case=None, pop=False, blur=0, file="PlayfairDisplay-italic-700.ttf", k=0.707),
 }
 CS = CAP.get(A.caption, CAP["rise"])
+CAP_MAXW = 840   # max. Zeilenbreite (px): links/rechts frei für die TikTok-/Reels-Knöpfe
+CAPFS = [CS["size"]]  # Schriftgröße dieses Videos (caption_groups passt sie an)
+_CAPFONT = []
+
+
+def cap_w(txt, fs):
+    """Breite von txt in der Untertitel-Schrift bei Größe fs – so wie libass sie setzt (Faktor k je Schrift gemessen)."""
+    try:
+        if not _CAPFONT:
+            from PIL import ImageFont
+            _CAPFONT.append(ImageFont.truetype(os.path.join(FONTS, CS["file"]), 100))
+        return _CAPFONT[0].getlength(txt) * CS["k"] * fs / 100 + len(txt)
+    except Exception:  # noqa: BLE001
+        return 0.55 * fs * len(txt)
 
 
 def is_emph(t):
@@ -660,6 +1342,8 @@ def ass_time(t):
 
 def fmt_word(t):
     t = t.replace("{", "(").replace("}", ")")
+    t = re.sub(r"(?<=\w[.,!?…])[\-–—]+$|(?<=\w)[\-–—]+$", "", t)  # abgebrochene Wörter: „Black.-“ → „Black.“
+    t = re.sub(r"([.,!?])[.,]+$", r"\1", t)  # „Tandoorichicken..“ → „Tandoorichicken.“
     if CS["case"] == "upper":
         t = t.upper()
     elif CS["case"] == "lower":
@@ -669,7 +1353,7 @@ def fmt_word(t):
 
 def caption_y():
     """Untertitel standardmäßig im unteren Drittel – liegt dort das Gesicht, darüber bzw. darunter ausweichen."""
-    y, half = 1390, CS["size"] * 0.6
+    y, half = 1390, CAPFS[0] * 0.6
     if not FACES_OUT:
         return y
     top = sorted(f[0] for f in FACES_OUT)[len(FACES_OUT) // 2]
@@ -681,123 +1365,443 @@ def caption_y():
     return int(max(330, top - half - 60))  # sonst über den Kopf
 
 
-def build_ass(words_out, path, hook=None):
-    """words_out: [(text, start, end)] in Ausgabe-Zeit. Wörter erscheinen nacheinander, das gesprochene in Akzentfarbe."""
-    head = [
-        "[Script Info]", "ScriptType: v4.00+", "PlayResX: 1080", "PlayResY: 1920", "WrapStyle: 0", "ScaledBorderAndShadow: yes", "",
-        "[V4+ Styles]",
-        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
-        "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-        f"Style: Cap,{CS['font']},{CS['size']},{WHITE},{ACC},{ACC if CS.get('glow') else BLACK},{CS['back']},{CS['bold']},{CS['ital']},0,0,"
-        f"100,100,1,0,1,{CS['bord']},{CS['shad']},5,70,70,0,1",
-        f"Style: Hook,Montserrat Thin Black,70,{BLACK},{ACC},{WHITE},&H00000000,0,0,0,0,100,100,0,0,3,20,0,8,90,90,200,1",
-        "", "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
-    ]
-    pos = "{\\an5\\pos(540," + str(caption_y()) + ")" + (f"\\blur{CS['blur']}" if CS["blur"] else "") + "}"
-    groups, cur = [], []
+def cap_gap(fs):
+    """Wortabstand: Leerzeichen + Kontur (die dicke Umrandung frisst sonst die Lücke: „istrichtig“)."""
+    return cap_w(" ", fs) + CS["bord"] * 0.8 + fs * 0.04
+
+
+def _groups(words_out, fs, stats=None):
+    """Einblendungen (Wortgruppen) nach ECHTER Breite: nie breiter als CAP_MAXW, nie zweizeilig; neue Gruppe nach
+    Satzzeichen und nach einer Sprechpause (Untertitel laufen im Rhythmus der Sprache)."""
+    groups, cur, wide = [], [], 0
+    sp = cap_gap(fs)
     for w in words_out:
+        if cur:
+            wid = sum(cap_w(fmt_word(x[0]), fs) for x in cur) + sp * len(cur) + cap_w(fmt_word(w[0]), fs)
+            if len(cur) >= CS["n"] or wid > CAP_MAXW or w[1] - cur[-1][2] > 0.45:
+                wide += wid > CAP_MAXW and len(cur) < CS["n"] and w[1] - cur[-1][2] <= 0.45
+                groups.append(cur)
+                cur = []
         cur.append(w)
-        if len(cur) >= CS["n"] or re.search(r"[.!?,;:…]$", w[0]) or sum(len(x[0]) + 1 for x in cur) > CS["chars"]:
+        if re.search(r"[.!?,;:…]$", w[0]):
             groups.append(cur)
             cur = []
     if cur:
         groups.append(cur)
+    if stats is not None:
+        stats.append(wide)
+    return groups
+
+
+def caption_groups(words_out):
+    """Schriftgröße je Video: so groß wie der Stil vorsieht – nur wenn lange Wörter (Deutsch!) die Zeilen oft sprengen
+    (Wörter würden dann ständig einzeln aufblitzen), etwas kleiner. Ergebnis in CAPFS."""
+    best = None
+    for f in (1.0, 0.94, 0.88, 0.84):
+        fs = int(CS["size"] * f)
+        st = []
+        gs = _groups(words_out, fs, st)
+        best = (fs, gs)
+        if st[0] <= 0.15 * len(gs):  # höchstens jede 7. Zeile wegen Platzmangel umgebrochen
+            break
+    CAPFS[0] = best[0]
+    STATS["caption_size"] = best[0]
+    return best[1]
+
+
+def build_ass(words_out, path, hook=None, extra=(), hide=()):
+    """words_out: [(text, start, end)] in Ausgabe-Zeit. Jedes Wort steht an einer FESTEN Stelle (einzeln positioniert):
+    Wenn das gesprochene Wort hervorgehoben wird, verrutscht nichts – die Zeile wackelt nicht mehr."""
+    groups = caption_groups(words_out)
+    fs0 = CAPFS[0]
+    head = [
+        "[Script Info]", "ScriptType: v4.00+", "PlayResX: 1080", "PlayResY: 1920", "WrapStyle: 2", "ScaledBorderAndShadow: yes", "",
+        "[V4+ Styles]",
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
+        "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+        f"Style: Cap,{CS['font']},{fs0},{WHITE},{ACC},{ACC if CS.get('glow') else BLACK},{CS['back']},{CS['bold']},{CS['ital']},0,0,"
+        f"100,100,1,0,1,{CS['bord']},{CS['shad']},5,0,0,0,1",
+        f"Style: Hook,Montserrat Thin Black,82,{BLACK},{ACC},{WHITE},&H00000000,0,0,0,0,100,100,0,0,3,20,0,8,90,90,200,1",
+        f"Style: Pop,Montserrat Thin Black,150,{WHITE},{ACC},{BLACK},&H00000000,0,0,0,0,100,100,1,0,1,0,0,5,40,40,0,1",
+        f"Style: PopSmall,Montserrat,58,{WHITE},{ACC},{BLACK},&H00000000,1,0,0,0,100,100,1,0,1,0,0,5,40,40,0,1",
+        "", "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+    ]
+    y = caption_y()
+    blur = f"\\blur{CS['blur']}" if CS["blur"] else ""
+    pop = LOUD and CS["pop"]
+    dim = A.caption in ("rise", "serif")
     ev = []
     for gi, g in enumerate(groups):
+        if any(a <= w[1] < b for w in g for a, b in hide):
+            continue  # großes Schlüsselwort/Zähler steht gerade im Bild → diese Untertitel-Zeile ganz weglassen (nie halbe Zeilen)
+        txts = [fmt_word(w[0]) for w in g]
+        fs = fs0
+        sp = cap_gap(fs)
+        tot = sum(cap_w(t, fs) for t in txts) + sp * (len(g) - 1)
+        if tot > CAP_MAXW:  # einzelnes Riesenwort → nur diese Zeile kleiner
+            fs = max(int(fs0 * 0.6), int(fs * CAP_MAXW / tot))
+            sp = cap_gap(fs)
+            tot = sum(cap_w(t, fs) for t in txts) + sp * (len(g) - 1)
+        xs, x = [], 540 - tot / 2
+        for t in txts:
+            wd = cap_w(t, fs)
+            xs.append(x + wd / 2)
+            x += wd + sp
+        fstag = f"\\fs{fs}" if fs != fs0 else ""
         nxt = groups[gi + 1][0][1] if gi + 1 < len(groups) else None
         g_end = nxt if nxt is not None and nxt - g[-1][2] < 0.7 else g[-1][2] + 0.3
-        for k, (_, s, _) in enumerate(g):
+        shown_until = None
+        for k, (_, s, e_w) in enumerate(g):
             e_show = g[k + 1][1] if k + 1 < len(g) else g_end
-            parts = []
-            for j, (tj, _, _) in enumerate(g):
-                wtxt = fmt_word(tj)
-                if j > k:  # kommt gleich – schon sichtbar (Zeile bleibt mittig), bei weichen Stilen leicht gedimmt
-                    dim = A.caption in ("rise", "serif")
-                    parts.append(("{\\alpha&H55&}" if dim else "") + wtxt + ("{\\alpha&H00&}" if dim else ""))
-                elif j == k:
-                    tag = "\\1c" + ACC
-                    if A.style == "viral" and CS["pop"]:
-                        tag += "\\fscx70\\fscy70\\t(0,90,\\fscx112\\fscy112)\\t(90,170,\\fscx103\\fscy103)"
-                    elif CS["pop"]:  # Clean: ruhig – nur Farbe, minimal größer, nichts springt
-                        tag += "\\fscx104\\fscy104"
-                    parts.append("{" + tag + "}" + wtxt + "{\\r}")
-                elif is_emph(tj) and A.caption in ("rise", "neon", "comic", "serif"):
-                    parts.append("{\\1c" + ACC + "}" + wtxt + "{\\r}")
+            e_show = min(e_show, max(e_w, s + 0.2) + 1.2)  # nie ewig stehen lassen, wenn das nächste Wort erst viel später kommt
+            e_show = min([e_show] + [a for a, b in hide if s < a < e_show])
+            if e_show - s < 0.02:
+                continue
+            appear = shown_until is None or s - shown_until > 0.02  # Zeile erscheint (neu) → sanft einblenden
+            shown_until = e_show
+            for j, t in enumerate(txts):
+                tag = f"\\an5{fstag}{blur}"
+                if appear and pop:  # ganze Zeile poppt kurz auf (alle Wörter wachsen gemeinsam aus der Mitte)
+                    x0 = 540 + (xs[j] - 540) * 0.86
+                    tag += f"\\move({x0:.1f},{y},{xs[j]:.1f},{y},0,110)\\fscx86\\fscy86\\t(0,110,\\fscx100\\fscy100)"
                 else:
-                    parts.append(wtxt)
-            ev.append(f"Dialogue: 0,{ass_time(s)},{ass_time(e_show)},Cap,,0,0,0,,{pos}{' '.join(parts)}")
+                    tag += f"\\pos({xs[j]:.1f},{y})" + ("\\fad(70,0)" if appear else "")
+                if j == k:
+                    tag += "\\1c" + ACC
+                    if pop:  # nur dieses Wort wächst minimal – um seine eigene Mitte, die Nachbarn bleiben stehen
+                        tag += "\\t(0,90,\\fscx109\\fscy109)\\t(90,170,\\fscx105\\fscy105)" if not appear else \
+                               "\\t(110,180,\\fscx105\\fscy105)"
+                elif j > k and dim:  # kommt gleich – schon sichtbar, leicht gedimmt
+                    tag += "\\alpha&H55&"
+                elif j < k and is_emph(g[j][0]) and A.caption in ("rise", "neon", "comic", "serif"):
+                    tag += "\\1c" + ACC
+                ev.append(f"Dialogue: 0,{ass_time(s)},{ass_time(e_show)},Cap,,0,0,0,,{{{tag}}}{t}")
     if hook:
-        ev.append(f"Dialogue: 1,{ass_time(0)},{ass_time(3.2)},Hook,,0,0,0,,{{\\fad(120,200)}}{hook.upper()}")
-    open(path, "w", encoding="utf-8").write("\n".join(head + ev) + "\n")
+        hook_txt = re.sub(r"[^\w\s&?!.,:'’\-]", "", hook).strip()  # Emojis kann die Titelschrift nicht – die kommen als Bild
+        ev.append(f"Dialogue: 1,{ass_time(0)},{ass_time(3.2)},Hook,,0,0,0,,{{\\fad(120,200)}}{hook_txt.upper()}")
+    open(path, "w", encoding="utf-8").write("\n".join(head + ev + list(extra)) + "\n")
 
 
 # ─────────────────────────────── 7. Rendern ───────────────────────────────
 XF = 0.025  # Ton-Überblendung an jedem Schnitt (kein Knacken, kein harter Abriss)
+OF = min(FPS, 60.0)  # Bildrate des fertigen Clips
+BIG_JUMP = 1.2  # ab so viel entfernter Zeit ändert sich die Pose sichtbar → Clean setzt einen leichten Zoom-Wechsel
 
 
 def tidy(ranges):
     """Schnitte bildgenau setzen und Mini-Abschnitte (< 0,3 s, wirken wie Ruckler) mit dem Nachbarn verbinden."""
-    snap = lambda t: round(t * FPS) / FPS
+    snap = lambda t: round(t * OF) / OF
     out = []
     for s, e in ranges:
         s, e = snap(s), snap(e)
-        if e - s < 1 / FPS:
+        if e - s < 1 / OF:
             continue
-        if out and (s - out[-1][1] < 0.02 or e - s < 0.3 or out[-1][1] - out[-1][0] < 0.3):
-            out[-1][1] = max(out[-1][1], e)
+        gap = s - out[-1][1] if out else 99.0
+        if out and (gap < 0.02 or ((e - s < 0.3 or out[-1][1] - out[-1][0] < 0.3) and gap <= 0.5)):
+            out[-1][1] = max(out[-1][1], e)  # nur KLEINE Lücken überbrücken
+        elif out and e - s < 0.3:
+            # Mini-Stück hinter einer großen Lücke (z. B. nach einer weggerafften Kau-Pause): NICHT mit dem Abschnitt davor
+            # verbinden – das würde die ganze Pause wieder einfügen (Test 01) – sondern nach vorne auf 0,3 s verlängern
+            out.append([max(out[-1][1] + 0.02, snap(e - 0.3)), e])
         else:
             out.append([s, e])
     return out
 
 
-def render_cut(idx, ranges):
-    """1. Durchgang: Abschnitte zuschneiden, Bild ruhig/zoomen, Ton weich überblenden, Lautheit angleichen."""
-    cut = os.path.join(A.out, f"cut-{idx}.mp4")
-    crops = plan_crops(ranges)
-    fc, vs = [], []
-    n = len(ranges)
+def _frame(t, c):
+    """Bildausschnitt (wie im fertigen Clip) zum Zeitpunkt t, klein und weichgezeichnet – für den Bildvergleich."""
+    CAPV.set(cv2.CAP_PROP_POS_MSEC, max(0.0, t) * 1000)
+    ok, fr = CAPV.read()
+    if not ok:
+        return None
+    fr = fr[c["y"]:c["y"] + c["h"], c["x"]:c["x"] + c["w"]]
+    g = cv2.cvtColor(cv2.resize(fr, (90, 160)), cv2.COLOR_BGR2GRAY)
+    return cv2.GaussianBlur(g, (5, 5), 0).astype(np.float32)
+
+
+SMOOTH_MAX_DIFF = 9.0  # mittlerer Bildunterschied (0–255), bis zu dem ein Schnitt überblendet wird
+
+
+def transitions(ranges, crops):
+    """Übergang je Schnitt (Sekunden Überblendung, 0 = harter Schnitt). Clean: sind die Bilder vor und nach dem Schnitt fast
+    gleich (Person hat sich kaum bewegt), wird ganz kurz überblendet („Smooth Cut“) – der Mini-Sprung beim Rausschneiden von
+    Füllwörtern/Pausen verschwindet. Hat sich viel bewegt, gäbe eine Überblendung Geisterbilder (KI-Abnahme 29.09.) →
+    sauberer harter Schnitt. Zoom-Wechsel und Viral-Punches bleiben immer harte Schnitte."""
+    d, diffs = [0.0], []
+    for k in range(1, len(ranges)):
+        a, b = crops[k - 1], crops[k]
+        same = a["zoom"] == b["zoom"] and abs(a["x"] - b["x"]) < 40 and abs(a["y"] - b["y"]) < 40
+        if LOUD or not same:
+            d.append(0.0)
+            continue
+        fa, fb = _frame(ranges[k - 1][1] - 1 / OF, a), _frame(ranges[k][0], b)
+        diff = float(np.abs(fa - fb).mean()) if fa is not None and fb is not None else 99.0
+        diffs.append(round(diff, 1))
+        if diff > SMOOTH_MAX_DIFF:
+            d.append(0.0)
+            continue
+        dur = min(0.1, 0.4 * (ranges[k][1] - ranges[k][0]), 0.4 * (ranges[k - 1][1] - ranges[k - 1][0]))
+        frames = int(dur * OF)
+        d.append(frames / OF if frames >= 2 and ranges[k - 1][1] + dur < DUR - 0.05 else 0.0)
+    STATS["cut_diffs"] = diffs[:40]
+    return d
+
+
+ZOOM_RATE = 0.005 if LOUD else 0.007  # langsame Kamerafahrt nach vorne (Clean ≈ 3,5 % in 5 s)
+ZOOM_MAX = 1.05
+PUNCH = 1.12  # Viral: harter Zoom-Punch auf wichtige Aussagen (Tutorial: „Zooms, um wichtige Sätze zu betonen“)
+
+
+def zoom_punches(idx, ranges):
+    """Viral: Zeitpunkte (im fertigen Clip) für Zoom-Punches = die stärksten Momente, die die KI auch für Emoji/Sound
+    ausgesucht hat. Immer mindestens einer in den ersten 5 Sekunden (Hook). Clean: keine Punches, nur ruhige Fahrt."""
+    if not LOUD:
+        return []
+    times = est_times(ranges, WORDS)
+    kept_ws = [w for w in WORDS if w["i"] in times]
+    if idx not in FX:
+        FX[idx] = gemini_effects(kept_ws, times)
+    pts = sorted(times[f["i"]] for f in FX[idx] if f["i"] in times)
+    # TikTok-Standard: spätestens alle ~3 s ein Zoom-Wechsel – an Satzanfängen/betonten Wörtern ergänzen
+    prev_t = None
+    for w in sorted(kept_ws, key=lambda w: times[w["i"]]):
+        t = times[w["i"]]
+        starts = prev_t is None or SENT_END.search(prev_t["t"])
+        if (starts or is_emph(w["t"])) and all(abs(t - p) >= 3.0 for p in pts) and t > 2.0:
+            pts.append(t)
+        prev_t = w
+    pts.sort()
+    if not any(t < 5.0 for t in pts):
+        first = next((times[w["i"]] for w in kept_ws if 1.0 <= times[w["i"]] <= 4.5 and is_emph(w["t"])), None)
+        pts.insert(0, first if first is not None else min(1.5, sum(olen(s, e) for s, e in ranges) / 3))
+    return pts
+
+
+def punch_at(pts, t):
+    """Zoom-Faktor eines Punches zur Zeit t: schnell rein (0,07 s), 1,3 s halten, weich raus (0,25 s)."""
+    z = 1.0
+    for p in pts:
+        if p - 0.07 <= t <= p + 1.55:
+            a = min(1.0, (t - p + 0.07) / 0.07)
+            b = min(1.0, max(0.0, (p + 1.55 - t) / 0.25))
+            z = max(z, 1 + (PUNCH - 1) * min(a, b))
+    return z
+
+
+def _frames(jobs, q):
+    """Hintergrund-Leser: je Abschnitt die benötigte Bildregion der Quelle als Einzelbilder (im Takt des fertigen Clips)."""
+    import threading
+
+    def run_():
+        for s, n, rx, ry, rw, rh in jobs:
+            p = subprocess.Popen(["ffmpeg", "-v", "error", "-ss", f"{s:.4f}", "-i", A.src, "-frames:v", str(n), "-vf",
+                                  f"fps={OF / SPEED[0]:.6f},crop={rw}:{rh}:{rx}:{ry}", "-f", "rawvideo", "-pix_fmt", "bgr24", "-"],
+                                 stdout=subprocess.PIPE)
+            size, last = rw * rh * 3, None
+            for _ in range(n):
+                buf = p.stdout.read(size)
+                if len(buf) == size:
+                    last = np.frombuffer(buf, np.uint8).reshape(rh, rw, 3)
+                q.put(last)  # Datei zu Ende → letztes Bild wiederholen
+            p.stdout.close()
+            p.wait()
+        q.put(StopIteration)
+    th = threading.Thread(target=run_, daemon=True)
+    th.start()
+    return th
+
+
+LEAK_S = (0.15, 0.4)  # Lichtleck: so lange vor/nach dem Schnitt (s)
+
+
+def _leak(p, seed):
+    """Lichtleck wie in den Malo's-Videos des Nutzers: warmer Schimmer (orange → rosa), der einmal quer durchs Bild zieht.
+    p = Fortschritt 0..1. Rückgabe: Überlagerung (1920×1080×3, 0–255) für „Screen“-Mischung."""
+    h, w = 192, 108
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    env = np.sin(np.pi * min(max(p, 0.0), 1.0)) ** 1.4 * 0.75
+    d = 1 if seed % 2 == 0 else -1
+    img = np.zeros((h, w, 3), np.float32)
+    for (b, g, r), ox, oy, rad in (((40, 140, 255), -0.35, 0.3, 0.55), ((150, 80, 255), -0.6, 0.7, 0.45)):
+        cx = (ox + 1.7 * p) if d > 0 else (1 - ox - 1.7 * p)
+        m = np.exp(-(((xx / w - cx) / rad) ** 2 + ((yy / h - oy) / (rad * 1.6)) ** 2))
+        img += m[..., None] * np.array([b, g, r], np.float32)
+    return cv2.resize(np.clip(img * env, 0, 255), (1080, 1920), interpolation=cv2.INTER_LINEAR)
+
+
+def leak_cuts(ranges):
+    """Viral/Premium: Lichtleck an großen Zeitsprüngen (neue Frage, neuer Abschnitt) – höchstens alle 6 s, max. 4."""
+    if not LOUD:
+        return []
+    out, t, last = [], 0.0, -99.0
     for k, (s, e) in enumerate(ranges):
-        fc.append(f"[0:v]trim=start={s:.4f}:end={e:.4f},setpts=PTS-STARTPTS,{crops[k]},fps={min(FPS, 60):.3f}[v{k}]")
+        if k and s - ranges[k - 1][1] >= 3.0 and t >= 2.0 and t - last >= 6.0 and len(out) < 4:
+            out.append(t)
+            last = t
+        t += olen(s, e)
+    return out
+
+
+def render_cut(idx, ranges):
+    """1. Durchgang: Abschnitte zuschneiden, Bild stabilisieren/ruhig halten/zoomen, Schnitte weich überblenden,
+    Ton weich überblenden, Lautstärke angleichen (leise Stimmen hoch, laute runter) und auf Social-Media-Lautheit bringen.
+    Das Bild wird je Frame subpixel-genau berechnet (Verschiebung, Drehung, Zoom in einem Schritt, bikubisch) – keine
+    Pixel-Stufen, kein Mikro-Ruckeln bei Kamerafahrt, Punch oder Stabilisierung."""
+    import queue
+    cut = os.path.join(A.out, f"cut-{idx}.mp4")
+    stab = plan_stab(ranges)
+    shift, pad = (stab["mean"], stab["lim"]) if stab else (None, None)
+    crops = plan_crops(ranges, 1.0, shift, pad)
+    zs = stab_zoom(stab, crops) if stab else 1.0
+    if zs > 1.0005:
+        crops = plan_crops(ranges, zs, shift, pad)
+    xd = transitions(ranges, crops)
+    STATS["smooth_cuts"] = sum(1 for x in xd if x > 0)
+    n = len(ranges)
+    nf = seg_frames(ranges)
+    punches = zoom_punches(idx, ranges)
+    STATS["zoom_punches"] = [round(t, 1) for t in punches]
+    leaks = leak_cuts(ranges)
+    STATS["light_leaks"] = [round(t, 1) for t in leaks]
+    # Bildplan: je Ausgabebild Fenster-Mitte (x, y), Breite, Drehung – in Quell-Pixeln
+    plan, zc, off, clamped = [], 1.0, 0.0, 0
+    for k, (s, e) in enumerate(ranges):
+        c = crops[k]
+        n_ext = int(round(xd[k + 1] * OF)) if k + 1 < n else 0  # Bilder für die Überblendung in den nächsten Abschnitt
+        if xd[k] <= 0:
+            zc = 1.0
+        fxp = min(0.8, max(0.2, (c["c"][0] * W - c["fx"]) / c["fw"])) if c["c"] else 0.5  # Zoom ums Gesicht
+        fyp = min(0.7, max(0.2, (c["c"][1] * H - c["fy"]) / c["fh"])) if c["c"] else 0.38
+        fr = []
+        for i in range(nf[k] + n_ext):
+            tl = i / OF
+            z = min(ZOOM_MAX, zc + ZOOM_RATE * tl) * punch_at(punches, off + tl)
+            w, h = c["fw"] / z, c["fh"] / z
+            cx = c["fx"] + (c["fw"] - w) * fxp + w / 2
+            cy = c["fy"] + (c["fh"] - h) * fyp + h / 2
+            a = 0.0
+            if stab:
+                dx, dy, a = stab["corr"][k][i] if i < nf[k] else stab["ext"](k, s + tl * SPEED[0])
+                cx, cy = cx + dx - a * (cy - H / 2), cy + dy + a * (cx - W / 2)  # Drehung um die Bildmitte gemessen → Hebel
+            sa, ca = abs(np.sin(a)), np.cos(a)
+            ex, ey = (w * ca + h * sa) / 2, (w * sa + h * ca) / 2
+            for _ in range(6):  # gedrehtes Fenster passt nicht → Drehung zurücknehmen
+                if ex <= W / 2 and ey <= H / 2:
+                    break
+                a *= 0.6
+                sa, ca = abs(np.sin(a)), np.cos(a)
+                ex, ey = (w * ca + h * sa) / 2, (w * sa + h * ca) / 2
+            ncx, ncy = min(max(cx, ex), W - ex), min(max(cy, ey), H - ey)
+            clamped += abs(ncx - cx) > 0.5 or abs(ncy - cy) > 0.5
+            fr.append((ncx, ncy, w, a, ex, ey))
+        zc = min(ZOOM_MAX, zc + ZOOM_RATE * olen(s, e))
+        off += olen(s, e)
+        plan.append(fr)
+    STATS["stab_clamped"] = round(clamped / max(1, sum(len(f) for f in plan)), 3)
+    # Quell-Region je Abschnitt (nur der Teil, der gebraucht wird → weniger Daten)
+    jobs = []
+    for k, fr in enumerate(plan):
+        x0 = max(0, int(min(f[0] - f[4] for f in fr)) - 4) // 2 * 2
+        y0 = max(0, int(min(f[1] - f[5] for f in fr)) - 4) // 2 * 2
+        x1 = min(W, int(max(f[0] + f[4] for f in fr)) + 6)
+        y1 = min(H, int(max(f[1] + f[5] for f in fr)) + 6)
+        jobs.append((ranges[k][0], len(fr), x0, y0, (x1 - x0) // 2 * 2, (y1 - y0) // 2 * 2))
+    total = sum(olen(s, e) for s, e in ranges)
+    fc = []
+    for k, (s, e) in enumerate(ranges):
         ea = min(DUR, e + XF) if k < n - 1 else e
-        fc.append(f"[0:a]atrim=start={s:.4f}:end={ea:.4f},asetpts=PTS-STARTPTS[a{k}]")
-        vs.append(f"[v{k}]")
-    fc.append(f"{''.join(vs)}concat=n={n}:v=1:a=0[vc]")
+        fc.append(f"[1:a]atrim=start={s:.4f}:end={ea:.4f},asetpts=PTS-STARTPTS[a{k}]")
     prev = "a0"
     for k in range(1, n):
         fc.append(f"[{prev}][a{k}]acrossfade=d={XF}:c1=tri:c2=tri[x{k}]")
         prev = f"x{k}"
-    fc.append(f"[{prev}]loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000[ac]")
+    # Ton wie im Tutorial: Rauschen leicht reduzieren (Straße, Wind, Klimaanlage), Stimmen angleichen, Social-Lautheit,
+    # weicher Ein-/Ausklang (kein Knacken am Anfang, kein abgehackter letzter Ton)
+    # Stimme hervorheben (Test 30.09.: Straßen-Umfrage 08 → Whisper erkennt 59 statt 22 Wörter, KI-Hörtest „klarer“):
+    # Brummen/Wind unter 80 Hz raus, dumpfe Mitten (220 Hz) etwas runter, Sprachverständlichkeit (3 kHz) etwas hoch.
+    # Bewusst mild – stärkere Filter/Kompression klangen blechern und verschlechterten die Erkennung.
+    tempo = f"atempo={SPEED[0]:.3f}," if SPEED[0] != 1.0 else ""  # schneller, Tonhöhe bleibt
+    fc.append(f"[{prev}]{tempo}highpass=f=80:p=2,afftdn=nr=10:nf=-42:tn=1,equalizer=f=220:t=q:w=1.2:g=-1.5,"
+              f"equalizer=f=3000:t=q:w=1.2:g=2,dynaudnorm=f=200:g=21:p=0.9:m=5,loudnorm=I=-14:TP=-1.5:LRA=7,"
+              f"afade=t=in:d=0.03,afade=t=out:st={max(0.0, total - 0.18):.3f}:d=0.18,aresample=48000[ac]")
+    fc.append(f"[0:v]setsar=1,{GRADE},format=yuv420p[vc]")
     script = os.path.join(A.out, f"cut-{idx}.filter")
     open(script, "w").write(";\n".join(fc))
-    run(["ffmpeg", "-v", "error", "-y", "-i", A.src, "-/filter_complex", script, "-map", "[vc]", "-map", "[ac]",
-         "-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-c:a", "aac", "-b:a", "256k", cut])
+    enc = subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", "1080x1920",
+                            "-framerate", f"{OF:.6f}", "-i", "-", "-i", A.src, "-/filter_complex", script, "-map", "[vc]",
+                            "-map", "[ac]", "-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-c:a", "aac", "-b:a", "256k",
+                            cut], stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+    q = queue.Queue(maxsize=12)
+    _frames(jobs, q)
+    tail = []  # Überblend-Bilder des vorigen Abschnitts
+    fno = 0
+    try:
+        for k, fr in enumerate(plan):
+            rx, ry = jobs[k][2], jobs[k][3]
+            new_tail = []
+            for i, (cx, cy, w, a, _, _) in enumerate(fr):
+                src = q.get()
+                if src is StopIteration or src is None:
+                    raise RuntimeError("Bild konnte nicht gelesen werden")
+                sc = 1080.0 / w
+                co, si = np.cos(a) * sc, np.sin(a) * sc
+                # Quelle → Ausgabe: um −a drehen, skalieren, Fenster-Mitte auf Bildmitte
+                ox, oy = rx - cx, ry - cy
+                M = np.array([[co, si, co * ox + si * oy + 540.0], [-si, co, -si * ox + co * oy + 960.0]])
+                out = cv2.warpAffine(src, M, (1080, 1920), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+                if i >= nf[k]:
+                    new_tail.append(out)
+                    continue
+                if i < len(tail):  # weicher Übergang: vorigen Abschnitt ausblenden
+                    al = (i + 1) / (len(tail) + 1)
+                    out = cv2.addWeighted(tail[i], 1 - al, out, al, 0)
+                tt = fno / OF
+                for li, lt in enumerate(leaks):
+                    if lt - LEAK_S[0] <= tt <= lt + LEAK_S[1]:  # Screen-Mischung: hellt auf, nie dunkler, keine harten Kanten
+                        ov = _leak((tt - lt + LEAK_S[0]) / sum(LEAK_S), li)
+                        out = (out + ov * (255 - out.astype(np.float32)) / 255).astype(np.uint8)
+                enc.stdin.write(out.tobytes())
+                fno += 1
+            tail = new_tail
+        enc.stdin.close()
+    except BrokenPipeError:
+        pass
+    err = enc.stderr.read().decode(errors="replace").strip()
+    if enc.wait() != 0:
+        raise RuntimeError((err.splitlines() or ["ffmpeg Fehler"])[-1])
     if not A.keep_work:
         os.remove(script)
-    return cut, round(sum(e - s for s, e in ranges), 1)
+    return cut, round(total, 1)
 
 
 def hear(path):
     """Fertigen Ton neu abhören – Wörter mit Zeiten im fertigen Clip."""
     tmp = os.path.join(A.out, "hoerprobe.wav")
-    run(["ffmpeg", "-v", "error", "-y", "-i", path, "-vn", "-ac", "1", "-ar", "16000", tmp])
-    r = mlx_whisper.transcribe(tmp, path_or_hf_repo=WHISPER, word_timestamps=True, condition_on_previous_text=False,
-                               temperature=0.0, initial_prompt="Ähm, äh.")
+    run(["ffmpeg", "-v", "error", "-y", "-i", path, "-vn", "-ac", "1", "-ar", "16000", tmp])  # fertiger Ton ist schon ausgeglichen
+    r = mlx_whisper.transcribe(tmp, **ASR, temperature=0.0,
+                               initial_prompt=((BRAND + ". ") if BRAND else "") + ("Ähm, äh." if LANG == "de" else ""))
     os.remove(tmp)
     STATS["fillers_heard"] = len(re.findall(r"\b(ähm|äh|öhm|ähh)\b", r.get("text", "").lower()))
-    return [{"t": x["word"].strip(), "s": float(x["start"]), "e": float(x["end"])} for sg in r["segments"] for x in sg.get("words", []) if x["word"].strip()]
+    return [{"t": x["word"].strip(), "s": float(x["start"]), "e": float(x["end"]), "p": float(x.get("probability", 1.0))}
+            for sg in r["segments"] for x in sg.get("words", []) if x["word"].strip()]
+
+
+OUT_TIME = {}  # Wort-Nummer → Zeitpunkt im fertigen Clip
 
 
 def align(ranges, kept, heard):
     """Untertitel-Zeiten aus dem FERTIGEN Ton (exakt synchron), Text aus dem Original (richtige Schreibweise).
     Liefert zusätzlich die Wörter, die im fertigen Clip nicht mehr zu hören sind."""
     import difflib
+    STATS.pop("captions_added", None)
     offs, t = [], 0.0
     for s, e in ranges:
         offs.append((s, e, t))
-        t += e - s
+        t += olen(s, e)
     est = []  # geschätzte Zeit aus der Schnittliste (Rückfall)
     for w in kept:
-        pos = next(((o + max(0.0, w["s"] - s), o + min(e, w["e"]) - s) for s, e, o in offs if s - 0.05 <= w["s"] < e), None)
+        pos = next(((o + max(0.0, w["s"] - s) / SPEED[0], o + (min(e, w["e"]) - s) / SPEED[0]) for s, e, o in offs
+                    if s - 0.05 <= w["s"] < e), None)
         est.append(pos)
     stem = lambda x: norm(x)[:5]
     want = [stem(w["t"].split("-")[-1] or w["t"]) for w in kept]
@@ -808,40 +1812,828 @@ def align(ranges, kept, heard):
         for d in range(blk.size):
             match[blk.a + d] = blk.b + d
     words_out, miss = [], []
+    pos_end = lambda i: heard[match[i]]["e"] if i in match else (est[i][1] if est[i] else 0.0)
     for i, w in enumerate(kept):
+        glue = re.fullmatch(r"[.:]\d{1,2}\.?[,!?]?", w["t"].strip())  # „11“ „.05.“ → Untertitel „11.05.“
+        if glue and words_out and re.search(r"\d\.?$", words_out[-1][0]):
+            tx, s0, e0 = words_out[-1]
+            words_out[-1] = (tx.rstrip(".") + w["t"].strip(), s0, max(e0, pos_end(i)))
+            continue
+        if re.fullmatch(r"-[a-zäöüß][\wäöüß]*[.,!?…]*", w["t"].strip()) and words_out and re.search(r"[\wäöüß]$", words_out[-1][0]):
+            tx, s0, e0 = words_out[-1]  # Wortteil („Frühstücks“ „-optionen“) → „Frühstücksoptionen“
+            words_out[-1] = (tx + w["t"].strip()[1:], s0, max(e0, pos_end(i)))
+            continue
+        if not norm(w["t"]) and re.fullmatch(r"[.,!?;:…\-–—\"'»«„“]+", w["t"].strip() or "."):  # Satzzeichen → ans Wort davor
+            pt = w["t"].strip()
+            if words_out and pt and not re.fullmatch(r"[\-–—]+", pt):  # Striche nie anhängen („MontanaBlack.-“)
+                tx, s0, e0 = words_out[-1]
+                if not (re.search(r"[.,!?;:…]$", tx) and re.fullmatch(r"[.,!?;:…]+", pt)):  # kein „schön..“
+                    words_out[-1] = (tx + pt, s0, e0)
+            continue
+        pos = None
         if i in match:
             h = heard[match[i]]
-            words_out.append((w["t"], h["s"], max(h["e"], h["s"] + 0.08)))
+            pos = (h["s"], max(h["e"], h["s"] + 0.08))
+            if est[i] and abs(pos[0] - est[i][0]) > 0.8:  # Zuordnung passt zeitlich nicht → lieber die Schnittliste
+                pos = (est[i][0], max(est[i][1], est[i][0] + 0.08))
         else:
-            if norm(w["t"]):
+            if not re.fullmatch(r"[\W\d_]+", w["t"]) and not w.get("unclear"):  # „&“, „11.05.“ klingen anders; Gemurmel egal
                 miss.append(w["t"])
             if est[i]:
-                words_out.append((w["t"], est[i][0], max(est[i][1], est[i][0] + 0.08)))
-    words_out.sort(key=lambda x: x[1])
-    for k in range(1, len(words_out)):  # keine Überlappungen, Reihenfolge stabil
+                pos = (est[i][0], max(est[i][1], est[i][0] + 0.08))
+        if pos:
+            OUT_TIME[w["i"]] = pos[0]
+        if pos and not w.get("unclear"):  # Unverständliches: Ton bleibt, aber kein (falscher) Untertitel
+            words_out.append((w["t"], pos[0], pos[1]))
+    # Was im fertigen Clip klar zu hören ist, aber noch keinen Untertitel hat (z. B. ein Satz, den die erste Erkennung im
+    # Durcheinander überhört hat – der Ton blieb drin, der Text fehlte): aus der Hörprobe nachtragen. Nur in echten Lücken,
+    # nie Füllwörter, nie einzelne Kurz-Wörter (Rauschen).
+    used = set(match.values())
+    groups, cur = [], []
+    for j, h in enumerate(heard):
+        if j in used or norm(h["t"]) in FILLER or not norm(h["t"]):
+            if cur:
+                groups.append(cur)
+            cur = []
+            continue
+        if cur and h["s"] - cur[-1]["e"] > 0.8:
+            groups.append(cur)
+            cur = []
+        cur.append(h)
+    if cur:
+        groups.append(cur)
+    added = []
+    for g in groups:
+        if (len(g) < 2 and len(norm(g[0]["t"])) < 4) or sum(h["p"] for h in g) / len(g) < 0.6:
+            continue  # zu kurz oder unsicher gehört → lieber kein Untertitel als ein falscher
+        a, b = g[0]["s"], g[-1]["e"]
+        if any(x[1] < b + 0.15 and x[2] > a - 0.15 for x in words_out):
+            continue  # dort steht schon ein Untertitel
+        at = next((k for k, x in enumerate(words_out) if x[1] > a), len(words_out))  # vorhandene Reihenfolge bleibt unangetastet
+        words_out[at:at] = [(h["t"], h["s"], max(h["e"], h["s"] + 0.08)) for h in g]
+        added += [h["t"] for h in g]
+    if added:
+        STATS["captions_added"] = added[:30]
+    for k in range(1, len(words_out)):  # Reihenfolge = Sprechreihenfolge; Zeiten nur nach vorne schieben, nie umsortieren
         if words_out[k][1] < words_out[k - 1][1] + 0.04:
             tx, s0, e0 = words_out[k]
             words_out[k] = (tx, words_out[k - 1][1] + 0.04, max(e0, words_out[k - 1][1] + 0.12))
     return words_out, miss
 
 
-def burn(idx, cut, words_out, title):
-    """2. Durchgang: Untertitel (und bei Viral den Hook-Titel) einbrennen, web-sicheres MP4."""
-    out = os.path.join(A.out, f"clip-{idx}.mp4")
-    ass = os.path.join(A.out, f"clip-{idx}.ass")
-    build_ass(words_out, ass, title if A.style == "viral" else None)
-    STATS["caption_words"] = len(words_out)
-    esc = lambda p: p.replace("\\", "/").replace(":", "\\:").replace("'", "\\'")
-    run(["ffmpeg", "-v", "error", "-y", "-i", cut, "-vf", f"ass='{esc(ass)}':fontsdir='{esc(FONTS)}',format=yuv420p",
-         "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-profile:v", "high", "-level", "4.1", "-color_range", "tv",
-         "-c:a", "copy", "-movflags", "+faststart", out])
-    if not A.keep_work:
-        os.remove(ass)
-        os.remove(cut)
+SFX_DIR = os.environ.get("VELOX_SFX", os.path.join(MASCHINE, "sfx"))
+EMOJI_DIR = os.environ.get("VELOX_EMOJI", os.path.join(MASCHINE, "emoji"))
+EMOJIS = {"😋": "1f60b", "🔥": "1f525", "😍": "1f60d", "🤤": "1f924", "😂": "1f602", "🤯": "1f92f", "😮": "1f62e", "🤔": "1f914",
+          "👀": "1f440", "💸": "1f4b8", "💰": "1f4b0", "🎉": "1f389", "🏆": "1f3c6", "💯": "1f4af", "👍": "1f44d", "👏": "1f44f",
+          "❤️": "2764", "✅": "2705", "❌": "274c", "⭐": "2b50", "🍰": "1f370", "🍔": "1f354", "🍕": "1f355", "☕": "2615",
+          "🍫": "1f36b", "🍌": "1f34c", "🍓": "1f353", "🎁": "1f381", "📍": "1f4cd", "⏰": "23f0", "🚀": "1f680", "😎": "1f60e"}
+SFX_NAMES = ("pop", "ding", "kaching", "whoosh", "click")
+RISER_S = 1.2  # Länge des Riser-Sounds (make_sfx.py)
+FX = {}  # Effekte je Clip (bleiben beim Neu-Einbrennen nach der Abnahme gleich)
+
+
+MUSIC_DIR = os.environ.get("VELOX_MUSIK", os.path.join(MASCHINE, "musik"))
+MUSIC = {  # lizenzfrei (Pixabay, OHNE Content ID – siehe musik/LIZENZ.txt)
+    "hiphop-upbeat": "Hip-Hop, gut gelaunt, treibend – Street-Food, Umfragen, Challenges",
+    "hiphop-upbeat2": "Hip-Hop, locker und positiv – Vorstellung, Vlog",
+    "hiphop-beat": "klassischer Hip-Hop-Beat, cool – Restaurant, Produkt, Lifestyle",
+    "hiphop-groove": "Hip-Hop-Groove, edel und entspannt – Premium, Food-Details",
+    "lofi": "Lo-Fi, ruhig und gemütlich – Erklärungen, Monolog, Café, ruhige Stimmung",
+    "funky": "Funk, verspielt und fröhlich – Spaß, Quiz, lustige Reaktionen",
+    "funk": "Funk, groovig mit Energie – Wettessen, Action, Herausforderung",
+    "happy": "fröhlicher Pop, hell und freundlich – Familie, Kinder, gute Laune",
+    "joyful": "fröhlich-beschwingt, kurz – sehr kurze Clips unter 40 s",
+    "trap": "Trap, hart und modern – Hype, Wettkampf, junge Zielgruppe",
+}
+MUSIC_PICK = {}
+
+
+def pick_music(kept):
+    """Passende Hintergrundmusik: bei --music auto wählt die KI nach Inhalt und Stimmung, sonst der genannte Titel."""
+    if A.music == "none":
+        return None
+    have = {n: d for n, d in MUSIC.items() if os.path.exists(os.path.join(MUSIC_DIR, f"{n}.mp3"))}
+    if A.music in have:
+        return os.path.join(MUSIC_DIR, f"{A.music}.mp3")
+    if not have:
+        return None
+    res = gemini("Du bist Editor für Kurzvideos. Wähle die Hintergrundmusik, die am besten zu Inhalt und Stimmung passt. "
+                 "Stil des Schnitts: " + {"clean": "ruhig, sauber", "viral": "schnell, laut", "premium": "hochwertig, kinoreif"}[A.style] + ".",
+                 "Musik:\n" + "\n".join(f"{n}: {d}" for n, d in have.items()) + "\n\nTranskript: " + " ".join(w["t"] for w in kept)[:3000],
+                 {"type": "object", "properties": {"musik": {"type": "string", "enum": list(have)}}, "required": ["musik"]})
+    name = (res or {}).get("musik")
+    if name not in have:
+        name = {"clean": "lofi", "viral": "hiphop-upbeat", "premium": "hiphop-groove"}[A.style]
+        name = name if name in have else next(iter(have))
+    STATS["music"] = name
+    return os.path.join(MUSIC_DIR, f"{name}.mp3")
+
+
+TRENDS = os.path.join(MASCHINE, "trends.json")
+
+
+def suggest_songs(kept, title):
+    """2–3 Trend-Songs als VORSCHLAG (nicht eingebaut): der Kunde fügt sie beim Posten in der TikTok-App hinzu. Quelle:
+    Shazam-Charts DE (trends.py, wöchentlich). Unpassendes (derb, düster, falsche Stimmung für eine Marke) fliegt raus."""
+    try:
+        tr = json.load(open(TRENDS))
+    except Exception:  # noqa: BLE001
+        return []
+    songs = tr.get("songs") or []
+    if not songs:
+        return []
+    res = gemini("Du bist Social-Media-Manager. Schlage für dieses Kurzvideo 3 Trend-Songs vor, die der Kunde beim Posten auf "
+                 "TikTok als Sound hinzufügen kann. Nur Songs, die zu Inhalt, Stimmung und einer seriösen Marke passen (nichts "
+                 "Derbes, Anzügliches, Düsteres, Aggressives – außer das Video ist genau so). Bevorzuge Aufsteiger (discovery). "
+                 "Je Song eine kurze Begründung auf Deutsch (max. 10 Wörter).",
+                 f"Titel: {title}\nTranskript: {' '.join(w['t'] for w in kept)[:2500]}\n\nTrend-Songs:\n" +
+                 "\n".join(f"{i}. {x['song']} – {x['artist']} [{x.get('chart')}] {x.get('mood', '')}" for i, x in enumerate(songs)),
+                 {"type": "object", "properties": {"songs": {"type": "array", "items": {"type": "object", "properties": {
+                     "nr": {"type": "integer"}, "warum": {"type": "string"}}, "required": ["nr", "warum"]}}}, "required": ["songs"]})
+    out = []
+    for x in (res or {}).get("songs") or []:
+        n = x.get("nr")
+        if isinstance(n, int) and 0 <= n < len(songs) and all(o["song"] != songs[n]["song"] for o in out):
+            out.append({"song": songs[n]["song"], "artist": songs[n]["artist"], "warum": str(x.get("warum") or "")[:80]})
+    STATS["songs"] = out[:3]
+    return out[:3]
+
+
+def gemini_hook(kept):
+    """Titel für die ersten 3 Sekunden – ehrlich, aus dem Inhalt, kein Satzanfang.
+    Viral: packend, darf ein Emoji haben. Clean: ruhig und hochwertig, ohne Emoji, kein Clickbait."""
+    if not LOUD:
+        res = gemini(
+            "Schreibe EINEN kurzen Titel für die ersten 3 Sekunden eines hochwertigen, ruhigen Kurzvideos (TikTok/Reels). "
+            "2–6 Wörter, Sprache des Videos, sachlich-elegant, fasst zusammen, worum es geht (Ort, Produkt, Person, Thema), "
+            "macht dezent neugierig, ehrlich – nichts erfinden, kein Clickbait, kein Emoji, keine Hashtags, kein abgeschnittener "
+            "Satzanfang. Beispiele: „Kaiserschmarrn in Mannheim“, „Von Afghanistan nach Köln“, „Pizza & Paint am Muttertag“.",
+            " ".join(w["t"] for w in kept),
+            {"type": "object", "properties": {"title": {"type": "string"}}, "required": ["title"]})
+        t = re.sub(r"[\U0001F300-\U0001FAFF\u2600-\u27BF\uFE0F]", "", ((res or {}).get("title") or "")).strip().strip('"„“')
+        return t if 0 < len(t) <= 40 else ""
+    res = gemini(
+        "Schreibe EINEN Hook-Titel für die ersten 3 Sekunden eines viralen Kurzvideos (TikTok/Reels). 2–5 Wörter, Sprache des "
+        "Videos, macht neugierig, fasst den Kern zusammen (Produkt, Aktion, Frage, Pointe), ehrlich – nichts erfinden, "
+        "kein abgeschnittener Satzanfang, keine Hashtags, höchstens ein Emoji am Ende. Beispiele: „Pizza & Paint am Muttertag 🎨“, "
+        "„Würdest du das probieren?“, „10 von 10 für diesen Schmarrn“.",
+        " ".join(w["t"] for w in kept),
+        {"type": "object", "properties": {"title": {"type": "string"}}, "required": ["title"]})
+    t = ((res or {}).get("title") or "").strip().strip('"„“')
+    return t if 0 < len(t) <= 40 else ""
+
+
+def est_times(ranges, words):
+    """Zeitpunkt jedes Wortes im fertigen Clip – schon VOR dem Rendern (aus der Schnittliste). Wort-Nummer → Sekunde."""
+    out, off = {}, 0.0
+    for s, e in ranges:
+        for w in words:
+            if s - 0.05 <= w["s"] < e:
+                out.setdefault(w["i"], off + max(0.0, w["s"] - s) / SPEED[0])
+        off += olen(s, e)
     return out
 
 
-LOG = os.environ.get("VELOX_JOBLOG", "/Volumes/PortableSSD/velox-worker/logs/jobs.jsonl")
+def gemini_effects(kept, times):
+    """Viral: KI setzt wenige, passende Akzente – Emoji + Sound + Zoom-Punch an Pointen (Preis → Kaching, Bewertung → Ding …).
+    Läuft VOR dem Rendern (Zeiten aus der Schnittliste), damit die Zoom-Punches genau auf diese Momente fallen."""
+    OUT_TIME = times  # noqa: N806  (gleiche Zeitbasis wie später im fertigen Clip)
+    res = gemini(
+        "Du bist Editor für virale Kurzvideos. Setze SPARSAM Akzente an die stärksten Momente des Transkripts (Pointen, Zahlen, "
+        "Preise, Bewertungen, überraschende Reaktionen, das Produkt). Höchstens ein Akzent pro 6 Sekunden, insgesamt 2–6. "
+        "Je Akzent: Wortnummer (das Wort, bei dem er erscheint), „text“ = das Schlüsselwort bzw. die Zahl genau wie gesagt "
+        "(1–3 Wörter, z. B. „Kaiserschmarrn“, „10 von 10“, „150 Millionen“, „12 Euro“), ein passendes Emoji aus dieser Liste: "
+        + " ".join(EMOJIS) +
+        " und ein Sound aus: pop (Standard), ding (Bewertung/Pointe), kaching (Geld/Preis/Gewinn), whoosh (Überraschung), click "
+        "(Aufzählung). Wörter als [Nummer|Sekunde]Wort.",
+        " ".join(f"[{w['i']}|{OUT_TIME[w['i']]:.1f}s]{w['t']}" for w in kept if w["i"] in OUT_TIME),
+        {"type": "object", "properties": {"fx": {"type": "array", "items": {"type": "object", "properties": {
+            "i": {"type": "integer"}, "text": {"type": "string"}, "emoji": {"type": "string"}, "sfx": {"type": "string"}},
+            "required": ["i", "text", "emoji", "sfx"]}}},
+         "required": ["fx"]})
+    fx, last = [], -99.0
+    for f in sorted((res or {}).get("fx") or [], key=lambda f: OUT_TIME.get(f.get("i"), 1e9)):
+        t0 = OUT_TIME.get(f.get("i"))
+        if t0 is None or t0 < 0.8 or t0 - last < 4.0:
+            continue
+        fx.append({"i": f["i"], "t": t0, "text": " ".join(str(f.get("text") or "").split()[:4])[:40], "emoji": f["emoji"] if f["emoji"] in EMOJIS else None,
+                   "sfx": f["sfx"] if f["sfx"] in SFX_NAMES else "pop"})
+        last = t0
+    return fx[:6]
+
+
+def viral_sounds(ranges, fx):
+    """Sound-Liste (Zeit, Datei, Lautstärke): Whoosh zum Hook-Titel und an Zoom-Punches, dazu die KI-Akzente."""
+    snd, t, last = [(0.0, "whoosh", 0.28)], 0.0, 0.0
+    for k, (s, e) in enumerate(ranges):
+        if k and k % 2 == 1 and t - last >= 3.5 and not any(abs(f["t"] - t) < 1.2 for f in fx):
+            snd.append((max(0.0, t - 0.12), "whoosh", 0.22))
+            last = t
+        t += olen(s, e)
+    snd += [(f["t"], f["sfx"], 0.32 if f["sfx"] in ("pop", "click") else 0.26) for f in fx]
+    if PREM:  # jede Motion-Graphic bekommt ihren Whoosh (Tutorial/TikToks: „Sound zu jeder Bewegung“)
+        snd += [(max(0.0, f["t"] - 0.12), "whoosh", 0.2) for f in fx if f["t"] >= 3.2]
+    big = [f for f in fx if f["sfx"] in ("ding", "kaching") and f["t"] >= 4.0]
+    if big:  # Spannung vor der Auflösung: leiser Riser, der genau in den letzten großen Moment läuft (Tutorial: „reversed hit“)
+        snd.append((max(0.0, big[-1]["t"] - RISER_S), "riser", 0.16))
+    return [(t0, n, v) for t0, n, v in snd if os.path.exists(os.path.join(SFX_DIR, f"{n}.wav"))]
+
+
+EMOJI_PX = 140   # Emoji-Größe im fertigen Bild (Quelle 160 px → wird nur verkleinert, bleibt scharf)
+HOOK_Y = 250     # Oberkante der Titel-Karte (unter der Statusleiste/TikTok-Suche)
+LOGO_PX, LOGO_Y = 190, 120  # Kunden-Logo oben links (Breite, Oberkante)
+APPLE_EMOJI = "/System/Library/Fonts/Apple Color Emoji.ttc"
+
+
+def hook_card(text, path):
+    """Titel oben als saubere Karte mit runden Ecken, max. 2 ausgewogene Zeilen.
+    Viral: weiß, weicher Schatten, größer, Emoji am Ende als echtes Apple-Emoji.
+    Clean: dezent – dunkles, leicht durchsichtiges Glas, weiße Schrift, kleiner, ohne Emoji."""
+    calm = not LOUD
+    try:
+        from PIL import Image, ImageDraw, ImageFilter, ImageFont
+    except ImportError:
+        return None
+    emo = None if calm else next((ch for ch in EMOJIS if text.rstrip().endswith(ch)), None) or \
+        (re.search(r"([\U0001F300-\U0001FAFF\u2600-\u27BF][\uFE0F]?)\s*$", text) or [None])[0]
+    words = re.sub(r"[^\w\s&?!.,:'’\-€%/+]", "", text).split()
+    if not words:
+        return None
+    font = ImageFont.truetype(os.path.join(FONTS, "Montserrat-Bold.otf"), 54 if calm else 64)
+    maxw = 800 if calm else 860
+    one = " ".join(words)
+    if font.getlength(one) + (82 if emo else 0) <= maxw:
+        lines = [one]
+    else:  # zwei ausgewogene Zeilen („Pizza & Paint / am Muttertag“ statt „Pizza & Paint am / Muttertag“)
+        best = min(range(1, len(words)), key=lambda k: max(font.getlength(" ".join(words[:k])),
+                                                              font.getlength(" ".join(words[k:])) + (82 if emo else 0)))
+        lines = [" ".join(words[:best]), " ".join(words[best:])]
+    lh = 68 if calm else 80
+    em_img = None
+    if emo:
+        try:
+            ef = ImageFont.truetype(APPLE_EMOJI, 160)
+            em_img = Image.new("RGBA", (176, 176), (0, 0, 0, 0))
+            ImageDraw.Draw(em_img).text((88, 88), emo, font=ef, embedded_color=True, anchor="mm")
+            em_img = em_img.resize((70, 70), Image.LANCZOS)
+        except Exception:  # noqa: BLE001
+            em_img = None
+    widths = [font.getlength(l) for l in lines]
+    if em_img:
+        widths[-1] += 82
+    pad_x, pad_y, sh = (38, 20, 30) if calm else (44, 26, 30)
+    radius = 28 if calm else 34
+    cw, ch = int(max(widths)) + 2 * pad_x, lh * len(lines) + 2 * pad_y
+    img = Image.new("RGBA", (cw + 2 * sh, ch + 2 * sh), (0, 0, 0, 0))
+    shadow = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    ImageDraw.Draw(shadow).rounded_rectangle((sh, sh + 8, sh + cw, sh + ch + 8), radius=radius, fill=(0, 0, 0, 40 if calm else 90))
+    img = Image.alpha_composite(img, shadow.filter(ImageFilter.GaussianBlur(14)))
+    d = ImageDraw.Draw(img)
+    d.rounded_rectangle((sh, sh, sh + cw, sh + ch), radius=radius, fill=(14, 14, 18, 175) if calm else (255, 255, 255, 250))
+    for i, l in enumerate(lines):
+        lw = widths[i]
+        x0 = sh + (cw - lw) / 2
+        y0 = sh + pad_y + i * lh + lh / 2
+        d.text((x0, y0), l, font=font, fill=(255, 255, 255, 255) if calm else (17, 17, 20, 255), anchor="lm")
+        if em_img and i == len(lines) - 1:
+            img.alpha_composite(em_img, (int(x0 + font.getlength(l) + 12), int(y0 - 37)))
+    img.save(path)
+    return path
+
+
+# ─────────────────────────────── Premium: 3D-Titel, Motion Graphics, Zähler ───────────────────────────────
+def _dark(hex_, f=0.32):
+    h = hex_.lstrip("#")
+    r, g, b = (int(int(h[i:i + 2], 16) * f) for i in (0, 2, 4))
+    return f"&H00{b:02X}{g:02X}{r:02X}"
+
+
+ACC_DARK = _dark(A.color, 0.24)
+POP_ANIM = "\\fscx55\\fscy55\\t(0,110,\\fscx106\\fscy106)\\t(110,190,\\fscx100\\fscy100)"
+
+
+def text3d(txt, x, y, t0, t1, fs, color=WHITE, style="Pop", anim=True, depth=10, fade=(90, 160)):
+    """Text mit echter Tiefe (3D-Extrusion in dunkler Akzentfarbe) und weichem Schatten – als ASS-Ebenen übereinander."""
+    txt = txt.replace("{", "(").replace("}", ")")
+    base = f"\\an5\\fs{fs}\\fad({fade[0]},{fade[1]})" + (POP_ANIM if anim else "")
+    t = f"{ass_time(t0)},{ass_time(t1)},{style},,0,0,0,"
+    ev = [f"Dialogue: 2,{t},{{{base}\\pos({x},{y + int(fs * 0.16)})\\1c&H000000&\\1a&H70&\\blur{max(8, fs // 9)}}}{txt}"]
+    step = max(1.2, fs / 48)  # deutlich sichtbare Tiefe (≈ 3 px je Ebene bei großer Schrift)
+    for k in range(depth, 0, -1):
+        ev.append(f"Dialogue: 3,{t},{{{base}\\pos({x + k * step * 0.6:.1f},{y + k * step:.1f})\\1c{ACC_DARK}}}{txt}")
+    ev.append(f"Dialogue: 4,{t},{{{base}\\pos({x},{y})\\1c{color}\\blur0.6}}{txt}")
+    return ev
+
+
+_POPFONT = []
+
+
+def fit_fs(txt, width=900, fs_max=150, k=None):
+    """Größte Schriftgröße, bei der txt in width Pixel passt – gemessen mit der echten Schrift (libass setzt Montserrat
+    Black bei gleicher Größe ≈ 0,665 × so breit wie Pillow)."""
+    try:
+        if not _POPFONT:
+            from PIL import ImageFont
+            _POPFONT.append(ImageFont.truetype(os.path.join(FONTS, "Montserrat-normal-900.ttf"), 100))
+        w100 = _POPFONT[0].getlength(txt) * 0.665
+    except Exception:  # noqa: BLE001
+        w100 = 44 * len(txt)
+    return max(60, min(fs_max, int(width * 100 / max(1.0, w100))))
+
+
+HIDE = []  # Zeitfenster, in denen eine Premium-Grafik steht (dort keine normalen Untertitel)
+NUM = re.compile(r"(\d{1,3}(?:[.\s]\d{3})+|\d+(?:,\d+)?)")
+
+
+def premium_events(fx, words_out, title):
+    """Motion Graphics für Premium:
+    – 3D-Titel oben (0–3 s), zwei ausgewogene Zeilen, poppt auf;
+    – an den stärksten Momenten ein großes Schlüsselwort mit 3D-Tiefe („Kinetic Typography“, 1,1 s), darüber klein die
+      Wörter davor (z. B. „für diesen“ / SCHMARRN);
+    – Zahlen (Preise, Bewertungen, Mengen) zählen hoch („Zähler“, 0,75 s) und bleiben kurz stehen."""
+    ev, cy = [], caption_y()
+    HIDE.clear()
+    py = cy - 390 if cy > 900 else cy + 390
+    if FACES_OUT:  # Grafik nie über ein Gesicht: unter das Kinn, sonst über den Kopf, sonst Standard
+        ft = sorted(f[0] for f in FACES_OUT)[len(FACES_OUT) // 2]
+        fb = sorted(f[1] for f in FACES_OUT)[len(FACES_OUT) // 2]
+        if fb + 200 < cy - 130:
+            py = int(min(cy - 200, fb + 150))
+        elif ft - 200 > 560:
+            py = int(ft - 150)
+    clean_title = re.sub(r"[^\w\s&?!.,:'’\-€%/+]", "", title or "").strip().upper()  # „/“ bleibt: „10/10“
+    if clean_title:
+        ws = clean_title.split()
+        lines = [clean_title]
+        if len(clean_title) > 16 and len(ws) > 1:
+            best = min(range(1, len(ws)), key=lambda k: max(len(" ".join(ws[:k])), len(" ".join(ws[k:]))))
+            lines = [" ".join(ws[:best]), " ".join(ws[best:])]
+        fs = min(fit_fs(max(lines, key=len), 940, 140), 140)
+        for li, line in enumerate(lines):
+            ty = 330 + (LOGO_PX + 10 if A.logo and os.path.exists(A.logo) else 0)
+            ev += text3d(line, 540, ty + li * int(fs * 1.08), 0.05 + li * 0.08, 3.0, fs, color=WHITE if li == 0 else ACC)
+    for f in fx:
+        t0, txt = f["t"], (f.get("text") or "").strip().upper()
+        if not txt or t0 < 3.2:  # nicht mit dem Titel überlappen
+            continue
+        m = NUM.search(txt)
+        if m:  # Zähler
+            raw = m.group(1)
+            val = float(raw.replace(".", "").replace(" ", "").replace(",", "."))
+            dec = "," in raw
+            start = val - 15 if 1900 <= val <= 2100 and not dec else 0.0
+            pre, post = txt[:m.start()].strip(), txt[m.end():].strip()
+            fs = fit_fs(f"{pre} {raw} {post}".strip(), 920, 230)
+            n = 22
+            for k in range(n + 1):
+                p = k / n
+                v = start + (val - start) * (1 - (1 - p) ** 3)
+                sv = f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".") if dec else f"{int(round(v)):,}".replace(",", ".")
+                if 1900 <= val <= 2100 and not dec:
+                    sv = str(int(round(v)))
+                a, b = t0 + k * 0.034, (t0 + (k + 1) * 0.034) if k < n else t0 + 1.5
+                ev += text3d(f"{pre} {sv} {post}".strip(), 540, py, a, b, fs, color=ACC, anim=(k == 0),
+                             fade=(60 if k == 0 else 0, 180 if k == n else 0))
+            HIDE.append((t0 - 0.05, t0 + 1.5))
+        else:  # Schlüsselwort (lang → zwei ausgewogene Zeilen, nie abgeschnitten)
+            ws = txt.split()
+            rows = [txt]
+            if len(txt) > 14 and len(ws) > 1:
+                cut_k = min(range(1, len(ws)), key=lambda k: max(len(" ".join(ws[:k])), len(" ".join(ws[k:]))))
+                rows = [" ".join(ws[:cut_k]), " ".join(ws[cut_k:])]
+            fs = min(fit_fs(r, 920, 150) for r in rows)
+            for ri, row in enumerate(rows):
+                ev += text3d(row, 540, py + int((ri - (len(rows) - 1) / 2) * fs * 1.02), t0 + ri * 0.06, t0 + 1.25, fs, color=ACC)
+            HIDE.append((t0 - 0.05, t0 + 1.25))
+            if len(rows) > 1:
+                fs = int(fs * 1.02 * (len(rows) - 1) / 2 + fs)  # Abstand für die kleine Zeile darüber
+            before = [w[0] for w in words_out if t0 - 1.3 <= w[1] < t0 - 0.02][-2:]
+            before = [b for b in before if norm(b) not in {norm(x) for x in txt.split()}]
+            if before:
+                small = " ".join(before).rstrip(",.;:").replace("{", "(")
+                ev.append(f"Dialogue: 4,{ass_time(t0 - 0.05)},{ass_time(t0 + 1.15)},PopSmall,,0,0,0,,"
+                          f"{{\\an5\\pos(540,{py - int(fs * 0.72)})\\fad(80,160)\\blur0.5}}{small}")
+    return ev
+
+
+# ─────────────────────────────── 6c. Quiz-Zähler & Lichtleck (aus den Malo's-Videos des Nutzers) ───────────────────────────────
+QUIZ = {}  # je Clip: {"n": Fragen gesamt, "hits": [Zeit der Auflösung einer RICHTIGEN Antwort …], "start": Zeit}
+
+
+def gemini_quiz(kept, times):
+    """Straßen-Quiz erkennen (wie Malo's Umfrage): Fragen, Auflösung, richtig/falsch. Nur wenn es wirklich ein Quiz mit
+    mehreren Fragen ist – sonst None."""
+    res = gemini(
+        "Du bist Editor. Prüfe, ob dieses Transkript ein Quiz/Straßen-Quiz ist (Moderator stellt mehrere Wissensfragen, "
+        "Passanten antworten, es wird aufgelöst, ob richtig). Wenn ja: Gesamtzahl der Fragen (wie angekündigt, z. B. „fünf "
+        "Fragen“ → 5, sonst gezählt) und je Frage die Wortnummer, an der die Frage beginnt, und die Wortnummer, an der "
+        "aufgelöst wird (z. B. „Richtig!“, „Korrekt“, „Nein, leider …“), plus ob die Antwort richtig war. "
+        "Wörter als [Nummer|Sekunde]Wort.",
+        " ".join(f"[{w['i']}|{times[w['i']]:.1f}s]{w['t']}" for w in kept if w["i"] in times),
+        {"type": "object", "properties": {
+            "quiz": {"type": "boolean"}, "fragen_gesamt": {"type": "integer"},
+            "fragen": {"type": "array", "items": {"type": "object", "properties": {
+                "frage_i": {"type": "integer"}, "aufloesung_i": {"type": "integer"}, "richtig": {"type": "boolean"}},
+                "required": ["frage_i", "aufloesung_i", "richtig"]}}},
+         "required": ["quiz", "fragen_gesamt", "fragen"]})
+    if not res or not res.get("quiz"):
+        return None
+    qs = [q for q in res.get("fragen") or [] if q.get("frage_i") in times and q.get("aufloesung_i") in times]
+    n = len(qs)  # Fragen, die im FERTIGEN Clip vorkommen (angekündigt „sechs“, geschnitten fünf → „/5“ wie beim Nutzer)
+    if len(qs) < 2 or not 2 <= n <= 20:
+        return None
+    qs.sort(key=lambda q: times[q["frage_i"]])
+    return {"n": n, "start": times[qs[0]["frage_i"]], "hits": [times[q["aufloesung_i"]] for q in qs if q.get("richtig")],
+            "misses": [times[q["aufloesung_i"]] for q in qs if not q.get("richtig")]}
+
+
+def quiz_events(q, total):
+    """Großer Punktestand „k/N“ in der Bildmitte (wie beim Nutzer): steht ab der ersten Frage, springt bei jeder richtigen
+    Antwort grün auf (Pop), wird danach wieder weiß. Liegt über den Untertiteln, nie über dem Gesicht."""
+    ev, cy = [], caption_y()
+    y = cy - int(CAPFS[0] * 1.35) - 70 if cy > 900 else cy + int(CAPFS[0] * 1.35) + 70
+    fs = 190
+    marks = [q["start"]] + q["hits"] + [total]
+    for k in range(len(marks) - 1):
+        a, b = marks[k], marks[k + 1]
+        if b - a < 0.05:
+            continue
+        txt = f"{k}/{q['n']}"
+        if k == 0:
+            ev += text3d(txt, 540, y, a, b, fs, color=WHITE, anim=True, depth=6, fade=(120, 0))
+        else:  # Treffer: grün + Pop für 0,9 s, dann weiß
+            g = min(b, a + 0.9)
+            ev += text3d(txt, 540, y, a, g, fs, color="&H0050E050", anim=True, depth=6, fade=(0, 0))
+            if b > g:
+                ev += text3d(txt, 540, y, g, b, fs, color=WHITE, anim=False, depth=6, fade=(0, 200 if k == len(marks) - 2 else 0))
+    return ev
+
+
+def probe_dur(path):
+    return run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path]).stdout.strip() or "0"
+
+
+def out_at(t_src):
+    """Zeit im fertigen Clip zu einer Zeit in der (zusammengesetzten) Quelle: über das nächste behaltene Wort danach."""
+    cand = [w for w in WORDS if w["s"] >= t_src - 0.08 and w["i"] in OUT_TIME]
+    return OUT_TIME[min(cand, key=lambda w: w["s"])["i"]] if cand else None
+
+
+def sticker_png(src, alpha, path):
+    """Produktbild als Sticker: freigestellt (PNG mit Transparenz) bleibt wie es ist; ein normales Foto bekommt runde Ecken
+    und einen weißen Rand mit weichem Schatten (wie ein Foto-Sticker)."""
+    from PIL import Image, ImageDraw, ImageFilter
+    im = Image.open(src).convert("RGBA")
+    wide = im.width > 1.6 * im.height  # Screenshot/Kommentar: breit darstellen, sonst unlesbar
+    im.thumbnail((860, 860) if wide else (STICKER_PX, STICKER_PX))
+    if alpha and im.getextrema()[3][0] < 250:  # wirklich transparent
+        out = im
+    else:
+        b, r = 14, 36
+        card = Image.new("RGBA", (im.width + 2 * b, im.height + 2 * b), (255, 255, 255, 255))
+        m = Image.new("L", im.size, 0)
+        ImageDraw.Draw(m).rounded_rectangle((0, 0, im.width - 1, im.height - 1), r - b, fill=255)
+        card.paste(im, (b, b), m)
+        cm = Image.new("L", card.size, 0)
+        ImageDraw.Draw(cm).rounded_rectangle((0, 0, card.width - 1, card.height - 1), r, fill=255)
+        card.putalpha(cm)
+        out = Image.new("RGBA", (card.width + 40, card.height + 40), (0, 0, 0, 0))
+        sh = Image.new("RGBA", card.size, (0, 0, 0, 120))
+        sh.putalpha(cm.point(lambda v: v * 120 // 255))
+        out.paste(sh, (24, 28), sh)
+        out = out.filter(ImageFilter.GaussianBlur(10))
+        out.paste(card, (20, 20), card)
+    out.save(path)
+    return path
+
+
+STICKER_PX = 430
+
+
+def Image_wide(path):  # noqa: N802
+    from PIL import Image
+    w, h = Image.open(path).size
+    return w > 1.5 * h  # Produktbild seitlich neben der Person (wie der schwebende Burger in den Malo's-Videos)
+
+
+def burn(idx, cut, words_out, title, ranges=None, kept=None):
+    """2. Durchgang: Untertitel (und bei Viral den Hook-Titel) einbrennen, web-sicheres MP4."""
+    out = os.path.join(A.out, f"clip-{idx}.mp4")
+    ass = os.path.join(A.out, f"clip-{idx}.ass")
+    if PREM and ranges and kept and idx not in FX:
+        FX[idx] = gemini_effects(kept, OUT_TIME)
+    pfx = [{**f, "t": OUT_TIME[f["i"]]} for f in FX.get(idx, []) if f["i"] in OUT_TIME] if PREM else []
+    caption_groups(words_out)  # legt die Schriftgröße fest – Grafiken/Emojis richten sich nach der Untertitel-Zeile
+    pev = premium_events(pfx, words_out, title) if PREM else []
+    if ranges and kept and idx not in QUIZ:
+        QUIZ[idx] = gemini_quiz(kept, OUT_TIME)
+        STATS["quiz"] = QUIZ[idx]
+    if QUIZ.get(idx):  # Straßen-Quiz: Punktestand wie in den Malo's-Videos des Nutzers
+        pev += quiz_events(QUIZ[idx], sum(olen(s, e) for s, e in ranges))
+    build_ass(words_out, ass, extra=pev, hide=list(HIDE) if PREM else ())
+    STATS["caption_words"] = len(words_out)
+    esc = lambda p: p.replace("\\", "/").replace(":", "\\:").replace("'", "\\'")
+    vf = f"ass='{esc(ass)}':fontsdir='{esc(FONTS)}'"
+    inputs, fc, amap, vmap = ["-i", cut], [], ["-map", "0:a", "-c:a", "copy"], None
+    base, ni = "0:v", 1
+    plan_snd = []
+    total = float(probe_dur(cut))
+    if PLAN:  # B-Rolls (Bild statt Sprecher, Ton läuft weiter) – UNTER den Untertiteln
+        used = []
+        for k, b in enumerate(PLAN.get("broll") or []):
+            t0 = out_at(b["t_src"])
+            if t0 is None or t0 > total - 0.8 or any(abs(t0 - u) < 2.5 for u in used) or not os.path.exists(b["file"]):
+                continue
+            d = min(b["dur"], total - t0 - 0.2, 3.0)
+            if d < 0.8:
+                continue
+            used.append(t0)
+            inputs += ["-i", b["file"]]
+            fc.append(f"[{ni}:v]trim=0:{d:.3f},setpts=PTS-STARTPTS+{t0:.3f}/TB[br{k}]")
+            fc.append(f"[{base}][br{k}]overlay=0:0:eof_action=pass[bv{k}]")
+            base, ni = f"bv{k}", ni + 1
+        STATS["broll"] = [round(u, 1) for u in used]
+    fc.append(f"[{base}]{vf}[vb]")
+    vin = "vb"
+    card = hook_card(title, os.path.join(A.out, f"titel-{idx}.png")) if title and not PREM else None
+    logo = A.logo if A.logo and os.path.exists(A.logo) else None
+    hy = HOOK_Y + (LOGO_PX + 20 if logo else 0)  # mit Logo rutscht der Titel darunter
+    if card:  # Titel oben: Viral gleitet sanft von oben rein, Clean blendet nur ruhig ein; bleibt 3 s
+        inputs += ["-loop", "1", "-t", "3.3", "-i", card]
+        fc.append(f"[{ni}:v]format=rgba,fade=t=in:st=0:d=0.3:alpha=1,fade=t=out:st=2.9:d=0.4:alpha=1[hc]")
+        ypos = f"'{hy}-36*pow(1-clip(t/0.35,0,1),3)'" if LOUD else str(hy)
+        fc.append(f"[{vin}][hc]overlay=x=(W-w)/2:y={ypos}:eof_action=pass[vh]")
+        vin, ni = "vh", ni + 1
+    if logo:  # Kunden-Logo oben links (wie in den Malo's-Videos des Nutzers): blendet weich ein und bleibt
+        inputs += ["-loop", "1", "-i", logo]
+        fc.append(f"[{ni}:v]format=rgba,scale={LOGO_PX}:-1:flags=lanczos,fade=t=in:st=0.1:d=0.35:alpha=1[lg]")
+        fc.append(f"[{vin}][lg]overlay=x=48:y={LOGO_Y}:shortest=1[vl]")
+        vin, ni = "vl", ni + 1
+    if PLAN and PLAN.get("bilder"):  # Produktbilder als Sticker: gleiten von unten rein, bleiben 1,8 s, Pop-Sound
+        # neben das Gesicht (nicht davor): auf die Seite, auf der mehr Platz ist, auf Höhe des Gesichts
+        fx = med([f[2] for f in FACES_OUT]) if FACES_OUT and len(FACES_OUT[0]) > 2 else 540
+        fy = med([(f[0] + f[1]) / 2 for f in FACES_OUT]) if FACES_OUT else 760
+        sy = int(min(1180, max(560, fy + 120)))
+        for k, b in enumerate(PLAN["bilder"]):
+            t0 = out_at(b["t_src"])
+            if t0 is None or t0 > total - 1.0 or not os.path.exists(b["file"]):
+                continue
+            png = sticker_png(b["file"], b.get("alpha"), os.path.join(A.out, f"sticker-{idx}-{k}.png"))
+            inputs += ["-loop", "1", "-t", f"{b['dur'] + 0.4:.2f}", "-i", png]
+            fc.append(f"[{ni}:v]format=rgba,fade=t=in:st=0:d=0.2:alpha=1,fade=t=out:st={b['dur']:.2f}:d=0.3:alpha=1,"
+                      f"setpts=PTS+{t0:.3f}/TB[st{k}]")
+            a = f"(60*pow(1-clip((t-{t0:.3f})/0.25,0,1),3))"
+            sx = "(W-w)/2" if Image_wide(png) else ("W-w-40" if fx < 540 else "40")
+            fc.append(f"[{vin}][st{k}]overlay=x={sx}:y='{sy}-h/2+{a}':eof_action=pass[sv{k}]")
+            vin, ni = f"sv{k}", ni + 1
+            plan_snd.append((t0, "pop", 0.3))
+    if LOUD and ranges and kept:
+        if idx not in FX:
+            FX[idx] = gemini_effects(kept, OUT_TIME)
+        fx = [{**f, "t": OUT_TIME[f["i"]]} for f in FX[idx] if f["i"] in OUT_TIME]  # exakte Zeit im fertigen Clip
+        snd = viral_sounds(ranges, fx)
+        emo = [] if PREM else [f for f in fx if f["emoji"] and os.path.exists(os.path.join(EMOJI_DIR, f"{EMOJIS[f['emoji']]}.png"))]
+        STATS.update(sfx=len(snd), emojis=len(emo), fx=[(round(f["t"], 1), f["emoji"], f["sfx"]) for f in fx])
+        # Emojis UNTER den Untertiteln, dezent (140 px), gleiten abwechselnd von links/rechts/unten/oben herein und wieder weg
+        ey = min(1660, caption_y() + int(CAPFS[0] * 0.55) + 105)  # knapp unter der (immer einzeiligen) Untertitel-Zeile
+        slide = [("-{a}", ""), ("+{a}", ""), ("", "+{a}"), ("", "-{a}")]
+        for k, f in enumerate(emo):
+            t0 = f["t"]
+            inputs += ["-loop", "1", "-t", "1.7", "-i", os.path.join(EMOJI_DIR, f"{EMOJIS[f['emoji']]}.png")]
+            fc.append(f"[{ni}:v]format=rgba,scale={EMOJI_PX}:{EMOJI_PX}:flags=lanczos,fade=t=in:st=0:d=0.25:alpha=1,"
+                      f"fade=t=out:st=1.35:d=0.35:alpha=1,setpts=PTS+{t0:.3f}/TB[e{k}]")
+            # Weg: rein = 80 px mit weichem Abbremsen, raus = 30 px weiter in dieselbe Richtung
+            a = f"(80*pow(1-clip((t-{t0:.3f})/0.3,0,1),3)-30*pow(clip((t-{t0 + 1.35:.3f})/0.35,0,1),2))"
+            sx, sy = (v.format(a=a) for v in slide[k % 4])
+            fc.append(f"[{vin}][e{k}]overlay=x='(W-w)/2{sx}':y='{ey}-h/2{sy}':eof_action=pass[vo{k}]")
+            vin, ni = f"vo{k}", ni + 1
+    else:
+        snd = []
+    snd += [(t, "ding", 0.3) for t in (QUIZ.get(idx) or {}).get("hits", [])]  # Quiz: Ding bei jeder richtigen Antwort
+    snd += plan_snd
+    snd = [x for x in snd if os.path.exists(os.path.join(SFX_DIR, f"{x[1]}.wav"))]
+    if kept and idx not in MUSIC_PICK:
+        MUSIC_PICK[idx] = pick_music(kept)
+    mus = MUSIC_PICK.get(idx)
+    if snd or mus:
+        mix = []
+        voice = "[0:a]"
+        if mus:  # Musik: gleichmäßig laut, duckt automatisch unter die Stimme, weich rein/raus
+            total = float(probe_dur(cut))
+            inputs += ["-stream_loop", "-1", "-i", mus]
+            fc.append("[0:a]asplit=2[vo][vk]")
+            fc.append(f"[{ni}:a]aresample=48000,atrim=0:{total:.3f},asetpts=PTS-STARTPTS,loudnorm=I=-24:TP=-4:LRA=9,"
+                      f"afade=t=in:d=0.4,afade=t=out:st={max(0.0, total - 1.2):.3f}:d=1.2[mraw]")
+            fc.append("[mraw][vk]sidechaincompress=threshold=0.02:ratio=8:attack=30:release=450:makeup=1[mduck]")
+            mix.append("[mduck]")
+            voice = "[vo]"
+            ni += 1
+        for k, (t0, n, vol) in enumerate(snd):
+            inputs += ["-i", os.path.join(SFX_DIR, f"{n}.wav")]
+            ms = int(t0 * 1000)
+            fc.append(f"[{ni}:a]aresample=48000,volume={vol},adelay={ms}|{ms}[s{k}]")
+            mix.append(f"[s{k}]")
+            ni += 1
+        if mix:
+            fc.append(f"{voice}{''.join(mix)}amix=inputs={len(mix) + 1}:normalize=0:duration=first,alimiter=limit=0.93:level=0[am]")
+            amap = ["-map", "[am]", "-c:a", "aac", "-b:a", "192k"]
+    fc.append(f"[{vin}]format=yuv420p[vf]")
+    script = os.path.join(A.out, f"burn-{idx}.filter")
+    open(script, "w").write(";\n".join(fc))
+    run(["ffmpeg", "-v", "error", "-y", *inputs, "-/filter_complex", script, "-map", "[vf]", *amap,
+         "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-profile:v", "high", "-level", "4.1", "-color_range", "tv",
+         "-movflags", "+faststart", out])
+    if not A.keep_work:
+        for f in [ass, script, os.path.join(A.out, f"titel-{idx}.png")] + [os.path.join(A.out, x) for x in os.listdir(A.out) if x.startswith(f"sticker-{idx}-")]:
+            if os.path.exists(f):
+                os.remove(f)
+    return out
+
+
+# ─────────────────────────────── 8. KI-Abnahme ───────────────────────────────
+REVIEW_KINDS = ["untertitel", "fehlender_untertitel", "schnitt", "anfang", "ende", "bild", "ton", "titel", "effekte"]
+
+
+def gemini_review(path, words_out, title):
+    """Wie ein Chef-Cutter vor der Auslieferung: Die KI schaut sich den FERTIGEN Clip (Bild + Ton) an, gibt eine Note,
+    listet Probleme und nennt falsch verstandene Untertitel. Kleine Vorschau-Datei (540 px), damit es schnell geht."""
+    proxy = os.path.join(A.out, "abnahme.mp4")
+    try:
+        run(["ffmpeg", "-v", "error", "-y", "-i", path, "-vf", "scale=540:-2,fps=12", "-c:v", "libx264", "-preset", "veryfast",
+             "-crf", "33", "-c:a", "aac", "-b:a", "48k", "-ac", "1", proxy])
+        if os.path.getsize(proxy) > 18e6:
+            return None
+        import base64
+        video = {"inline_data": {"mime_type": "video/mp4", "data": base64.b64encode(open(proxy, "rb").read()).decode()}}
+    finally:
+        if os.path.exists(proxy) and not A.keep_work:
+            os.remove(proxy)
+    style = {"viral": "Viral – Hook-Titel-Karte oben, harte Zoom-Punches, Emojis unter den Untertiteln und Sounds sind GEWOLLT",
+             "premium": "Premium – 3D-Titel oben, große animierte Schlüsselwörter und hochzählende Zahlen (Motion Graphics), "
+                        "Zoom-Punches, Sounds, Kino-Look mit Vignette und feiner Körnung sind GEWOLLT",
+             }.get(A.style, "Clean – ruhig und hochwertig; dezente Titel-Karte oben, kurze weiche Übergänge sind gewollt")
+    caps = " ".join(f"[{s0:.1f}] {tx}" for tx, s0, _ in words_out)
+    return gemini(
+        "Du bist ein strenger Chef-Cutter für TikTok/Reels und machst die Abnahme, bevor ein zahlender Kunde sein Video bekommt. "
+        f"Stil: {style}. Schau dir das fertige Kurzvideo komplett an, mit Ton, und prüfe: 1. Untertitel – stimmt der Text mit "
+        "dem Gesprochenen (verhörte Wörter, Namen, fehlende Wörter)? Wird irgendwo gesprochen, ohne dass ein Untertitel steht? "
+        "2. Schnitte – sichtbare Ruckler, Geisterbilder, abgehackte Wörter, unnatürliche Sprünge? 3. Anfang – packt er sofort? "
+        "Ende – sauberer Abschluss, nichts abgeschnitten? 4. Bild (Wackeln, zu dunkel, Köpfe angeschnitten) und Ton (zu leise, "
+        "zu laut, Knacken). 5. Titel und Effekte – passen sie? Nur echte, sichere Probleme – nichts erfinden, keine "
+        "Geschmacksfragen. Untertitel-Korrekturen nur, wenn du das Gesprochene klar verstehst: „falsch“ = exakt der "
+        "eingeblendete Text (ein bis fünf Wörter), „richtig“ = was wirklich gesagt wird. Wird irgendwo klar verständlich "
+        "gesprochen, ohne dass ein Untertitel steht: unter „ergaenzen“ die Sekunden von/bis und den exakt gesprochenen Text "
+        "(nur Wörter, die du sicher verstehst; Füllwörter wie äh/ähm weglassen). Note 1–10 = würdest du das Video "
+        "nach deinen Untertitel-Korrekturen so an den Kunden freigeben (10 = perfekt, 7 = gut, unter 5 = nicht freigeben)?",
+        f"Titel oben: {title or '–'}\n" + (f"Richtige Schreibweise von Namen/Marken im Video: {BRAND}\n" if BRAND else "") +
+        f"Eingeblendete Untertitel mit Sekunde: {caps}",
+        {"type": "object", "properties": {
+            "note": {"type": "integer"}, "fazit": {"type": "string"},
+            "probleme": {"type": "array", "items": {"type": "object", "properties": {
+                "sek": {"type": "number"}, "art": {"type": "string", "enum": REVIEW_KINDS}, "was": {"type": "string"}},
+                "required": ["sek", "art", "was"]}},
+            "untertitel_korrekturen": {"type": "array", "items": {"type": "object", "properties": {
+                "sek": {"type": "number"}, "falsch": {"type": "string"}, "richtig": {"type": "string"}},
+                "required": ["sek", "falsch", "richtig"]}},
+            "ergaenzen": {"type": "array", "items": {"type": "object", "properties": {
+                "von": {"type": "number"}, "bis": {"type": "number"}, "text": {"type": "string"}},
+                "required": ["von", "bis", "text"]}}},
+         "required": ["note", "fazit", "probleme", "untertitel_korrekturen", "ergaenzen"]},
+        parts=[video], timeout=120, models=("gemini-flash-latest", "gemini-3-flash-preview"))
+
+
+def apply_caption_adds(words_out, adds, total):
+    """Gesprochenes ohne Untertitel (von der Abnahme gehört) nachtragen – nur in echten Lücken (dort steht noch nichts),
+    Wörter gleichmäßig über die Lücke verteilt, höchstens 8 Wörter je Stelle."""
+    out, done = list(words_out), []
+    for a in adds or []:
+        words = [w for w in str(a.get("text", "")).split() if norm(w) and norm(w) not in FILLER][:8]
+        try:
+            v, b = max(0.0, float(a["von"])), min(total, float(a["bis"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not words or b - v < 0.25 * len(words) * 0.6 or b - v > 8:
+            continue
+        # freie Stelle innerhalb [v, b]: zwischen den vorhandenen Untertiteln
+        busy = sorted((x[1], x[2]) for x in out if x[2] > v and x[1] < b)
+        free, pos = [], v
+        for s0, e0 in busy:
+            if s0 - pos > 0:
+                free.append((pos, s0))
+            pos = max(pos, e0)
+        if b - pos > 0:
+            free.append((pos, b))
+        if not free:
+            continue
+        fa, fb = max(free, key=lambda x: x[1] - x[0])
+        if fb - fa < 0.18 * len(words):
+            continue
+        step = (fb - fa) / len(words)
+        at = next((k for k, x in enumerate(out) if x[1] > fa), len(out))
+        out[at:at] = [(w, fa + i * step, fa + (i + 1) * step) for i, w in enumerate(words)]
+        done.append(f"{v:.0f}s „{' '.join(words)}“")
+    return out, done
+
+
+def apply_caption_fixes(words_out, fixes):
+    """Korrekturen aus der Abnahme einsetzen: Die falschen Wörter müssen genau so (±2,5 s) im Untertitel stehen; die
+    richtigen Wörter übernehmen deren Zeitspanne. Vorsichtig: nur kleine, ähnliche Korrekturen – nie ganze Sätze umschreiben."""
+    out, done = list(words_out), []
+    for f in fixes or []:
+        wrong = [norm(x) for x in str(f.get("falsch", "")).split() if norm(x)]
+        right = str(f.get("richtig", "")).split()
+        dw, dr = re.sub(r"\D", "", "".join(wrong)), re.sub(r"\D", "", " ".join(right))
+        nums = [int(x) for x in wrong if x.isdigit()]
+        # Zahl zerhackt verstanden: „neun-und-achtzig“ als „9, 80.“ → „89“ (Summe) bzw. dieselben Ziffern in anderer Reihenfolge
+        same_digits = bool(dr) and (sorted(dr) == sorted(dw) or (len(nums) == len(wrong) > 1 and dr.isdigit() and sum(nums) == int(dr)))
+        if not wrong or not right or len(wrong) > 5 or len(right) > len(wrong) + 2 or (not same_digits and
+                difflib.SequenceMatcher(a=" ".join(wrong), b=norm(" ".join(right))).ratio() < 0.35):
+            continue
+        t = float(f.get("sek", -99))
+        for k in range(len(out) - len(wrong) + 1):
+            if abs(out[k][1] - t) > 2.5 or [norm(x[0]) for x in out[k:k + len(wrong)]] != wrong:
+                continue
+            a, b = out[k][1], out[k + len(wrong) - 1][2]
+            step = (b - a) / len(right)
+            out[k:k + len(wrong)] = [(w, a + i * step, a + (i + 1) * step) for i, w in enumerate(right)]
+            done.append(f"{f['falsch']} → {f['richtig']}")
+            break
+    return out, done
+
+
+LOG = os.environ.get("VELOX_JOBLOG", os.path.join(MASCHINE, "logs", "jobs.jsonl"))
+
+
+# ─────────────────────────────── 8b. Schnitt-Reparatur (Satzgrenzen, Fetzen, Nachschnitt nach der Abnahme) ───────────────────────────────
+def fix_bounds(m):
+    """Nie mitten im Satz beginnen oder enden: Ende bis zum nächsten Satzende verlängern (max. 8 s), Anfang auf den
+    Satzanfang zurücksetzen (max. 5 s). Test 07: Clip endete bei „eine 10 von …“."""
+    a, b = m["start"], m["end"]
+    if not SENT_END.search(WORDS[b]["t"]):
+        j = b
+        while j + 1 < len(WORDS) and not SENT_END.search(WORDS[j]["t"]) and WORDS[j + 1]["e"] - WORDS[b]["e"] <= 8.0:
+            j += 1
+        if SENT_END.search(WORDS[j]["t"]) and j != b:
+            log(f"Satzgrenze: Ende bis „{WORDS[j]['t']}“ verlängert (+{WORDS[j]['e'] - WORDS[b]['e']:.1f} s)")
+            b = j
+    if a > 0 and not re.search(r"[.!?…:]$", WORDS[a - 1]["t"]):
+        j = a
+        while j > 0 and not re.search(r"[.!?…:]$", WORDS[j - 1]["t"]) and WORDS[a]["s"] - WORDS[j - 1]["s"] <= 5.0:
+            j -= 1
+        if j != a and (j == 0 or re.search(r"[.!?…:]$", WORDS[j - 1]["t"])):
+            log(f"Satzgrenze: Anfang auf „{WORDS[j]['t']}“ zurückgesetzt")
+            a = j
+    return {**m, "start": a, "end": b}
+
+
+def edge_junk(heard, words_out, secs):
+    """Hörprobe: Ist VOR dem ersten oder NACH dem letzten Untertitel noch Sprache zu hören (abgehackter Wortfetzen wie
+    „Kennt ihr sch-“), wie viel Sekunden am Anfang/Ende wegschneiden? (0, 0) = sauber."""
+    if not words_out or not heard:
+        return 0.0, 0.0
+    first, last = words_out[0][1], words_out[-1][2]
+    lead = [h for h in heard if h["e"] <= first - 0.04 and h["e"] - h["s"] >= 0.08 and norm(h["t"])]
+    tail = [h for h in heard if h["s"] >= last + 0.04 and h["e"] - h["s"] >= 0.08 and norm(h["t"])]
+    cut_a = max(0.0, first - 0.06) if lead else 0.0
+    cut_b = max(0.0, secs - (last + 0.3)) if tail else 0.0  # 0,3 s Luft: Untertitel-Ende liegt oft vor dem Wortende
+    if lead or tail:
+        STATS["edge_junk"] = [h["t"] for h in lead + tail][:6]
+    return cut_a, cut_b
+
+
+CUT_KINDS = ("schnitt", "anfang", "ende")
+
+
+def gemini_fix_story(m, kept, problems):
+    """Die Abnahme hat Schnittfehler gefunden (abgehackt, mitten im Satz, unnötige Pause …): die KI korrigiert die
+    Satzauswahl mit genau diesem Hinweis – wie ein Cutter, der die Anmerkung vom Chef umsetzt."""
+    lo = max(0, m["start"] - 80)
+    hi = min(len(WORDS) - 1, m["end"] + 80)
+    sents = sentences(WORDS[lo:hi + 1])
+    kept_i = {w["i"] for w in kept}
+    lines = []
+    for k, st in enumerate(sents):
+        ins = [w for w in st if w["i"] in kept_i]
+        t = OUT_TIME.get(ins[0]["i"]) if ins else None
+        tag = f"[{k}|+|{t:.1f}s]" if ins and t is not None else f"[{k}|−]"
+        lines.append(f"{tag} {' '.join(w['t'] for w in st)}")
+    probs = "\n".join(f"- bei {p.get('sek', 0):.0f} s ({p.get('art')}): {p.get('was')}" for p in problems)
+    res = gemini(
+        CUTTER + "Die Abnahme des fertigen Videos hat Schnittfehler gefunden. Korrigiere die Satzauswahl so, dass genau diese "
+        "Fehler behoben sind – sonst nichts ändern. + = Satz ist im Video (mit Sekunde im fertigen Video), − = rausgeschnitten. "
+        + STORY_RULES + " Antworte mit den Nummern ALLER Sätze, die ins korrigierte Video gehören (in Reihenfolge).",
+        f"Befunde der Abnahme:\n{probs}\n\nSätze:\n" + "\n".join(lines),
+        {"type": "object", "properties": {"keep": {"type": "array", "items": {"type": "integer"}}, "warum": {"type": "string"}},
+         "required": ["keep"]})
+    keep = sorted({k for k in (res or {}).get("keep") or [] if isinstance(k, int) and 0 <= k < len(sents)})
+    if not keep:
+        return None
+    new = {"start": sents[keep[0]][0]["i"], "end": sents[keep[-1]][-1]["i"], "title": m.get("title", ""),
+           "drop": {w["i"] for k in range(keep[0], keep[-1] + 1) if k not in keep for w in sents[k]}}
+    if new["start"] == m["start"] and new["end"] == m["end"] and new["drop"] == (m.get("drop") or set()):
+        return None
+    log(f"Nachschnitt: {(res or {}).get('warum', '')[:140]}")
+    return new
 
 
 def quality_check(path, words, kept, orig, secs):
@@ -852,7 +2644,11 @@ def quality_check(path, words, kept, orig, secs):
     removable = pauses + 0.3 * STATS.get("filler", 0)
     removed = orig - secs
     problems = []
-    if kept and STATS.get("caption_words", 0) < len(kept) * 0.9:
+    # erwartet: jedes gesprochene Wort – ohne reine Satzzeichen und ohne bewusst weggelassene unverständliche Stellen;
+    # bei sehr kurzen Clips darf ein einzelnes Wort (z. B. ein leises „Mh“) fehlen
+    expected = [w for w in kept if norm(w["t"]) and not w.get("unclear")]
+    got = STATS.get("caption_words", 0)
+    if expected and got < len(expected) * 0.85 and len(expected) - got > 1:
         problems.append("Untertitel fehlen")
     if removable > 1.2 and removed < min(0.5, removable * 0.3):
         problems.append(f"Schnitt hat nicht gegriffen ({removable:.1f} s Pausen/Füller erkannt, nur {removed:.1f} s entfernt)")
@@ -877,16 +2673,16 @@ def quality_check(path, words, kept, orig, secs):
 
 def limit60(ranges, kept):
     """Clips aus langen Videos: max. 60 s nach dem Schnitt – am letzten Satzende davor kürzen."""
-    if SHORT or sum(e - s for s, e in ranges) <= 60.5:
+    if SHORT or sum(olen(s, e) for s, e in ranges) <= 60.5:
         return ranges, kept
     acc, cut_at = 0.0, None
     for s, e in ranges:
         for w in (w for w in kept if s <= w["e"] <= e + 0.1):
-            if acc + (w["e"] - s) > 60:
+            if acc + (w["e"] - s) / SPEED[0] > 60:
                 break
             if SENT_END.search(w["t"]):
                 cut_at = w["e"] + 0.12
-        acc += e - s
+        acc += olen(s, e)
         if acc > 60:
             break
     if not cut_at:
@@ -895,41 +2691,123 @@ def limit60(ranges, kept):
 
 
 results = []
-N = len(MOMENTS)
-for n, m in enumerate(MOMENTS, 1):
-    base = 45 + 50 * (n - 1) / N
-    step = lambda frac, text: stage(text + (f" (Clip {n}/{N})" if N > 1 else ""), base + 50 / N * frac)
+
+
+def make_cut(n, m, step):
+    """Schnitt eines Moments bis zum fertigen Schnitt-Video (ohne Untertitel): Schnittliste, Rendern, Hörprobe
+    (sicherer Neuschnitt bei angeschnittenen Wörtern), Fetzen am Anfang/Ende wegschneiden."""
     words = WORDS[m["start"]:m["end"] + 1]
     ranges, kept = keep_ranges(words, extra_drop=m.get("drop") or set())
     if not ranges:
-        continue
+        return None
+    choose_speed(kept)
+    if PLAN and PLAN.get("joins"):  # Clip-Grenze mitten in einem Abschnitt → dort trennen (eigener Ausschnitt je Clip)
+        split = []
+        for a, b in ranges:
+            for j in sorted(PLAN["joins"]):
+                if a + 0.15 < j < b - 0.15:
+                    split.append([a, j - 0.02])
+                    a = j + 0.02
+            split.append([a, b])
+        ranges = split
     ranges, kept = limit60(ranges, kept)
     ranges = tidy(ranges)
-    title = (m.get("title") or "").strip()
-    if not title:
-        first = next((s for s in sentences(kept) if len(s) >= 3), kept[:8])
-        title = " ".join(w["t"] for w in first[:7]).rstrip(",.;:")
     step(0.2, "Setzt die Schnitte und glättet die Übergänge …")
     cut, secs = render_cut(n, ranges)
     step(0.55, "Prüft den Schnitt (Hörprobe) …")
-    words_out, miss = align(ranges, kept, hear(cut))
+    heard = hear(cut)
+    words_out, miss = align(ranges, kept, heard)
     STATS["missing_first"] = miss[:20]
-    if len(miss) > max(1, len(kept) * 0.03):  # Wörter angeschnitten → vorsichtiger neu schneiden
+    if len(miss) > max(2, len(kept) * 0.03):  # Wörter angeschnitten → vorsichtiger neu schneiden
         log(f"Hörprobe: {len(miss)} Wörter unklar ({', '.join(miss[:6])}) – schneide im sicheren Modus neu")
         step(0.6, "Schneidet eine Stelle vorsichtiger nach …")
         ranges, kept = limit60(*keep_ranges(words, safe=True, extra_drop=m.get("drop") or set()))
         ranges = tidy(ranges)
         cut, secs = render_cut(n, ranges)
-        words_out, miss = align(ranges, kept, hear(cut))
+        heard = hear(cut)
+        words_out, miss = align(ranges, kept, heard)
         STATS["safe_mode"] = True
+    ca, cb = edge_junk(heard, words_out, secs)
+    if (ca > 0.05 and ranges[0][1] - ranges[0][0] - ca > 0.4) or (cb > 0.05 and ranges[-1][1] - ranges[-1][0] - cb > 0.4):
+        log(f"Hörprobe: Wortfetzen am {'Anfang' if ca else 'Ende'} ({', '.join(STATS.get('edge_junk', []))}) – wird weggeschnitten")
+        if ca > 0.05 and ranges[0][1] - ranges[0][0] - ca > 0.4:
+            ranges[0][0] += ca
+        if cb > 0.05 and ranges[-1][1] - ranges[-1][0] - cb > 0.4:
+            ranges[-1][1] -= cb
+        ranges = tidy(ranges)
+        cut, secs = render_cut(n, ranges)
+        words_out, miss = align(ranges, kept, hear(cut))
     STATS["missing"] = miss[:20]
+    return {"m": m, "words": words, "ranges": ranges, "kept": kept, "cut": cut, "secs": secs, "words_out": words_out}
+
+
+def caption_round(rev, words_out, secs):
+    """Untertitel-Korrekturen und fehlende Untertitel aus einer Abnahme übernehmen."""
+    words_out, fixed = apply_caption_fixes(words_out, rev.get("untertitel_korrekturen"))
+    words_out, added = apply_caption_adds(words_out, rev.get("ergaenzen"), secs)
+    return words_out, fixed + [f"ergänzt: {x}" for x in added]
+
+
+probs_of = lambda rev: [f"{p.get('sek', 0):.0f}s {p.get('art')}: {(p.get('was') or '')[:120]}" for p in (rev.get("probleme") or [])]
+
+N = len(MOMENTS)
+for n, m in enumerate(MOMENTS, 1):
+    base = 45 + 50 * (n - 1) / N
+    step = lambda frac, text: stage(text + (f" (Clip {n}/{N})" if N > 1 else ""), base + 50 / N * frac)
+    m = fix_bounds(m)
+    c = make_cut(n, m, step)
+    if not c:
+        continue
+    title = (m.get("title") or "").strip()
+    card_title = gemini_hook(c["kept"]) or title  # Titel oben im Bild (Viral und Clean)
+    title = title or card_title
+    if not title:
+        first = next((s for s in sentences(c["kept"]) if len(s) >= 3), c["kept"][:8])
+        title = " ".join(w["t"] for w in first[:7]).rstrip(",.;:")
     step(0.8, "Setzt die Untertitel …")
-    f = burn(n, cut, words_out, title)
+    f = burn(n, c["cut"], c["words_out"], card_title, c["ranges"], c["kept"])
+    step(0.9, "KI-Abnahme: schaut sich den fertigen Clip an …")
+    rev = None if A.no_review else gemini_review(f, c["words_out"], card_title)
+    if rev:
+        log(f"KI-Abnahme: Note {rev.get('note')}/10 – {(rev.get('fazit') or '')[:200]}")
+        STATS["abnahme"] = {"note": rev.get("note"), "fazit": (rev.get("fazit") or "")[:200], "korrigiert": [], "probleme": probs_of(rev)[:12]}
+        cutp = [p for p in rev.get("probleme") or [] if p.get("art") in CUT_KINDS]
+        m2 = gemini_fix_story(c["m"], c["kept"], cutp) if cutp else None
+        if m2:  # Schnittfehler → mit dem Hinweis der Abnahme neu schneiden (einmal), dann neu prüfen
+            step(0.85, "Verbessert den Schnitt nach der KI-Abnahme …")
+            c2 = make_cut(n, fix_bounds(m2), step)
+            if c2:
+                if c["cut"] != c2["cut"] and os.path.exists(c["cut"]) and not A.keep_work:
+                    os.remove(c["cut"])  # (gleicher Dateiname = schon überschrieben – NICHT löschen)
+                c = c2
+                QUIZ.pop(n, None)  # Quiz-Zeiten neu (Effekte hängen an Wort-Nummern und bleiben gültig)
+                f = burn(n, c["cut"], c["words_out"], card_title, c["ranges"], c["kept"])
+                STATS["abnahme"]["nachschnitt"] = [p.get("was", "")[:100] for p in cutp][:4]
+                rev = gemini_review(f, c["words_out"], card_title) or rev
+                STATS["abnahme"]["note_nachschnitt"] = rev.get("note")
+                log(f"KI-Abnahme nach Nachschnitt: Note {rev.get('note')}/10")
+        words_out, fixed = caption_round(rev, c["words_out"], c["secs"])
+        if fixed:
+            STATS["abnahme"]["korrigiert"] = fixed
+            log(f"KI-Abnahme: {len(fixed)} Untertitel korrigiert ({'; '.join(fixed[:4])}) – brennt neu ein")
+            f = burn(n, c["cut"], words_out, card_title, c["ranges"], c["kept"])
+            rev2 = gemini_review(f, words_out, card_title)  # Endnote nach den Korrekturen
+            if rev2:
+                STATS["abnahme"].update(note_nach=rev2.get("note"), probleme_nach=probs_of(rev2)[:8])
+                log(f"KI-Abnahme nach Korrektur: Note {rev2.get('note')}/10")
+                words_out, fixed2 = caption_round(rev2, words_out, c["secs"])
+                if fixed2:  # zweite (letzte) Korrektur-Runde – danach keine weitere Prüfung, damit es nicht endlos läuft
+                    STATS["abnahme"]["korrigiert"] += fixed2
+                    log(f"KI-Abnahme Runde 2: {len(fixed2)} weitere Korrekturen – brennt neu ein")
+                    f = burn(n, c["cut"], words_out, card_title, c["ranges"], c["kept"])
+    if not A.keep_work and os.path.exists(c["cut"]):
+        os.remove(c["cut"])
+    words, kept, secs = c["words"], c["kept"], c["secs"]
     orig = words[-1]["e"] - words[0]["s"]
-    log(f"Clip {n}: {orig:.1f} s → {secs} s, {len(ranges)} Abschnitte, {len(words) - len(kept)} Wörter entfernt")
+    log(f"Clip {n}: {orig:.1f} s → {secs} s, {len(c['ranges'])} Abschnitte, {len(words) - len(kept)} Wörter entfernt")
     step(0.95, "Letzter Qualitäts-Check …")
     quality_check(f, words, kept, orig, secs)
-    results.append({"file": f, "title": title[:80], "seconds": secs})
+    results.append({"file": f, "title": title[:80], "seconds": secs, "songs": suggest_songs(kept, card_title)})
 
 if not A.keep_work:
     os.remove(wav)

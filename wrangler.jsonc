@@ -7,6 +7,12 @@
   // Website (public/) und Next-Dateien als statische Assets – kostenlos und ohne Rechenzeit
   "assets": { "directory": ".open-next/assets", "binding": "ASSETS" },
   "observability": { "enabled": true },
+  // Eigene Domain (DNS bei Cloudflare, gekauft bei Strato). workers.dev bleibt zusätzlich erreichbar (Stripe-Webhook).
+  "routes": [
+    { "pattern": "velox-cut.de", "custom_domain": true },
+    { "pattern": "www.velox-cut.de", "custom_domain": true }
+  ],
+  "workers_dev": true,
   // Nicht geheime Einstellungen. Schlüssel liegen als Secrets bei Cloudflare (scripts/cloudflare-setup.sh)
   "vars": {
     "R2_ACCOUNT_ID": "76d5b0b846cbdf7fce5dda5913d5078e",

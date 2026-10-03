@@ -45,3 +45,10 @@ next-env.d.ts
 # Cloudflare
 /.open-next/
 /.wrangler/
+
+# macOS-Hilfsdateien auf der SSD (exFAT)
+._*
+
+# Python-Zwischendateien
+__pycache__/
+*.pyc

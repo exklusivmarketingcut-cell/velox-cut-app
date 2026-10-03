@@ -27,7 +27,7 @@ export const STYLES: Record<StyleId, { name: string; credits: number; desc: stri
 
 export const EXTRA_MINUTE_CREDITS = 5;
 export const MAX_CLIPS_PER_JOB = 5;
-export const MAX_UPLOAD_BYTES = 2 * 1024 ** 3; // 2 GB
+export const MAX_UPLOAD_BYTES = 4 * 1024 ** 3; // 4 GB (R2 erlaubt bis 5 GB pro Datei; große Dateien verkleinert die Schnitt-Maschine selbst)
 
 /** Credits für einen Auftrag: pro Clip der Stil-Preis, +5 je angefangener Minute über 60 Sek. */
 export function jobCost(style: StyleId, clips: number, clipSeconds = 60): number {

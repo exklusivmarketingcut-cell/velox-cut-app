@@ -29,7 +29,7 @@ export default function LoginForm({ weiter }: { weiter: string }) {
     e.preventDefault();
     const email = (document.querySelector('input[name=email]') as HTMLInputElement).value.trim();
     if (!email) return setErr('Gib zuerst deine E-Mail ein.');
-    await createClient().auth.resetPasswordForEmail(email, { redirectTo: `${location.origin}/auth/callback?weiter=/passwort-neu` });
+    await createClient().auth.resetPasswordForEmail(email, { redirectTo: `${location.origin}/auth/bestaetigen?weiter=/passwort-neu` });
     setErr('');
     setInfo('Falls es ein Konto gibt, haben wir dir einen Link zum Zurücksetzen geschickt.');
   }

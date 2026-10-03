@@ -327,7 +327,7 @@ export default function Studio({ credits, initialJobs }: { credits: number; init
               {Array.from({ length: MAX_CLIPS_PER_JOB }, (_, i) => <option key={i} value={i + 1}>{i + 1}</option>)}
             </select>
           </label>
-          <p className="note" style={{ flex: 1, margin: 0 }}>Kurze Videos (unter 2½ Min.) werden zu einem fertigen Clip geschnitten – zu viel gebuchte Credits bekommst du automatisch zurück.</p>
+          <p className="note" style={{ flex: 1, margin: 0 }}>Kurze Videos (unter 2½ Min.) werden zu einem fertigen Clip geschnitten. Bei einem Ordner mit mehreren Themen gibt es je Thema ein eigenes Video (höchstens so viele wie gewählt). Zu viel gebuchte Credits bekommst du automatisch zurück.</p>
         </div>
         <p className="f" style={{ marginBottom: -6 }}>Akzentfarbe</p>
         <div className="row" aria-label="Akzentfarbe">

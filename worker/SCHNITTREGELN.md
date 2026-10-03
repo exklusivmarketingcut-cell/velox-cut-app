@@ -213,6 +213,13 @@ Protokoll aller Schnitte: `schnitt-maschine/logs/jobs.jsonl` (neben dem Ordner `
 76. **Letztes Wort nie abschneiden:** Ränder der Stücke reichen bis kurz vor das Nachbarwort (Videoende +1,3 s); im
     Schnitt bekommt das letzte Wort 0,45 s Ausklang, auch wenn die Stille-Erkennung früher „Stille“ meldet.
 
+77. **Ordner mit mehreren Themen:** je Thema ein eigenes Video, höchstens so viele wie „Anzahl Clips“ (montage.py
+    --clips), kein Satz in zwei Videos; ist alles ein Thema, nur ein Video. Fehlende Videos werden anteilig erstattet.
+78. **Gestrichene Wörter als EIN Stück schneiden:** aufeinanderfolgende gestrichene Wörter werden zusammengefasst –
+    einzeln war jedes kürzer als die Mindest-Schnittlänge und blieb drin (Fehlstarts kamen so durch).
+79. **Neustart mit Signalwort:** „ihr wolltet – warte – ihr wolltet Strawberry“ → erster Anlauf samt „warte/sorry/
+    Moment/stopp/nochmal/nee“ raus, auch wenn nur 2 Wörter gleich sind; schlägt den Schutz „letzte Fassung“.
+
 ## Aus den Malo's-Videos des Nutzers (30.09.2026, material/vorher-nachher, Analyse in analyse/)
 | Muster | Stand |
 |---|---|

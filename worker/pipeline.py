@@ -615,7 +615,21 @@ def retake_idx(words):
         out.update(w["i"] for w in words[j:k])
         keep.update(w["i"] for w in words[k:k + (k - j)])
         j = k  # ab dem neuen Anlauf weitersuchen (nicht den neuen Anlauf selbst wegschneiden)
+    # Abbruch mit Signalwort: „ihr wolltet – warte – ihr wolltet Strawberry …“ (nur 2 gleiche Wörter, aber das „warte“
+    # verrät den Neustart; Cheesecake-Ordner 03.10.) → erster Anlauf samt Signalwort raus
+    for m in range(1, len(words) - 2):
+        if tk[m] not in RESTART_WORDS:
+            continue
+        j = next((j for j in range(m - 1, max(-1, m - 9), -1) if tk[j] and tk[j:j + 2] == tk[m + 1:m + 3]), None)
+        if j is not None and not any(SENT_END.search(w["t"]) for w in words[j:m - 1]):
+            gone = {w["i"] for w in words[j:m + 1]}
+            keep.difference_update(gone)  # das Signalwort schlägt den Schutz „letzte Fassung“ eines früheren Anlaufs
+            out.update(gone)
+            keep.update(w["i"] for w in words[m + 1:m + 3])
     return out - keep, keep
+
+
+RESTART_WORDS = {"warte", "wartet", "sorry", "moment", "stopp", "stop", "nochmal", "nee"}
 
 
 RETAKE = re.compile(r"(noch ?mal von vorne|von vorne|noch ?mal neu|neuer versuch|\bcut\b|ich fang (noch ?mal )?neu an)", re.I)
@@ -861,7 +875,12 @@ def keep_ranges(words, safe=False, extra_drop=frozenset()):
             # Grenzen an die Pause bzw. an die Lautstärke-Senke legen (Whisper-Zeiten verrutschen oft um 0,2–0,3 s)
             a = max(prev_e, max(before) - 0.02) if before else max(prev_e - 0.05, valley(w["s"] - 0.45, w["s"] + 0.1))
             b = min(next_s + 0.3, min(after) + 0.02) if after else valley(w["e"] - 0.05, min(w["e"] + 0.5, next_s + 0.3))
-        dropped.append((a, b))
+        # aufeinanderfolgende gestrichene Wörter (Fehlstart „ihr wolltet – warte –“) sind EIN Stück: einzeln war jedes
+        # Wort kürzer als die Mindest-Schnittlänge und blieb deshalb drin (Cheesecake-Ordner 03.10.)
+        if dropped and k and words[k - 1]["i"] in drop and a - dropped[-1][1] < 0.35:
+            dropped[-1] = (dropped[-1][0], max(dropped[-1][1], b))
+        else:
+            dropped.append((a, b))
     filled = []
     for k, (s, e) in enumerate(ranges):
         if filled:
@@ -2712,6 +2731,11 @@ def make_cut(n, m, step):
         ranges = split
     ranges, kept = limit60(ranges, kept)
     ranges = tidy(ranges)
+    if os.environ.get("VELOX_DEBUG"):  # Fehlersuche: Wörter (mit „raus“) und Schnittliste ablegen
+        kid = {w["i"] for w in kept}
+        json.dump({"words": [[w["t"], round(w["s"], 2), round(w["e"], 2), w["i"] in kid] for w in words],
+                   "ranges": [[round(a, 2), round(b, 2)] for a, b in ranges], "sil": SIL},
+                  open(os.path.join(A.out, f"debug-{n}.json"), "w"), ensure_ascii=False)
     step(0.2, "Setzt die Schnitte und glättet die Übergänge …")
     cut, secs = render_cut(n, ranges)
     step(0.55, "Prüft den Schnitt (Hörprobe) …")

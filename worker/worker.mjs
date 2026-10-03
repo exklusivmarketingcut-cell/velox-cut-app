@@ -122,7 +122,7 @@ async function refreshTrends() {
 /** Mehrere Clips: montage.py plant den Schnitt und setzt die Sprech-Stellen zu EINER Datei zusammen → { src, plan } */
 function runMontage(job, inDir, dir, words = '') {
   return new Promise((resolve, reject) => {
-    const args = [join(import.meta.dirname, 'montage.py'), '--out', join(dir, 'montage'), '--style', job.style, ...(words ? ['--words', words.slice(0, 300)] : []), inDir];
+    const args = [join(import.meta.dirname, 'montage.py'), '--out', join(dir, 'montage'), '--style', job.style, '--clips', String(job.clips), ...(words ? ['--words', words.slice(0, 300)] : []), inDir];
     const p = spawn(PYTHON, args, { stdio: ['ignore', 'pipe', 'pipe'], env: { VELOX_MASCHINE: MASCHINE, ...process.env, PYTHONUNBUFFERED: '1' } });
     let last = '';
     let errTxt = '';
@@ -142,8 +142,8 @@ function runMontage(job, inDir, dir, words = '') {
   });
 }
 
-function runPipeline(job, src, dir, logo, words = '', plan = null) {
-  const args = [PIPELINE, '--src', src, '--out', dir, '--style', job.style, '--clips', String(job.clips), '--caption', job.caption_style, '--color', job.caption_color];
+function runPipeline(job, src, dir, logo, words = '', plan = null, clips = job.clips) {
+  const args = [PIPELINE, '--src', src, '--out', dir, '--style', job.style, '--clips', String(clips), '--caption', job.caption_style, '--color', job.caption_color];
   if (plan) args.push('--plan', plan); // Schnittplan aus mehreren Clips (B-Rolls, Bilder, Clip-Grenzen)
   if (job.music === 'auto') args.push('--music', 'auto'); // lizenzfreie Hintergrundmusik (schnitt-maschine/musik)
   if (logo) args.push('--logo', logo); // Kunden-Logo oben links
@@ -206,14 +206,23 @@ async function processJob(job) {
     if (many) {
       const m = await runMontage(job, src, dir, pw?.brand_words || '');
       if (m.musik) result = await runMusikschnitt(job, src, dir, logo, pw?.brand_words || ''); // nur B-Roll → auf den Beat
-      else {
+      else if (m.videos?.length > 1) { // mehrere Themen im Ordner → je Thema ein eigenes Video
+        result = { clips: [] };
+        for (const [i, v] of m.videos.entries()) {
+          await setStage(job.id, `Schneidet Video ${i + 1} von ${m.videos.length} …`);
+          const sub = join(dir, `video${i + 1}`);
+          await mkdir(sub, { recursive: true });
+          const r = await runPipeline(job, v.src, sub, logo, pw?.brand_words || '', v.plan, 1).catch((e) => { log('Video', i + 1, e.message); return null; });
+          result.clips.push(...(r?.clips ?? []));
+        }
+      } else {
         src = m.src;
         plan = m.plan;
       }
     }
     if (!result) {
       try {
-        result = await runPipeline(job, src, dir, logo, pw?.brand_words || '', plan);
+        result = await runPipeline(job, src, dir, logo, pw?.brand_words || '', plan, plan ? 1 : job.clips); // Montage = eine Geschichte = ein Video
       } catch (e) { // einzelnes Video ohne Sprache (nur B-Roll) → Musik-Schnitt statt Fehlermeldung
         if (plan || !/keine Sprache|keine Tonspur/.test(String(e?.message))) throw e;
         result = await runMusikschnitt(job, src, dir, logo, pw?.brand_words || '');

@@ -21,6 +21,7 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--out", required=True)
 ap.add_argument("--style", default="clean")
 ap.add_argument("--words", default="")
+ap.add_argument("--clips", type=int, default=1, help="so viele Videos höchstens – je eigenständigem Thema im Ordner eines")
 ap.add_argument("inputs", nargs="+")
 A = ap.parse_args()
 A.out = os.path.abspath(A.out)  # absolute Pfade (die Teile-Liste für ffmpeg concat wird relativ zu sich selbst gelesen)
@@ -288,13 +289,17 @@ for m in mats:
     lines.append(f"### B-Roll-Material {m['id']} ({m['c']['id']} {m['a']:.1f}–{m['b']:.1f} s): {m.get('inhalt', '?')}")
 for b in pics:
     lines.append(f"### Bild {b['id']}: {b.get('inhalt', '?')}")
-plan = gemini(
+plans = gemini(
     "Du bist ein erfahrener Cutter für TikTok/Reels von Unternehmen. Der Kunde hat einen ganzen Ordner mit Rohclips (und evtl. "
     "Bildern) hochgeladen und will EIN fertiges, packendes Kurzvideo. Baue den Schnittplan:\n"
     "1) SPRECHTEILE = roter Faden: welche Sätze aus welchen Clips in welcher Reihenfolge (Satz-Nummern wie C3.2). Eine klare "
     "Geschichte: Aufhänger am Anfang, Hauptteil, Auflösung/Aufruf am Ende. Vorgespräche, Absprachen, Fehlversuche, doppelte "
     "Takes (nur den besten/letzten), Verabschiedungen, Nebensächliches weglassen. Clips mit schlechter Qualität meiden. "
-    "Gehören die Clips zu VERSCHIEDENEN Themen/Videos, nimm nur die stärkste zusammenhängende Geschichte. Länge je nach Format "
+    + ("Gehören die Clips zu VERSCHIEDENEN Themen/Videos, nimm nur die stärkste zusammenhängende Geschichte. " if A.clips <= 1 else
+       f"Gehören die Clips zu VERSCHIEDENEN Themen/Videos (z. B. „neue Sorte“ und „Angebote unter 10 €“), baue je Thema eine "
+       f"EIGENE Geschichte – höchstens {A.clips}, die stärkste zuerst, kein Satz in zwei Geschichten. Ist alles EIN Thema, nur "
+       f"eine Geschichte (nicht künstlich aufteilen). ") +
+    "Länge je nach Format "
     "(Umfrage mit einer Person 15–25 s, Vorstellung/Promo 20–40 s, max. 60 s).\n"
     "2) ZWISCHENSCHNITTE (B-Roll) – wie ein Profi: Wird etwas genannt, das es als B-Roll-Material gibt, sieht man es GENAU in "
     "dem Moment (z. B. „Cheeseburger“ → Nahaufnahme Cheeseburger; „wir sind vom 1,99-Laden“ → Preistafel/Laden). Dann wieder "
@@ -305,7 +310,7 @@ plan = gemini(
     "wirklich passt.\n"
     "Wenn nichts passt, B-Roll/Bilder leer lassen.",
     [{"text": "\n".join(lines)}],
-    {"type": "object", "properties": {
+    {"type": "object", "properties": {"geschichten": {"type": "array", "items": {"type": "object", "properties": {
         "format": {"type": "string"}, "titel": {"type": "string"}, "ziel_s": {"type": "integer"},
         "sprechteile": {"type": "array", "items": {"type": "string"}},
         "broll": {"type": "array", "items": {"type": "object", "properties": {
@@ -313,7 +318,7 @@ plan = gemini(
             "required": ["material", "ueber", "wort"]}},
         "bilder": {"type": "array", "items": {"type": "object", "properties": {
             "bild": {"type": "string"}, "bei": {"type": "string"}, "wort": {"type": "string"}}, "required": ["bild", "bei", "wort"]}}},
-     "required": ["format", "titel", "sprechteile", "broll", "bilder"]}, timeout=150)
+     "required": ["format", "titel", "sprechteile", "broll", "bilder"]}}}, "required": ["geschichten"]}, timeout=150)
 
 
 def ref(s):
@@ -325,112 +330,129 @@ def ref(s):
     return (c, k) if c and 0 <= k < len(c["sents"]) else None
 
 
-order = [r for r in (ref(x) for x in (plan or {}).get("sprechteile") or []) if r]
-if not order:  # Rückfall ohne KI: alle Sprech-Clips der Reihe nach
-    order = [(c, k) for c in talk for k in range(len(c["sents"]))]
-log(f"Plan: {(plan or {}).get('format')} – {len(order)} Sätze, {len((plan or {}).get('broll') or [])} B-Rolls, "
-    f"{len((plan or {}).get('bilder') or [])} Bilder")
+def build(plan, odir):
+    """Eine Geschichte → montage.mp4 + plan.json in <odir>."""
+    os.makedirs(odir, exist_ok=True)
+    order = [r for r in (ref(x) for x in (plan or {}).get("sprechteile") or []) if r]
+    if not order:  # Rückfall ohne KI: alle Sprech-Clips der Reihe nach
+        order = [(c, k) for c in talk for k in range(len(c["sents"]))]
+    log(f"Plan: {(plan or {}).get('format')} – {len(order)} Sätze, {len((plan or {}).get('broll') or [])} B-Rolls, "
+        f"{len((plan or {}).get('bilder') or [])} Bilder")
 
-# ─────────────────────────────── 5. Sprech-Stellen zu EINER Datei zusammensetzen ───────────────────────────────
-stage("Setzt die Clips zusammen …")
-land = sum(1 for c in talk if c["w"] >= c["h"]) >= len(talk) / 2
-TW, TH = (1920, 1080) if land else (1080, 1920)
-FPS = min(60.0, max(25.0, sorted(c["fps"] for c in talk)[len(talk) // 2]))
-pieces = []  # zusammenhängende Satz-Folgen aus demselben Clip
-for c, k in order:
-    if pieces and pieces[-1]["c"] is c and k == pieces[-1]["k1"] + 1:
-        pieces[-1]["k1"] = k
-    else:
-        pieces.append({"c": c, "k0": k, "k1": k})
-files_c, t, anchors, joins, wanchors = [], 0.0, {}, [], {}
-low = lambda x: re.sub(r"[^\wäöüß]", "", (x or "").lower())
+    # ─────────────────────────────── 5. Sprech-Stellen zu EINER Datei zusammensetzen ───────────────────────────────
+    stage("Setzt die Clips zusammen …")
+    land = sum(1 for c in talk if c["w"] >= c["h"]) >= len(talk) / 2
+    TW, TH = (1920, 1080) if land else (1080, 1920)
+    FPS = min(60.0, max(25.0, sorted(c["fps"] for c in talk)[len(talk) // 2]))
+    pieces = []  # zusammenhängende Satz-Folgen aus demselben Clip
+    for c, k in order:
+        if pieces and pieces[-1]["c"] is c and k == pieces[-1]["k1"] + 1:
+            pieces[-1]["k1"] = k
+        else:
+            pieces.append({"c": c, "k0": k, "k1": k})
+    files_c, t, anchors, joins, wanchors = [], 0.0, {}, [], {}
+    low = lambda x: re.sub(r"[^\wäöüß]", "", (x or "").lower())
 
 
-def at_word(ref_s, wort):
-    """Zeit (zusammengesetzte Datei) des genannten Wortes im Satz – sonst Satzanfang."""
-    ref_s = (ref_s or "").strip()
-    for t_w, tt in wanchors.get(ref_s, []):
-        if low(wort) and (low(wort) in low(t_w) or low(t_w) in low(wort) and len(low(t_w)) >= 4):
-            return tt
-    return anchors.get(ref_s)
-# Stücke an langen Pausen (> 0,9 s) innerhalb der Sätze teilen: dort steckt oft Geflüster vom Team („sag jetzt: …“), das
-# Whisper nicht mitschreibt – die Pipeline hielte es sonst für Sprache und ließe es drin (Malo's-Test 03.10.).
-subs = []
-for p in pieces:
-    ws = [w for k in range(p["k0"], p["k1"] + 1) for w in p["c"]["sents"][k]]
-    cur = [ws[0]]
-    for a, b in zip(ws, ws[1:]):
-        if b["s"] - a["e"] > 0.9:
-            subs.append({"c": p["c"], "ws": cur})
-            cur = []
-        cur.append(b)
-    subs.append({"c": p["c"], "ws": cur})
-allw = {id(c): [w for st in c["sents"] for w in st] for c in clips}
-first_of = {id(st[0]): f"{c['id']}.{k}" for c in clips for k, st in enumerate(c["sents"])}
-sent_of = {id(w): f"{c['id']}.{k}" for c in clips for k, st in enumerate(c["sents"]) for w in st}
-for n, p in enumerate(subs):
-    c, ws = p["c"], p["ws"]
-    cw = allw[id(c)]
-    i0, i1 = next(i for i, w in enumerate(cw) if w is ws[0]), next(i for i, w in enumerate(cw) if w is ws[-1])
-    prev_e = cw[i0 - 1]["e"] if i0 else 0.0
-    next_s = cw[i1 + 1]["s"] if i1 + 1 < len(cw) else c["dur"]
-    # Luft bis kurz vor das Nachbarwort (Whisper setzt Wortenden oft zu früh – „Capri-Sonne“ war sonst abgeschnitten);
-    # am Videoende besonders großzügig. Stille entfernt danach ohnehin die Pipeline.
-    s0 = max(0.0, prev_e + 0.05, ws[0]["s"] - 0.35)
-    s1 = min(c["dur"], next_s - 0.05, ws[-1]["e"] + (1.3 if n == len(subs) - 1 else 0.6))
-    s1 = max(s1, ws[-1]["e"] + 0.05)
-    out = os.path.join(A.out, f"teil_{n:02d}.mp4")
-    vf = f"scale={TW}:{TH}:force_original_aspect_ratio=increase,crop={TW}:{TH},fps={FPS:.3f},setsar=1"
-    run(["ffmpeg", "-v", "error", "-y", "-ss", f"{s0:.3f}", "-to", f"{s1:.3f}", "-i", c["file"], "-vf", vf,
-         "-af", "aresample=48000,afade=t=in:d=0.02", "-ac", "2", "-c:v", "libx264", "-preset", "veryfast", "-crf", "17",
-         "-c:a", "aac", "-b:a", "256k", out])
-    for w in ws:
-        ref_s = sent_of[id(w)]
-        if id(w) in first_of:
-            anchors[ref_s] = t + (w["s"] - s0)
-        wanchors.setdefault(ref_s, []).append((w["t"], t + (w["s"] - s0)))
-        anchors.setdefault(ref_s, t + (w["s"] - s0))
-    files_c.append(out)
-    if n:
-        joins.append(round(t, 3))  # hier stoßen zwei Clips aneinander → in der Pipeline immer ein Schnitt
-    t += s1 - s0
-lst = os.path.join(A.out, "teile.txt")
-open(lst, "w").write("".join(f"file '{f}'\n" for f in files_c))
-src = os.path.join(A.out, "montage.mp4")
-run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", src])
-for f in files_c + [lst]:
-    os.remove(f)
+    def at_word(ref_s, wort):
+        """Zeit (zusammengesetzte Datei) des genannten Wortes im Satz – sonst Satzanfang."""
+        ref_s = (ref_s or "").strip()
+        for t_w, tt in wanchors.get(ref_s, []):
+            if low(wort) and (low(wort) in low(t_w) or low(t_w) in low(wort) and len(low(t_w)) >= 4):
+                return tt
+        return anchors.get(ref_s)
+    # Stücke an langen Pausen (> 0,9 s) innerhalb der Sätze teilen: dort steckt oft Geflüster vom Team („sag jetzt: …“), das
+    # Whisper nicht mitschreibt – die Pipeline hielte es sonst für Sprache und ließe es drin (Malo's-Test 03.10.).
+    subs = []
+    for p in pieces:
+        ws = [w for k in range(p["k0"], p["k1"] + 1) for w in p["c"]["sents"][k]]
+        cur = [ws[0]]
+        for a, b in zip(ws, ws[1:]):
+            if b["s"] - a["e"] > 0.9:
+                subs.append({"c": p["c"], "ws": cur})
+                cur = []
+            cur.append(b)
+        subs.append({"c": p["c"], "ws": cur})
+    allw = {id(c): [w for st in c["sents"] for w in st] for c in clips}
+    first_of = {id(st[0]): f"{c['id']}.{k}" for c in clips for k, st in enumerate(c["sents"])}
+    sent_of = {id(w): f"{c['id']}.{k}" for c in clips for k, st in enumerate(c["sents"]) for w in st}
+    for n, p in enumerate(subs):
+        c, ws = p["c"], p["ws"]
+        cw = allw[id(c)]
+        i0, i1 = next(i for i, w in enumerate(cw) if w is ws[0]), next(i for i, w in enumerate(cw) if w is ws[-1])
+        prev_e = cw[i0 - 1]["e"] if i0 else 0.0
+        next_s = cw[i1 + 1]["s"] if i1 + 1 < len(cw) else c["dur"]
+        # Luft bis kurz vor das Nachbarwort (Whisper setzt Wortenden oft zu früh – „Capri-Sonne“ war sonst abgeschnitten);
+        # am Videoende besonders großzügig. Stille entfernt danach ohnehin die Pipeline.
+        s0 = max(0.0, prev_e + 0.05, ws[0]["s"] - 0.35)
+        s1 = min(c["dur"], next_s - 0.05, ws[-1]["e"] + (1.3 if n == len(subs) - 1 else 0.6))
+        s1 = max(s1, ws[-1]["e"] + 0.05)
+        out = os.path.join(odir, f"teil_{n:02d}.mp4")
+        vf = f"scale={TW}:{TH}:force_original_aspect_ratio=increase,crop={TW}:{TH},fps={FPS:.3f},setsar=1"
+        run(["ffmpeg", "-v", "error", "-y", "-ss", f"{s0:.3f}", "-to", f"{s1:.3f}", "-i", c["file"], "-vf", vf,
+             "-af", "aresample=48000,afade=t=in:d=0.02", "-ac", "2", "-c:v", "libx264", "-preset", "veryfast", "-crf", "17",
+             "-c:a", "aac", "-b:a", "256k", out])
+        for w in ws:
+            ref_s = sent_of[id(w)]
+            if id(w) in first_of:
+                anchors[ref_s] = t + (w["s"] - s0)
+            wanchors.setdefault(ref_s, []).append((w["t"], t + (w["s"] - s0)))
+            anchors.setdefault(ref_s, t + (w["s"] - s0))
+        files_c.append(out)
+        if n:
+            joins.append(round(t, 3))  # hier stoßen zwei Clips aneinander → in der Pipeline immer ein Schnitt
+        t += s1 - s0
+    lst = os.path.join(odir, "teile.txt")
+    open(lst, "w").write("".join(f"file '{f}'\n" for f in files_c))
+    src = os.path.join(odir, "montage.mp4")
+    run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", src])
+    for f in files_c + [lst]:
+        os.remove(f)
 
-# B-Roll-Stücke vorbereiten (9:16, ohne Ton) und an die Satz-Zeiten in der zusammengesetzten Datei hängen
-brolls = []
-for n, b in enumerate((plan or {}).get("broll") or []):
-    m = next((m for m in mats if m["id"] == (b.get("material") or "").strip()), None)
-    at = at_word(b.get("ueber"), b.get("wort"))
-    if not m or at is None:
-        continue
-    c = m["c"]
-    d = min(2.5, max(1.0, float(b.get("dauer_s") or 1.8)), m["b"] - m["a"])
-    a = m["a"] + max(0.0, (m["b"] - m["a"] - d) / 2)  # ruhige Mitte der Stelle
-    e = a + d
-    if e - a < 0.8:
-        continue
-    out = os.path.join(A.out, f"broll_{n}.mp4")
-    run(["ffmpeg", "-v", "error", "-y", "-ss", f"{a:.3f}", "-to", f"{e:.3f}", "-i", c["file"], "-an", "-vf",
-         "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,fps=30,setsar=1,format=yuv420p",
-         "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", out])
-    brolls.append({"file": out, "t_src": max(0.0, at - 0.05), "dur": round(e - a, 2), "clip": c["id"], "was": m.get("inhalt", "")[:60]})
-stickers = []
-for b in (plan or {}).get("bilder") or []:
-    pic = next((p for p in pics if p["id"] == b.get("bild")), None)
-    at = at_word(b.get("bei"), b.get("wort"))
-    if pic and at is not None:
-        stickers.append({"file": pic["file"], "t_src": at, "dur": 1.8, "alpha": pic["alpha"], "was": pic.get("inhalt", "")[:60]})
+    # B-Roll-Stücke vorbereiten (9:16, ohne Ton) und an die Satz-Zeiten in der zusammengesetzten Datei hängen
+    brolls = []
+    for n, b in enumerate((plan or {}).get("broll") or []):
+        m = next((m for m in mats if m["id"] == (b.get("material") or "").strip()), None)
+        at = at_word(b.get("ueber"), b.get("wort"))
+        if not m or at is None:
+            continue
+        c = m["c"]
+        d = min(2.5, max(1.0, float(b.get("dauer_s") or 1.8)), m["b"] - m["a"])
+        a = m["a"] + max(0.0, (m["b"] - m["a"] - d) / 2)  # ruhige Mitte der Stelle
+        e = a + d
+        if e - a < 0.8:
+            continue
+        out = os.path.join(odir, f"broll_{n}.mp4")
+        run(["ffmpeg", "-v", "error", "-y", "-ss", f"{a:.3f}", "-to", f"{e:.3f}", "-i", c["file"], "-an", "-vf",
+             "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,fps=30,setsar=1,format=yuv420p",
+             "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", out])
+        brolls.append({"file": out, "t_src": max(0.0, at - 0.05), "dur": round(e - a, 2), "clip": c["id"], "was": m.get("inhalt", "")[:60]})
+    stickers = []
+    for b in (plan or {}).get("bilder") or []:
+        pic = next((p for p in pics if p["id"] == b.get("bild")), None)
+        at = at_word(b.get("bei"), b.get("wort"))
+        if pic and at is not None:
+            stickers.append({"file": pic["file"], "t_src": at, "dur": 1.8, "alpha": pic["alpha"], "was": pic.get("inhalt", "")[:60]})
+    plan_out = {"format": (plan or {}).get("format", ""), "titel": (plan or {}).get("titel", ""), "ziel_s": (plan or {}).get("ziel_s"),
+                "clips": [{k: c.get(k) for k in ("id", "file", "dur", "talk", "inhalt", "qualitaet", "broll_ok")} for c in clips],
+                "sprechteile": [f"{c['id']}.{k}" for c, k in order], "joins": joins, "broll": brolls, "bilder": stickers}
+    plan_path = os.path.join(odir, "plan.json")
+    json.dump(plan_out, open(plan_path, "w"), ensure_ascii=False, indent=1)
+    return {"src": src, "plan": plan_path, "stickers": stickers}
+
+
+stories = [g for g in ((plans or {}).get("geschichten") or []) if g.get("sprechteile")][:max(1, A.clips)]
+used, results = set(), []
+for g in stories:  # kein Satz in zwei Videos
+    g["sprechteile"] = [x for x in g["sprechteile"] if x.strip() not in used]
+    used.update(x.strip() for x in g["sprechteile"])
+stories = [g for g in stories if sum(1 for x in g["sprechteile"] if ref(x)) >= 2] or stories[:1] or [None]
+for n, g in enumerate(stories):
+    if len(stories) > 1:
+        stage(f"Setzt Video {n + 1} von {len(stories)} zusammen …")
+    results.append(build(g, A.out if n == 0 else os.path.join(A.out, f"video{n + 1}")))
 for p in pics:  # ungenutzte Bilder wegräumen
-    if not any(s["file"] == p["file"] for s in stickers):
+    if not any(st["file"] == p["file"] for r in results for st in r["stickers"]):
         os.remove(p["file"])
-plan_out = {"format": (plan or {}).get("format", ""), "titel": (plan or {}).get("titel", ""), "ziel_s": (plan or {}).get("ziel_s"),
-            "clips": [{k: c.get(k) for k in ("id", "file", "dur", "talk", "inhalt", "qualitaet", "broll_ok")} for c in clips],
-            "sprechteile": [f"{c['id']}.{k}" for c, k in order], "joins": joins, "broll": brolls, "bilder": stickers}
-plan_path = os.path.join(A.out, "plan.json")
-json.dump(plan_out, open(plan_path, "w"), ensure_ascii=False, indent=1)
-print(json.dumps({"src": src, "plan": plan_path}), flush=True)
+print(json.dumps({"src": results[0]["src"], "plan": results[0]["plan"],
+                  "videos": [{"src": r["src"], "plan": r["plan"]} for r in results]}), flush=True)

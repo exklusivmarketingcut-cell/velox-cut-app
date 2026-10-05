@@ -38,7 +38,8 @@ PREM = A.style == "premium"             # Premium zusätzlich: 3D-Titel, Motion 
 MASCHINE = os.environ.get("VELOX_MASCHINE", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "schnitt-maschine"))
 FONTS = os.environ.get("VELOX_FONTS", os.path.join(MASCHINE, "fonts"))
 WHISPER = os.environ.get("VELOX_WHISPER", "mlx-community/whisper-large-v3-turbo")
-GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
+import ki  # noqa: E402  gemeinsamer KI-Zugang (worker/ki.py)
+GEMINI_KEY = ki.available()
 STATS = {}  # Protokoll je Auftrag (jobs.jsonl) – früh anlegen, gemini() schreibt schon beim Story-Schritt hinein
 if PLAN and PLAN.get("ki_tokens"):  # KI-Verbrauch der Montage mitzählen (Kosten je Auftrag)
     STATS["ki_tokens"] = {"aufrufe": 0, "ein": 0, "aus": 0, "denken": 0, **{k: int(v) for k, v in PLAN["ki_tokens"].items()}}
@@ -330,83 +331,18 @@ def repeat_idx(words):
     return out
 
 
-def think_cfg(model, deep):
-    """Sparsam denken (Kosten): einfache Aufgaben ohne, wichtige (Satzauswahl, Abnahme) mit wenig Nachdenken.
-    Gemini 2.5 kennt thinkingBudget, Gemini 3.x thinkingLevel."""
-    if model.startswith("gemini-2.5"):
-        return {"thinkingBudget": 1024 if deep else 0}
-    return {"thinkingLevel": "low" if deep else "minimal"}
-
-
-def count_tokens(d, model):
-    """Verbrauch je Auftrag mitschreiben (jobs.jsonl → ki_tokens) – so sieht man, was ein Video an KI kostet."""
-    u = d.get("usageMetadata") or {}
-    t = STATS.setdefault("ki_tokens", {"aufrufe": 0, "ein": 0, "aus": 0, "denken": 0})
-    t["aufrufe"] += 1
-    t["ein"] += int(u.get("promptTokenCount") or 0)
-    t["aus"] += int(u.get("candidatesTokenCount") or 0)
-    t["denken"] += int(u.get("thoughtsTokenCount") or 0)
-
-
 def gemini(system, user, schema, parts=None, timeout=45, models=None, deep=False):
-    """Gemini (optional). None, wenn kein Schlüssel oder Fehler – dann gelten nur die Regeln. parts: z. B. ein Video.
-    deep=True für Entscheidungen, bei denen Nachdenken die Qualität hebt (Satzauswahl, Abnahme)."""
-    if not GEMINI_KEY:
-        return None
-    import time
-    for model in models or ("gemini-flash-latest", "gemini-3-flash-preview", "gemini-3.1-flash-lite", "gemini-flash-lite-latest"):
-        think = True
-        for attempt in range(3):  # bei Überlastung (503/429) kurz warten und erneut versuchen
-            cfg = {"temperature": 0.2, "responseMimeType": "application/json", "responseSchema": schema}
-            if think:
-                cfg["thinkingConfig"] = think_cfg(model, deep)
-            body = json.dumps({"systemInstruction": {"parts": [{"text": system}]},
-                               "contents": [{"role": "user", "parts": (parts or []) + [{"text": user}]}],
-                               "generationConfig": cfg}).encode()
-            try:
-                req = urllib.request.Request(f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent", data=body,
-                                             headers={"x-goog-api-key": GEMINI_KEY, "Content-Type": "application/json"})
-                with urllib.request.urlopen(req, timeout=timeout) as resp:
-                    d = json.loads(resp.read())
-                STATS["gemini_model"] = model
-                count_tokens(d, model)
-                return json.loads("".join(p.get("text", "") for p in d["candidates"][0]["content"]["parts"]))
-            except urllib.error.HTTPError as e:
-                log(f"Gemini {model}: HTTP {e.code}")
-                if e.code == 400 and think:  # Modell kennt die Denk-Einstellung nicht → ohne wiederholen
-                    think = False
-                    continue
-                if e.code in (429, 500, 503) and attempt < 2:
-                    time.sleep(4 * (attempt + 1))
-                    continue
-                break
-            except Exception as e:  # noqa: BLE001
-                log(f"Gemini {model}: {e}")
-                break
-    return None
-    body = json.dumps({"systemInstruction": {"parts": [{"text": system}]},
-                       "contents": [{"role": "user", "parts": (parts or []) + [{"text": user}]}],
-                       "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json", "responseSchema": schema}}).encode()
-    import time
-    for model in models or ("gemini-flash-latest", "gemini-3-flash-preview", "gemini-3.1-flash-lite", "gemini-flash-lite-latest"):
-        for attempt in range(3):  # bei Überlastung (503/429) kurz warten und erneut versuchen
-            try:
-                req = urllib.request.Request(f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent", data=body,
-                                             headers={"x-goog-api-key": GEMINI_KEY, "Content-Type": "application/json"})
-                with urllib.request.urlopen(req, timeout=timeout) as resp:
-                    d = json.loads(resp.read())
-                STATS["gemini_model"] = model
-                return json.loads("".join(p.get("text", "") for p in d["candidates"][0]["content"]["parts"]))
-            except urllib.error.HTTPError as e:
-                log(f"Gemini {model}: HTTP {e.code}")
-                if e.code in (429, 500, 503) and attempt < 2:
-                    time.sleep(4 * (attempt + 1))
-                    continue
-                break
-            except Exception as e:  # noqa: BLE001
-                log(f"Gemini {model}: {e}")
-                break
-    return None
+    """Gemini über ki.py (Gratis-Schlüssel zuerst, Modelle nach Wichtigkeit, Tageslimits umgehen). None ohne KI – dann gelten
+    nur die Regeln. parts: z. B. ein Video. deep=True für Entscheidungen, bei denen Nachdenken die Qualität hebt."""
+    res = ki.call(system, (parts or []) + [{"text": user}], schema, deep=deep, timeout=timeout, models=models)
+    if res is not None:
+        STATS["gemini_model"] = ki.TOK.get("modell")
+    t = STATS.setdefault("ki_tokens", {"aufrufe": 0, "ein": 0, "aus": 0, "denken": 0})
+    for k, v in list(ki.TOK.items()):  # Verbrauch übernehmen, Zähler zurücksetzen (sonst doppelt gezählt)
+        if isinstance(v, int):
+            t[k] = t.get(k, 0) + v
+            ki.TOK[k] = 0
+    return res
 
 
 def gemini_cuts(words):
@@ -775,6 +711,7 @@ elif SHORT:
 else:
     MOMENTS = [m for m in (gemini_moments(WORDS, A.clips) or []) if 0 <= m["start"] <= m["end"] < len(WORDS)][:A.clips]
     MOMENTS = MOMENTS or rule_moments(WORDS, A.clips)
+ki.require_or_exit("Satzauswahl")
 stage("Schneidet Pausen, Füllwörter und Versprecher raus …", 45)
 
 
@@ -2596,7 +2533,7 @@ def gemini_review(path, words_out, title):
                 "von": {"type": "number"}, "bis": {"type": "number"}, "text": {"type": "string"}},
                 "required": ["von", "bis", "text"]}}},
          "required": ["note", "fazit", "probleme", "untertitel_korrekturen", "ergaenzen"]},
-        parts=[video], timeout=120, models=("gemini-flash-latest", "gemini-3-flash-preview"), deep=True)
+        parts=[video], timeout=120, deep=True)
 
 
 def apply_caption_adds(words_out, adds, total):
@@ -2916,4 +2853,5 @@ if not A.keep_work:
     os.remove(wav)
 if not results:
     sys.exit("Es konnten keine Clips erstellt werden.")
+ki.require_or_exit("KI-Abnahme")
 print(json.dumps({"clips": results}, ensure_ascii=False), flush=True)

@@ -72,20 +72,28 @@ async function mail(body) {
 // dann lieber warten. Aufträge bleiben in der Schlange, der Betreiber bekommt eine E-Mail (höchstens alle 3 Stunden).
 const ai = { ok: true, checked: 0, warned: 0, since: 0 };
 async function aiReady() {
-  if (!process.env.GEMINI_API_KEY) return true;
+  // Gratis-Schlüssel (Projekt ohne Zahlungsdaten) zuerst, Prepay-Schlüssel als Reserve – bereit, wenn einer antwortet
+  const keys = [process.env.GEMINI_API_KEY_FREE, process.env.GEMINI_API_KEY].map((k) => (k || '').trim()).filter(Boolean);
+  if (!keys.length) return true;
   if (Date.now() - ai.checked < (ai.ok ? 10 * 60e3 : 2 * 60e3)) return ai.ok;
   ai.checked = Date.now();
   let code = 0;
-  try {
-    const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent', {
-      method: 'POST', signal: AbortSignal.timeout(30_000),
-      headers: { 'x-goog-api-key': process.env.GEMINI_API_KEY, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ contents: [{ parts: [{ text: 'ok' }] }], generationConfig: { maxOutputTokens: 1 } }),
-    });
-    code = r.status;
-  } catch { code = -1; }
+  for (const key of keys) {
+    for (const model of ['gemini-flash-lite-latest', 'gemini-flash-latest']) {
+      try {
+        const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+          method: 'POST', signal: AbortSignal.timeout(30_000),
+          headers: { 'x-goog-api-key': key, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ contents: [{ parts: [{ text: 'ok' }] }], generationConfig: { maxOutputTokens: 1 } }),
+        });
+        code = r.status;
+      } catch { code = -1; }
+      if (code === 200 || code === 503) break;
+    }
+    if (code === 200 || code === 503) break;
+  }
   const was = ai.ok;
-  ai.ok = code === 200 || code === 429 || code === 503; // ausgelastet/überlastet: die Pipeline wiederholt selbst und weicht aus
+  ai.ok = code === 200 || code === 503; // 503 = kurz überlastet (die Pipeline wiederholt selbst); 429 = Kontingent erschöpft
   if (!ai.ok && was) { ai.since = Date.now(); log(`KI nicht erreichbar (HTTP ${code}) – Aufträge warten`); }
   if (ai.ok && !was) {
     log('KI wieder erreichbar – es geht weiter');
@@ -93,10 +101,11 @@ async function aiReady() {
   }
   if (!ai.ok && Date.now() - ai.warned > 3 * 3600e3) {
     ai.warned = Date.now();
-    const grund = code === 402 ? 'Das Guthaben bei Google (Gemini) ist aufgebraucht. Bitte in aistudio.google.com → Billing aufladen und Auto-Aufladen einschalten.'
+    const grund = code === 429 ? 'Das kostenlose Tageskontingent bei Google (Gemini) ist aufgebraucht – morgen geht es automatisch weiter. Sollen Aufträge sofort laufen, im Prepay-Projekt Guthaben aufladen.'
+      : code === 402 ? 'Das Guthaben bei Google (Gemini) ist aufgebraucht und kein Gratis-Schlüssel ist eingerichtet (scripts/gemini-gratis-schluessel.sh).'
       : code === 401 || code === 403 ? 'Der Gemini-Schlüssel wird abgelehnt (ungültig oder gesperrt).'
       : `Google antwortet nicht richtig (HTTP ${code}).`;
-    await mail({ art: 'warnung', betreff: 'KI nicht erreichbar – Aufträge warten', text: `${grund}\n\nNeue Aufträge bleiben so lange in der Warteschlange und starten automatisch, sobald die KI wieder antwortet. Kunden sehen „startet gleich“.` });
+    await mail({ art: 'warnung', betreff: 'KI nicht erreichbar – Aufträge warten', text: `${grund}\n\nNeue Aufträge bleiben so lange in der Warteschlange und starten automatisch, sobald die KI wieder antwortet. Kunden sehen „Gerade viel los – startet automatisch“ und bekommen eine Mail, wenn ihr Video fertig ist.` });
   }
   return ai.ok;
 }
@@ -181,6 +190,7 @@ function runMontage(job, inDir, dir, words = '') {
     });
     p.stderr.on('data', (b) => { beat.last_output = new Date().toISOString(); errTxt = (errTxt + b).slice(-2000); });
     p.on('close', (code) => {
+      if (code === 75) return reject(new Error('KI_KONTINGENT')); // KI erschöpft → Auftrag später wiederholen
       if (code !== 0) return reject(new Error(errTxt.split('\n').filter(Boolean).pop() || `Montage-Fehler ${code}`));
       try { resolve(JSON.parse(last)); } catch { reject(new Error('Montage lieferte kein Ergebnis.')); }
     });
@@ -227,6 +237,7 @@ function runPy(job, args) {
     p.stderr.on('data', (b) => { touch(); errTxt = (errTxt + b).slice(-2000); });
     p.on('close', (code) => {
       clearInterval(hang);
+      if (code === 75) return reject(new Error('KI_KONTINGENT')); // KI erschöpft → Auftrag später wiederholen
       if (code !== 0) return reject(new Error(errTxt.split('\n').filter(Boolean).pop() || `Pipeline-Fehler ${code}`));
       try { resolve(JSON.parse(last)); } catch { reject(new Error('Pipeline lieferte kein Ergebnis.')); }
     });
@@ -269,7 +280,7 @@ async function processJob(job) {
       try {
         result = await runPipeline(job, src, dir, logo, pw?.brand_words || '', plan, plan ? 1 : job.clips); // Montage = eine Geschichte = ein Video
       } catch (e) { // einzelnes Video ohne Sprache (nur B-Roll) → Musik-Schnitt statt Fehlermeldung
-        if (plan || !/keine Sprache|keine Tonspur/.test(String(e?.message))) throw e;
+        if (plan || !/keine Sprache|keine Tonspur/.test(String(e?.message)) || e?.message === 'KI_KONTINGENT') throw e;
         result = await runMusikschnitt(job, src, dir, logo, pw?.brand_words || '');
       }
     }
@@ -299,6 +310,12 @@ async function processJob(job) {
     log('✓', job.id, `${outputs.length} Clip(s)`);
     await mail({ art: 'fertig', job: job.id }); // „Dein Video ist fertig“ – Kunde muss das Studio nicht offen lassen
   } catch (e) {
+    if (e.message === 'KI_KONTINGENT') { // nicht ohne KI ausliefern: zurück in die Schlange, kein Fehler, keine Erstattung nötig
+      log('⏸', job.id, 'KI-Kontingent erschöpft – Auftrag wartet');
+      ai.ok = false; ai.checked = Date.now(); ai.since = ai.since || Date.now();
+      await setJob(job.id, { status: 'queued', progress: 0, stage: 'Gerade viel los – startet automatisch, du bekommst eine E-Mail, sobald dein Video fertig ist', worker: null, started_at: null }).eq('status', 'processing');
+      return;
+    }
     log('✗', job.id, e.message);
     await setJob(job.id, { status: 'failed', error: friendly(String(e.message)).slice(0, 300), finished_at: new Date().toISOString() }).eq('status', 'processing');
     await sb.rpc('refund_job', { p_job: job.id });
@@ -335,7 +352,7 @@ for (;;) {
     if (Date.now() - lastCleanup > 6 * 3600e3) { await cleanup(); await refreshTrends().catch(() => null); lastCleanup = Date.now(); }
     const { count } = await sb.from('jobs').select('id', { count: 'exact', head: true }).eq('status', 'queued');
     if (count && !(await aiReady())) {
-      await sb.from('jobs').update({ stage: 'Startet gleich – kurze Verzögerung' }).eq('status', 'queued');
+      await sb.from('jobs').update({ stage: 'Gerade viel los – startet automatisch, du bekommst eine E-Mail, sobald dein Video fertig ist' }).eq('status', 'queued');
       await new Promise((r) => setTimeout(r, 30_000));
       continue;
     }

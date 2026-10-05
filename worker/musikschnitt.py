@@ -25,7 +25,6 @@ A.out = os.path.abspath(A.out)
 os.makedirs(A.out, exist_ok=True)
 MASCHINE = os.environ.get("VELOX_MASCHINE", os.path.join(HERE, "..", "..", "schnitt-maschine"))
 MUSIC_DIR = os.environ.get("VELOX_MUSIK", os.path.join(MASCHINE, "musik"))
-KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 VIDEO = (".mp4", ".mov", ".m4v", ".mts", ".avi", ".mkv", ".webm")
 TW, TH, FPS = 1080, 1920, 30
 STATS = {"art": "musikschnitt", "style": A.style}
@@ -48,54 +47,19 @@ def run(cmd):
     return r
 
 
-TOK = {"aufrufe": 0, "ein": 0, "aus": 0, "denken": 0}  # KI-Verbrauch (Kosten) dieses Laufs
+import ki  # noqa: E402  gemeinsamer KI-Zugang (worker/ki.py): Gratis-Schlüssel zuerst, Tageslimits umgehen
+
+TOK = {"aufrufe": 0, "ein": 0, "aus": 0, "denken": 0, "gratis": 0}  # KI-Verbrauch (Kosten) dieses Laufs
 
 
 def gemini(system, parts, schema, timeout=120, deep=False):
-    """deep=True nur für den Schnittplan – sonst ohne Nachdenken (spart den Großteil der KI-Kosten)."""
-    if not KEY:
-        return None
-    for model in ("gemini-flash-latest", "gemini-3-flash-preview", "gemini-2.5-flash"):
-        think = True
-        for _ in range(3):
-            cfg = {"temperature": 0.3, "responseMimeType": "application/json", "responseSchema": schema}
-            if think:
-                cfg["thinkingConfig"] = ({"thinkingBudget": 1024 if deep else 0} if model.startswith("gemini-2.5")
-                                         else {"thinkingLevel": "low" if deep else "minimal"})
-            body = json.dumps({"systemInstruction": {"parts": [{"text": system}]}, "contents": [{"role": "user", "parts": parts}],
-                               "generationConfig": cfg}).encode()
-            try:
-                req = urllib.request.Request(f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent", data=body,
-                                             headers={"x-goog-api-key": KEY, "Content-Type": "application/json"})
-                d = json.loads(urllib.request.urlopen(req, timeout=timeout).read())
-                u = d.get("usageMetadata") or {}
-                TOK["aufrufe"] += 1
-                TOK["ein"] += int(u.get("promptTokenCount") or 0)
-                TOK["aus"] += int(u.get("candidatesTokenCount") or 0)
-                TOK["denken"] += int(u.get("thoughtsTokenCount") or 0)
-                return json.loads("".join(p.get("text", "") for p in d["candidates"][0]["content"]["parts"]))
-            except urllib.error.HTTPError as e:
-                log(f"Gemini {model}: HTTP {e.code}")
-                if e.code == 400 and think:  # Modell kennt die Denk-Einstellung nicht → ohne wiederholen
-                    think = False
-                    continue
-                break
-            except Exception as e:  # noqa: BLE001
-                log(f"Gemini {model}: {str(e)[:100]}")
-                break
-    return None
-    body = json.dumps({"systemInstruction": {"parts": [{"text": system}]}, "contents": [{"role": "user", "parts": parts}],
-                       "generationConfig": {"temperature": 0.3, "responseMimeType": "application/json", "responseSchema": schema}}).encode()
-    for model in ("gemini-flash-latest", "gemini-3-flash-preview", "gemini-2.5-flash"):
-        for _ in range(2):
-            try:
-                req = urllib.request.Request(f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent", data=body,
-                                             headers={"x-goog-api-key": KEY, "Content-Type": "application/json"})
-                d = json.loads(urllib.request.urlopen(req, timeout=timeout).read())
-                return json.loads("".join(p.get("text", "") for p in d["candidates"][0]["content"]["parts"]))
-            except Exception as e:  # noqa: BLE001
-                log(f"Gemini {model}: {str(e)[:100]}")
-    return None
+    """deep=True nur für den Schnittplan – sonst einfache Aufgaben auf dem sparsamen Modell."""
+    res = ki.call(system, parts, schema, deep=deep, timeout=timeout, temperature=0.3)
+    for k, v in list(ki.TOK.items()):
+        if isinstance(v, int):
+            TOK[k] = TOK.get(k, 0) + v
+            ki.TOK[k] = 0
+    return res
 
 
 # Titel-Karte, Emojis und Musikliste 1:1 aus pipeline.py übernehmen (gleiches Aussehen wie der normale Schnitt)
@@ -182,6 +146,7 @@ plan = gemini(
         "stellen": {"type": "array", "items": {"type": "object", "properties": {
             "id": {"type": "string"}, "was": {"type": "string"}, "lang": {"type": "boolean"}}, "required": ["id", "was", "lang"]}}},
      "required": ["titel", "musik", "stellen"]}, deep=True)
+ki.require_or_exit("Schnittplan")
 for s in shots:
     os.remove(s["img"])
 by_id = {s["id"]: s for s in shots}

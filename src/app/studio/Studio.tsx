@@ -415,7 +415,7 @@ export default function Studio({ credits, initialJobs }: { credits: number; init
                 <p className="m" style={{ gridColumn: '1 / -1' }}>
                   {online === false
                     ? 'Die Schnitt-Maschine ist gerade kurz nicht erreichbar. Dein Auftrag startet automatisch, sobald sie wieder da ist – sonst bekommst du nach spätestens 10 Minuten deine Credits automatisch zurück.'
-                    : 'Startet gleich – die Schnitt-Maschine holt sich deinen Auftrag.'}
+                    : j.stage || 'Startet gleich – die Schnitt-Maschine holt sich deinen Auftrag.'}
                 </p>
               ) : null}
               {j.status === 'failed' ? <p className="m" style={{ gridColumn: '1 / -1' }}>{j.error || 'Unbekannter Fehler'} – Credits wurden erstattet.</p> : null}

@@ -220,6 +220,32 @@ Protokoll aller Schnitte: `schnitt-maschine/logs/jobs.jsonl` (neben dem Ordner `
 79. **Neustart mit Signalwort:** „ihr wolltet – warte – ihr wolltet Strawberry“ → erster Anlauf samt „warte/sorry/
     Moment/stopp/nochmal/nee“ raus, auch wenn nur 2 Wörter gleich sind; schlägt den Schutz „letzte Fassung“.
 
+### Rückmeldung des Nutzers vom 05.10.2026 zu den Testvideos
+80. **Nicht zu schnell:** Ordner-Videos und Erklär-/Zubereitungs-Videos höchstens leicht beschleunigen (Malo's Junior Box
+    war mit ×1,3 „zu schnell“).
+81. **Zubereitung in echter Reihenfolge, vollständig:** roh → braten/smashen → belegen → verpacken → fertig. Clips, in
+    denen jemand beim Zubereiten redet, gehören dazu. Ein Zwischenschnitt darf keinen späteren Schritt vorwegnehmen
+    (nicht das gebratene Patty zeigen, bevor es gesmasht wird).
+82. **Ein Video = ein Thema:** Clips zuerst Themen/Videos zuordnen (Juniorbox ≠ „bester Burger in Mannheim“), nur Clips
+    aus EINEM Thema verwenden. Nach dem Schlusssatz/Aufruf (z. B. „… und dazu eine Capri-Sonne“) ist Schluss.
+83. **Gesicht nie verdecken:** Sticker, Logos, Kommentar-Einblendungen nie über das Gesicht – lieber kleiner und daneben.
+84. **Zooms auf Produkte:** wenn ein Produkt genannt/gezeigt wird („Classic“, „Topping nach Wahl“) – Punch-in.
+85. **Musik-Schnitt nur saubere Bilder:** keine Stelle, in der jemand wegschaut, ins Bild greift/den Teller wegzieht,
+    eine fremde Person auftaucht oder jemand lacht/redet, ohne dass es zum Video gehört. Ganze Stelle prüfen, nicht
+    nur ein Bild.
+
+86. **Gesicht immer frei (Kollege des Nutzers, 05.10.):** Über das Gesicht kommt nie etwas – Untertitel, Emojis,
+    Titel-Karte, Logo, Sticker, Motion Graphics. Gemeinsamer Gesichts-Bereich (face_box: 10.–90. Perzentil über den
+    ganzen Clip + Rand), alle Einblendungen weichen aus (Logo nach rechts, Titel über/unter das Gesicht, Emojis über
+    die Untertitel oder neben den Kopf, Sticker in den größten freien Bereich).
+87. **Sinn-Check am Schluss:** Das fertige Video wird abgehört (Whisper) und gegen das Rohmaterial geprüft: Sinn,
+    Reihenfolge, fehlende Antworten/Schritte, Sprünge, Versprecher, Füllwörter, Wortfetzen, Schluss. Bei Problemen
+    einmal automatisch nachschneiden und nochmal prüfen.
+88. **Deko-Grafiken nie als Sticker:** Pfeile, Icons, Rahmen aus dem Ordner werden nicht eingeblendet (Pfeil an der Hand
+    „passt nicht“). **Leise Antworten hörbar:** Lautstärke-Angleich bis ×12 („2 Euro“ ging unter).
+89. **Musik-Schnitt mit Fotos (Privat/Urlaub):** Fotos als Standbild mit sanftem Zoom, Querformat mit unscharfem
+    Hintergrund; Erzählung wie eine Reise (Ankommen → Erlebnisse → Highlight → Abschluss).
+
 ## Aus den Malo's-Videos des Nutzers (30.09.2026, material/vorher-nachher, Analyse in analyse/)
 | Muster | Stand |
 |---|---|

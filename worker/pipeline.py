@@ -1185,6 +1185,11 @@ def choose_speed(kept):
             d += b["s"] - a["s"]
     rate = n / d if d > 4.0 else 0.0  # zu wenig zusammenhängende Sprache → Messung unsicher → Originaltempo
     target, mx = (6.6, 1.3) if LOUD else (6.2, 1.2)
+    # Rückmeldung 05.10. (Regel 80): Ordner-, Zubereitungs- und Erklär-Videos nur leicht beschleunigen – die Malo's
+    # Junior Box war mit ×1,3 „zu schnell“. Umfragen bleiben knackig wie beim Nutzer.
+    fmt = ((PLAN or {}).get("format") or (STATS.get("story_format") or {}).get("format") or "").lower()
+    if PLAN or re.search(r"zubereit|anleitung|tutorial|erklär|vorstell|promo|rezept|food|behind", fmt):
+        target, mx = 5.8, 1.1
     f = min(mx, max(1.0, target / rate)) if rate else 1.0
     f = round(f * 20) / 20
     SPEED[0] = f if f >= 1.05 else 1.0
@@ -1359,13 +1364,30 @@ def fmt_word(t):
     return re.sub(r"[.,;:]+$", "", t) if CS["case"] else t
 
 
+def face_box():
+    """Regel 86 (Kollege des Nutzers, 05.10.): über das Gesicht kommt NIE etwas – weder Untertitel, Emojis, Titel, Logo,
+    Sticker noch Motion Graphics. Bereich, in dem das Gesicht im fertigen Bild vorkommt – über den ganzen Clip (10.–90.
+    Perzentil, auch wenn sich die Person bewegt) plus Rand. (oben, unten, links, rechts) oder None."""
+    if not FACES_OUT:
+        return None
+    q = lambda v, p: sorted(v)[min(len(v) - 1, int(p * len(v)))]
+    ft, fb = q([f[0] for f in FACES_OUT], 0.1) - 20, q([f[1] for f in FACES_OUT], 0.9) + 20
+    xs = [f[2] for f in FACES_OUT if len(f) > 2] or [540]
+    fw = (fb - ft) * 0.8
+    return max(0, ft), min(1920, fb), max(0, q(xs, 0.1) - fw / 2 - 30), min(1080, q(xs, 0.9) + fw / 2 + 30)
+
+
+def hits_face(x0, y0, x1, y1):
+    fbx = face_box()
+    return bool(fbx) and x0 < fbx[3] and x1 > fbx[2] and y0 < fbx[1] and y1 > fbx[0]
+
+
 def caption_y():
     """Untertitel standardmäßig im unteren Drittel – liegt dort das Gesicht, darüber bzw. darunter ausweichen."""
     y, half = 1390, CAPFS[0] * 0.6
     if not FACES_OUT:
         return y
-    top = sorted(f[0] for f in FACES_OUT)[len(FACES_OUT) // 2]
-    bot = sorted(f[1] for f in FACES_OUT)[len(FACES_OUT) // 2]
+    top, bot = face_box()[:2]
     if bot < y - half or top > y + half:
         return y
     if bot + half + 40 < 1740:  # unter dem Kinn ist Platz
@@ -1570,6 +1592,11 @@ def zoom_punches(idx, ranges):
     if idx not in FX:
         FX[idx] = gemini_effects(kept_ws, times)
     pts = sorted(times[f["i"]] for f in FX[idx] if f["i"] in times)
+    for w in kept_ws:  # Regel 84 (Rückmeldung 05.10.): Zoom, wenn ein Produkt genannt/gezeigt wird
+        t = times[w["i"]]
+        if w["i"] in ZOOM_WORDS and t > 1.0 and all(abs(t - p) >= 1.8 for p in pts):
+            pts.append(t)
+    pts.sort()
     # TikTok-Standard: spätestens alle ~3 s ein Zoom-Wechsel – an Satzanfängen/betonten Wörtern ergänzen
     prev_t = None
     for w in sorted(kept_ws, key=lambda w: times[w["i"]]):
@@ -1728,9 +1755,10 @@ def render_cut(idx, ranges):
     # Stimme hervorheben (Test 30.09.: Straßen-Umfrage 08 → Whisper erkennt 59 statt 22 Wörter, KI-Hörtest „klarer“):
     # Brummen/Wind unter 80 Hz raus, dumpfe Mitten (220 Hz) etwas runter, Sprachverständlichkeit (3 kHz) etwas hoch.
     # Bewusst mild – stärkere Filter/Kompression klangen blechern und verschlechterten die Erkennung.
+    # Rückmeldung 05.10.: leise Antworten („2 Euro“) gingen unter → Lautstärke-Angleich kräftiger (bis ×12, kürzere Fenster).
     tempo = f"atempo={SPEED[0]:.3f}," if SPEED[0] != 1.0 else ""  # schneller, Tonhöhe bleibt
     fc.append(f"[{prev}]{tempo}highpass=f=80:p=2,afftdn=nr=10:nf=-42:tn=1,equalizer=f=220:t=q:w=1.2:g=-1.5,"
-              f"equalizer=f=3000:t=q:w=1.2:g=2,dynaudnorm=f=200:g=21:p=0.9:m=5,loudnorm=I=-14:TP=-1.5:LRA=7,"
+              f"equalizer=f=3000:t=q:w=1.2:g=2,dynaudnorm=f=150:g=15:p=0.9:m=12,loudnorm=I=-14:TP=-1.5:LRA=7,"
               f"afade=t=in:d=0.03,afade=t=out:st={max(0.0, total - 0.18):.3f}:d=0.18,aresample=48000[ac]")
     fc.append(f"[0:v]setsar=1,{GRADE},format=yuv420p[vc]")
     script = os.path.join(A.out, f"cut-{idx}.filter")
@@ -2028,6 +2056,9 @@ def est_times(ranges, words):
     return out
 
 
+ZOOM_WORDS = set()  # Wortnummern mit Produkt/Gericht → kurzer Zoom-Punch (gemini_effects füllt, zoom_punches nutzt)
+
+
 def gemini_effects(kept, times):
     """Viral: KI setzt wenige, passende Akzente – Emoji + Sound + Zoom-Punch an Pointen (Preis → Kaching, Bewertung → Ding …).
     Läuft VOR dem Rendern (Zeiten aus der Schnittliste), damit die Zoom-Punches genau auf diese Momente fallen."""
@@ -2039,12 +2070,16 @@ def gemini_effects(kept, times):
         "(1–3 Wörter, z. B. „Kaiserschmarrn“, „10 von 10“, „150 Millionen“, „12 Euro“), ein passendes Emoji aus dieser Liste: "
         + " ".join(EMOJIS) +
         " und ein Sound aus: pop (Standard), ding (Bewertung/Pointe), kaching (Geld/Preis/Gewinn), whoosh (Überraschung), click "
-        "(Aufzählung). Wörter als [Nummer|Sekunde]Wort.",
+        "(Aufzählung). Außerdem „zoom“: Wortnummern, bei denen ein Produkt, Gericht oder eine Sorte genannt bzw. gezeigt wird "
+        "(z. B. „Classic“, „Topping nach Wahl“, „Smashburger“) – dort zoomt das Bild kurz rein (ohne Emoji/Sound), höchstens "
+        "einer pro 3 Sekunden. Wörter als [Nummer|Sekunde]Wort.",
         " ".join(f"[{w['i']}|{OUT_TIME[w['i']]:.1f}s]{w['t']}" for w in kept if w["i"] in OUT_TIME),
         {"type": "object", "properties": {"fx": {"type": "array", "items": {"type": "object", "properties": {
             "i": {"type": "integer"}, "text": {"type": "string"}, "emoji": {"type": "string"}, "sfx": {"type": "string"}},
-            "required": ["i", "text", "emoji", "sfx"]}}},
+            "required": ["i", "text", "emoji", "sfx"]}},
+            "zoom": {"type": "array", "items": {"type": "integer"}}},
          "required": ["fx"]})
+    ZOOM_WORDS.update(int(i) for i in (res or {}).get("zoom") or [] if isinstance(i, int))  # Regel 84: Zoom aufs Produkt
     fx, last = [], -99.0
     for f in sorted((res or {}).get("fx") or [], key=lambda f: OUT_TIME.get(f.get("i"), 1e9)):
         t0 = OUT_TIME.get(f.get("i"))
@@ -2189,8 +2224,7 @@ def premium_events(fx, words_out, title):
     HIDE.clear()
     py = cy - 390 if cy > 900 else cy + 390
     if FACES_OUT:  # Grafik nie über ein Gesicht: unter das Kinn, sonst über den Kopf, sonst Standard
-        ft = sorted(f[0] for f in FACES_OUT)[len(FACES_OUT) // 2]
-        fb = sorted(f[1] for f in FACES_OUT)[len(FACES_OUT) // 2]
+        ft, fb = face_box()[:2]
         if fb + 200 < cy - 130:
             py = int(min(cy - 200, fb + 150))
         elif ft - 200 > 560:
@@ -2344,6 +2378,35 @@ def sticker_png(src, alpha, path):
 STICKER_PX = 430
 
 
+def sticker_spot(sw, sh):
+    """Regel 83 (Rückmeldung 05.10.): Sticker/Logo/Kommentar NIE über das Gesicht. Größter freier Bereich links/rechts
+    neben dem Kopf, darüber oder darunter – ohne die Untertitel-Zeile und die Titel-Karte. Der Sticker wird passend
+    verkleinert. Rückgabe (Faktor, x, y oben) oder None, wenn nirgends Platz ist (dann lieber weglassen)."""
+    if FACES_OUT:
+        ft, fb, fl, fr = face_box()
+    else:
+        ft, fb, fl, fr = 560, 1120, 300, 780
+    cap, ch = caption_y(), CAPFS[0] * 0.75 + 40
+    top_lim, bot_lim = 430, 1820
+
+    def free(x0, x1, y0, y1):  # Untertitel-Band aus dem Bereich herausnehmen → größerer Rest
+        y0, y1 = max(y0, top_lim), min(y1, bot_lim)
+        if cap + ch > y0 and cap - ch < y1:
+            up, down = (y0, min(y1, cap - ch)), (max(y0, cap + ch), y1)
+            y0, y1 = up if up[1] - up[0] >= down[1] - down[0] else down
+        return x0, x1, y0, y1
+
+    best = None
+    for x0, x1, y0, y1 in (free(30, fl, 0, 1920), free(fr, 1050, 0, 1920), free(40, 1040, 0, ft - 20), free(40, 1040, fb + 20, 1920)):
+        rw, rh = x1 - x0, y1 - y0
+        if rw < 140 or rh < 140:
+            continue
+        f = min(1.0, rw / sw, rh / sh)
+        if best is None or f > best[0]:
+            best = (f, x0 + (rw - sw * f) / 2, y0 + (rh - sh * f) / 2)
+    return best if best and best[0] >= 0.35 else None
+
+
 def Image_wide(path):  # noqa: N802
     from PIL import Image
     w, h = Image.open(path).size
@@ -2392,6 +2455,18 @@ def burn(idx, cut, words_out, title, ranges=None, kept=None):
     card = hook_card(title, os.path.join(A.out, f"titel-{idx}.png")) if title and not PREM else None
     logo = A.logo if A.logo and os.path.exists(A.logo) else None
     hy = HOOK_Y + (LOGO_PX + 20 if logo else 0)  # mit Logo rutscht der Titel darunter
+    lx = 48
+    if logo and hits_face(lx, LOGO_Y, lx + LOGO_PX, LOGO_Y + LOGO_PX):  # Regel 86: Logo nach rechts, wenn links das Gesicht ist
+        lx = 1080 - 48 - LOGO_PX
+    if card:  # Regel 86: Titel-Karte nicht übers Gesicht – darüber oder darunter ausweichen
+        from PIL import Image as _Im
+        cw_, ch_ = _Im.open(card).size
+        if hits_face((1080 - cw_) / 2, hy, (1080 + cw_) / 2, hy + ch_):
+            ft_, fb_ = face_box()[:2]
+            if ft_ - ch_ - 20 >= 90:
+                hy = int(ft_ - ch_ - 20)
+            elif fb_ + 20 + ch_ < caption_y() - CAPFS[0] * 0.6 - 20:
+                hy = int(fb_ + 20)
     if card:  # Titel oben: Viral gleitet sanft von oben rein, Clean blendet nur ruhig ein; bleibt 3 s
         inputs += ["-loop", "1", "-t", "3.3", "-i", card]
         fc.append(f"[{ni}:v]format=rgba,fade=t=in:st=0:d=0.3:alpha=1,fade=t=out:st=2.9:d=0.4:alpha=1[hc]")
@@ -2401,24 +2476,26 @@ def burn(idx, cut, words_out, title, ranges=None, kept=None):
     if logo:  # Kunden-Logo oben links (wie in den Malo's-Videos des Nutzers): blendet weich ein und bleibt
         inputs += ["-loop", "1", "-i", logo]
         fc.append(f"[{ni}:v]format=rgba,scale={LOGO_PX}:-1:flags=lanczos,fade=t=in:st=0.1:d=0.35:alpha=1[lg]")
-        fc.append(f"[{vin}][lg]overlay=x=48:y={LOGO_Y}:shortest=1[vl]")
+        fc.append(f"[{vin}][lg]overlay=x={lx}:y={LOGO_Y}:shortest=1[vl]")
         vin, ni = "vl", ni + 1
     if PLAN and PLAN.get("bilder"):  # Produktbilder als Sticker: gleiten von unten rein, bleiben 1,8 s, Pop-Sound
-        # neben das Gesicht (nicht davor): auf die Seite, auf der mehr Platz ist, auf Höhe des Gesichts
-        fx = med([f[2] for f in FACES_OUT]) if FACES_OUT and len(FACES_OUT[0]) > 2 else 540
-        fy = med([(f[0] + f[1]) / 2 for f in FACES_OUT]) if FACES_OUT else 760
-        sy = int(min(1180, max(560, fy + 120)))
+        # NIE vor das Gesicht (Regel 83): freien Bereich neben/über/unter dem Kopf suchen, Sticker passend verkleinern
+        from PIL import Image as _Img
         for k, b in enumerate(PLAN["bilder"]):
             t0 = out_at(b["t_src"])
             if t0 is None or t0 > total - 1.0 or not os.path.exists(b["file"]):
                 continue
             png = sticker_png(b["file"], b.get("alpha"), os.path.join(A.out, f"sticker-{idx}-{k}.png"))
+            spot = sticker_spot(*_Img.open(png).size)
+            if not spot:
+                log(f"Sticker {k + 1} weggelassen – kein Platz, ohne das Gesicht zu verdecken")
+                continue
+            f_, sx, sy = spot
             inputs += ["-loop", "1", "-t", f"{b['dur'] + 0.4:.2f}", "-i", png]
-            fc.append(f"[{ni}:v]format=rgba,fade=t=in:st=0:d=0.2:alpha=1,fade=t=out:st={b['dur']:.2f}:d=0.3:alpha=1,"
-                      f"setpts=PTS+{t0:.3f}/TB[st{k}]")
+            fc.append(f"[{ni}:v]format=rgba,scale=trunc(iw*{f_:.3f}/2)*2:-2:flags=lanczos,fade=t=in:st=0:d=0.2:alpha=1,"
+                      f"fade=t=out:st={b['dur']:.2f}:d=0.3:alpha=1,setpts=PTS+{t0:.3f}/TB[st{k}]")
             a = f"(60*pow(1-clip((t-{t0:.3f})/0.25,0,1),3))"
-            sx = "(W-w)/2" if Image_wide(png) else ("W-w-40" if fx < 540 else "40")
-            fc.append(f"[{vin}][st{k}]overlay=x={sx}:y='{sy}-h/2+{a}':eof_action=pass[sv{k}]")
+            fc.append(f"[{vin}][st{k}]overlay=x={int(sx)}:y='{int(sy)}+{a}':eof_action=pass[sv{k}]")
             vin, ni = f"sv{k}", ni + 1
             plan_snd.append((t0, "pop", 0.3))
     if LOUD and ranges and kept:
@@ -2430,6 +2507,12 @@ def burn(idx, cut, words_out, title, ranges=None, kept=None):
         STATS.update(sfx=len(snd), emojis=len(emo), fx=[(round(f["t"], 1), f["emoji"], f["sfx"]) for f in fx])
         # Emojis UNTER den Untertiteln, dezent (140 px), gleiten abwechselnd von links/rechts/unten/oben herein und wieder weg
         ey = min(1660, caption_y() + int(CAPFS[0] * 0.55) + 105)  # knapp unter der (immer einzeiligen) Untertitel-Zeile
+        ex = 540
+        if hits_face(ex - 90, ey - 90, ex + 90, ey + 90):  # Regel 86: über die Untertitel, sonst neben das Gesicht
+            fbx = face_box()
+            cand = [(540, caption_y() - int(CAPFS[0] * 0.55) - 105), (fbx[3] + 100, (fbx[0] + fbx[1]) / 2), (fbx[2] - 100, (fbx[0] + fbx[1]) / 2)]
+            ok = [(x, y) for x, y in cand if 90 <= x <= 990 and 330 <= y <= 1800 and not hits_face(x - 90, y - 90, x + 90, y + 90)]
+            ex, ey = (int(ok[0][0]), int(ok[0][1])) if ok else (ex, ey)
         slide = [("-{a}", ""), ("+{a}", ""), ("", "+{a}"), ("", "-{a}")]
         for k, f in enumerate(emo):
             t0 = f["t"]
@@ -2439,7 +2522,7 @@ def burn(idx, cut, words_out, title, ranges=None, kept=None):
             # Weg: rein = 80 px mit weichem Abbremsen, raus = 30 px weiter in dieselbe Richtung
             a = f"(80*pow(1-clip((t-{t0:.3f})/0.3,0,1),3)-30*pow(clip((t-{t0 + 1.35:.3f})/0.35,0,1),2))"
             sx, sy = (v.format(a=a) for v in slide[k % 4])
-            fc.append(f"[{vin}][e{k}]overlay=x='(W-w)/2{sx}':y='{ey}-h/2{sy}':eof_action=pass[vo{k}]")
+            fc.append(f"[{vin}][e{k}]overlay=x='{ex}-w/2{sx}':y='{ey}-h/2{sy}':eof_action=pass[vo{k}]")
             vin, ni = f"vo{k}", ni + 1
     else:
         snd = []
@@ -2670,6 +2753,37 @@ def gemini_fix_story(m, kept, problems):
     return new
 
 
+def sense_check(path, c):
+    """Regel 87 (Kollege des Nutzers, 05.10.): Zum Schluss das FERTIGE Video abhören (Whisper) und mit dem Rohmaterial
+    vergleichen – ergibt es für einen Zuschauer ohne Vorwissen Sinn? Reihenfolge, fehlende Antworten/Schritte/Auflösung,
+    Sprünge, abgebrochene Sätze, Versprecher, Füllwörter, Doppeltes, Schluss. Liefert Probleme im Format der Abnahme."""
+    heard = hear(path)
+    if not heard:
+        return None
+    fertig = " ".join(f"[{h['s']:.0f}s] {h['t']}" if k % 8 == 0 else h["t"] for k, h in enumerate(heard))
+    m, kept_i = c["m"], {w["i"] for w in c["kept"]}
+    lo, hi = max(0, m["start"] - 80), min(len(WORDS) - 1, m["end"] + 80)
+    roh = "\n".join(("+ " if any(w["i"] in kept_i for w in st) else "− ") + " ".join(w["t"] for w in st)
+                    for st in sentences(WORDS[lo:hi + 1]))
+    res = gemini(
+        CUTTER + "Letzte Kontrolle vor der Auslieferung. Du bekommst (1) das Rohmaterial Satz für Satz (+ = im Video, "
+        "− = rausgeschnitten) und (2) was im FERTIGEN Video tatsächlich zu hören ist. Prüfe wie ein strenger Chef-Cutter: "
+        "Ergibt das Video für einen Zuschauer ohne Vorwissen Sinn? Stimmt die Reihenfolge? Fehlt etwas Wichtiges (Antwort auf "
+        "eine gestellte Frage, Auflösung, Bewertung, Preis, ein Schritt der Zubereitung), das im Rohmaterial vorhanden ist? Gibt "
+        "es Sprünge, abgebrochene Sätze, Versprecher, Füllwörter, doppelte Aussagen, Wortfetzen oder einen Schluss, der nicht "
+        "passt? Nenne nur echte Probleme mit Sekunde im fertigen Video. ok=true, wenn das Video so raus kann.",
+        f"ROHMATERIAL:\n{roh}\n\nFERTIGES VIDEO (zu hören):\n{fertig}",
+        {"type": "object", "properties": {"ok": {"type": "boolean"}, "note": {"type": "integer"},
+                                          "probleme": {"type": "array", "items": {"type": "object", "properties": {
+                                              "sek": {"type": "number"}, "was": {"type": "string"}}, "required": ["sek", "was"]}}},
+         "required": ["ok", "probleme"]}, deep=True)
+    if not res:
+        return None
+    return {"ok": bool(res.get("ok")), "note": res.get("note"),
+            "probleme": [{"sek": float(p.get("sek") or 0), "art": "schnitt", "was": str(p.get("was") or "")[:160]}
+                         for p in res.get("probleme") or [] if p.get("was")][:6]}
+
+
 def quality_check(path, words, kept, orig, secs):
     """Sicherheits-Check: Ein Clip wird nur ausgeliefert, wenn wirklich geschnitten und untertitelt wurde.
     Schlägt er fehl, bricht die Pipeline ab → Auftrag „fehlgeschlagen“, Credits werden automatisch erstattet."""
@@ -2839,6 +2953,26 @@ for n, m in enumerate(MOMENTS, 1):
                     STATS["abnahme"]["korrigiert"] += fixed2
                     log(f"KI-Abnahme Runde 2: {len(fixed2)} weitere Korrekturen – brennt neu ein")
                     f = burn(n, c["cut"], words_out, card_title, c["ranges"], c["kept"])
+    if not A.no_review:  # Regel 87: fertiges Video abhören, Sinn gegen das Rohmaterial prüfen, bei Bedarf nachschneiden
+        step(0.93, "Hört das fertige Video ab und prüft, ob alles Sinn ergibt …")
+        sc = sense_check(f, c)
+        if sc:
+            STATS["sinn"] = {"ok": sc["ok"], "note": sc.get("note"), "probleme": [p["was"][:100] for p in sc["probleme"]]}
+            log(f"Sinn-Check: {'ok' if sc['ok'] else 'Probleme'} – " + "; ".join(p["was"][:80] for p in sc["probleme"][:3]))
+            m3 = gemini_fix_story(c["m"], c["kept"], sc["probleme"]) if not sc["ok"] and sc["probleme"] else None
+            if m3:
+                step(0.94, "Verbessert den Schnitt nach dem Sinn-Check …")
+                c3 = make_cut(n, fix_bounds(m3), step)
+                if c3:
+                    if c["cut"] != c3["cut"] and os.path.exists(c["cut"]) and not A.keep_work:
+                        os.remove(c["cut"])
+                    c = c3
+                    QUIZ.pop(n, None)
+                    f = burn(n, c["cut"], c["words_out"], card_title, c["ranges"], c["kept"])
+                    sc2 = sense_check(f, c)
+                    if sc2:
+                        STATS["sinn"].update(ok_nach=sc2["ok"], note_nach=sc2.get("note"), probleme_nach=[p["was"][:100] for p in sc2["probleme"]])
+                        log(f"Sinn-Check nach Nachschnitt: {'ok' if sc2['ok'] else 'noch Hinweise'} (Note {sc2.get('note')})")
     if not A.keep_work and os.path.exists(c["cut"]):
         os.remove(c["cut"])
     words, kept, secs = c["words"], c["kept"], c["secs"]

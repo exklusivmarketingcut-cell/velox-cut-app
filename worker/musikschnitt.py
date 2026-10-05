@@ -41,9 +41,9 @@ def stage(text, p=None):
 
 
 def run(cmd):
-    r = subprocess.run(cmd, capture_output=True, text=True)
+    r = subprocess.run(cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=900)  # nie auf Eingabe warten/hängen
     if r.returncode != 0:
-        raise RuntimeError(((r.stderr or r.stdout).strip().splitlines() or [cmd[0]])[-1])
+        raise RuntimeError(((r.stderr or r.stdout).strip().splitlines() or [f"{cmd[0]} Code {r.returncode}: {' '.join(cmd[-40:])[:900]}"])[-1])
     return r
 
 
@@ -94,7 +94,16 @@ for f in videos:
     info = probe(f)
     if info and info["dur"] >= 0.8:
         clips.append({"id": f"C{len(clips) + 1}", "file": f, **info})
-if not clips:
+IMAGE = (".jpg", ".jpeg", ".png", ".webp", ".heic")
+fotos = []
+for f in sorted(f for f in files if f.lower().endswith(IMAGE) and not os.path.basename(f).startswith((".", "._"))):
+    jpg = f
+    if f.lower().endswith(".heic"):  # iPhone-Fotos
+        jpg = os.path.join(A.out, f"foto_{len(fotos):03d}.jpg")
+        if subprocess.run(["sips", "-s", "format", "jpeg", f, "--out", jpg], capture_output=True).returncode != 0:
+            continue
+    fotos.append(jpg)
+if not clips and not fotos:
     sys.exit("Im Ordner ist kein lesbares Video.")
 stage(f"Schaut sich {len(clips)} Clips an …", 5)
 
@@ -102,24 +111,66 @@ stage(f"Schaut sich {len(clips)} Clips an …", 5)
 # Jeder Clip wird in Stellen zerlegt; je Stelle ein Bild. Unscharfes fliegt schon hier raus (Kantenschärfe).
 import cv2  # noqa: E402
 
+def scene_cuts(c):
+    """Kameraschnitte/Szenenwechsel im Clip – eine Stelle darf nie über einen Schnitt gehen (sonst blitzt ein fremdes Bild auf)."""
+    r = subprocess.run(["ffmpeg", "-v", "info", "-hwaccel", "videotoolbox", "-i", c["file"], "-an", "-vf", "scale=160:-2,select='gt(scene,0.3)',showinfo",
+                        "-f", "null", "-"], capture_output=True, text=True)
+    return [float(x) for x in re.findall(r"pts_time:([\d.]+)", r.stderr)]
+
+
+def triptych(c, a, b, path):
+    """Anfang | Mitte | Ende der Stelle nebeneinander – die KI sieht, ob die GANZE Stelle sauber ist (Regel 85)."""
+    from PIL import Image
+    ims = []
+    for k, t in enumerate((a + 0.1, (a + b) / 2, b - 0.1)):
+        p = f"{path}.{k}.jpg"
+        run(["ffmpeg", "-v", "error", "-y", "-ss", f"{t:.2f}", "-i", c["file"], "-frames:v", "1", "-vf", "scale=-2:240", "-q:v", "4", p])
+        ims.append(Image.open(p).convert("RGB"))
+        os.remove(p)
+    out = Image.new("RGB", (sum(i.width for i in ims) + 16, 240), (255, 255, 255))
+    x = 0
+    for i in ims:
+        out.paste(i, (x, 0))
+        x += i.width + 8
+    out.save(path, quality=80)
+    return ims[1]
+
+
 shots = []
 for c in clips:
-    n = max(1, min(8, int(c["dur"] // 2.5)))
-    step = c["dur"] / n
-    for k in range(n):
-        a, b = k * step + 0.15, (k + 1) * step - 0.15
-        if b - a < 0.6:
-            continue
-        p = os.path.join(A.out, f"s_{c['id']}_{k}.jpg")
-        try:
-            run(["ffmpeg", "-v", "error", "-y", "-ss", f"{(a + b) / 2:.2f}", "-i", c["file"], "-frames:v", "1", "-vf", "scale=360:-2", "-q:v", "4", p])
-        except RuntimeError:
-            continue
-        g = cv2.imread(p, cv2.IMREAD_GRAYSCALE)
-        sharp = float(cv2.Laplacian(g, cv2.CV_64F).var()) if g is not None else 0
-        shots.append({"id": f"{c['id']}s{k + 1}", "c": c, "a": round(a, 2), "b": round(b, 2), "img": p, "sharp": sharp})
-if len(shots) > 70:  # zu viele Bilder für einen KI-Aufruf → die schärfsten je Clip behalten
-    keep = sorted(shots, key=lambda s: -s["sharp"])[:70]
+    bounds = [0.0] + [t for t in scene_cuts(c) if 0.5 < t < c["dur"] - 0.5] + [c["dur"]]
+    for s0, s1 in zip(bounds, bounds[1:]):  # je Szene in Stellen à ~2,5 s teilen
+        n = max(1, min(8, int((s1 - s0) // 2.5)))
+        step = (s1 - s0) / n
+        for k in range(n):
+            a, b = s0 + k * step + 0.15, s0 + (k + 1) * step - 0.15
+            if b - a < 0.7:
+                continue
+            p = os.path.join(A.out, f"s_{c['id']}_{len(shots)}.jpg")
+            try:
+                mid = triptych(c, a, b, p)
+            except Exception:  # noqa: BLE001
+                continue
+            g = cv2.cvtColor(np.array(mid), cv2.COLOR_RGB2GRAY)
+            sharp = float(cv2.Laplacian(g, cv2.CV_64F).var())
+            shots.append({"id": f"{c['id']}s{len([x for x in shots if x['c'] is c]) + 1}", "c": c, "a": round(a, 2), "b": round(b, 2),
+                          "img": p, "sharp": sharp})
+from PIL import Image as _Img, ImageOps as _Ops  # noqa: E402
+for n, f in enumerate(fotos):  # Fotos = Standbilder (sanfter Zoom), im Hochformat-Rahmen
+    try:
+        im = _Ops.exif_transpose(_Img.open(f)).convert("RGB")
+    except Exception:  # noqa: BLE001
+        continue
+    p = os.path.join(A.out, f"s_F{n + 1}.jpg")
+    th = im.copy()
+    th.thumbnail((480, 480))
+    th.save(p, quality=80)
+    g = cv2.cvtColor(np.array(th), cv2.COLOR_RGB2GRAY)
+    shots.append({"id": f"F{n + 1}", "foto": f, "c": None, "a": 0.0, "b": 3.0, "img": p, "sharp": float(cv2.Laplacian(g, cv2.CV_64F).var()),
+                  "quer": im.width > im.height * 0.9})
+if len(shots) > 60:  # zu viele Bilder für einen KI-Aufruf → alle Fotos + die schärfsten Video-Stellen behalten
+    keep = [x for x in shots if x.get("foto")][:30]
+    keep += sorted([x for x in shots if not x.get("foto")], key=lambda s: -s["sharp"])[:60 - len(keep)]
     shots = [s for s in shots if s in keep]
 med_sharp = float(np.median([s["sharp"] for s in shots])) if shots else 0
 log(f"{len(shots)} Stellen, Schärfe-Median {med_sharp:.0f}")
@@ -127,26 +178,37 @@ log(f"{len(shots)} Stellen, Schärfe-Median {med_sharp:.0f}")
 stage("Plant den Musik-Schnitt …", 15)
 parts = []
 for s in shots:
-    parts += [{"text": f"Stelle {s['id']} ({s['b'] - s['a']:.1f} s{', eher unscharf' if s['sharp'] < med_sharp * 0.35 else ''}):"},
+    parts += [{"text": (f"Foto {s['id']}:" if s.get("foto") else f"Stelle {s['id']} ({s['b'] - s['a']:.1f} s, Anfang | Mitte | Ende{', eher unscharf' if s['sharp'] < med_sharp * 0.35 else ''}):")},
               {"inline_data": {"mime_type": "image/jpeg", "data": base64.b64encode(open(s["img"], "rb").read()).decode()}}]
 musik = {n: d for n, d in MUSIC.items() if os.path.exists(os.path.join(MUSIC_DIR, f"{n}.mp3"))}
-plan = gemini(
-    "Du bist Cutter für TikTok/Reels von Restaurants und Läden. Aus diesen B-Roll-Stellen (niemand spricht) baust du EIN "
-    "Musik-Video, geschnitten auf den Beat. Wähle 10–18 Stellen und ordne sie wie ein Profi:\n"
-    "1) AUFHÄNGER zuerst: das stärkste, appetitlichste Bild (Käse zieht Fäden, Biss, Flamme, Soße läuft, fertiges Produkt).\n"
-    "2) Dann die Zubereitung in der echten Reihenfolge (roh → braten/backen → belegen → anrichten/verpacken).\n"
-    "3) Ende: das fertige Produkt groß (Held), gern danach Laden/Schild/Theke. Held und Ende dürfen länger stehen (lang=true).\n"
+_PC = os.environ.get("VELOX_PLAN")  # nur für Tests: Schnittplan zwischenspeichern (spart KI-Aufrufe)
+plan = json.load(open(_PC)) if _PC and os.path.exists(_PC) else gemini(
+    "Du bist Cutter für TikTok/Reels. Aus diesen Stellen (Videos und evtl. Fotos, ohne Sprache) baust du EIN Musik-Video, "
+    "geschnitten auf den Beat. Erkenne zuerst die Art (Feld „art“): FOOD/LADEN (Restaurant, Zubereitung, Produkt) oder "
+    "PRIVAT (Urlaub, Ausflug, Feier, Vlog). Wähle 10–20 Stellen und ordne sie wie ein Profi:\n"
+    "FOOD/LADEN: 1) Aufhänger = stärkstes, appetitlichstes Bild (Käse zieht Fäden, Biss, Flamme). 2) Zubereitung in echter "
+    "Reihenfolge (roh → braten/backen → belegen → anrichten). 3) Ende: fertiges Produkt groß, gern danach Laden/Schild.\n"
+    "PRIVAT: 1) Aufhänger = schönstes, eindrucksvollstes Bild (Aussicht, Meer, Highlight). 2) Dann wie eine kleine Reise "
+    "erzählt, ungefähr in Aufnahme-Reihenfolge (Dateinummern): Ankommen → Erlebnisse/Orte → Essen/Leute → Highlight. "
+    "3) Ende: stimmungsvoller Abschluss (Sonnenuntergang, Abend, Gruppenbild). Bei PRIVAT 16–22 Stellen wählen; bewegte Videos tragen das Video (mindestens die Hälfte), "
+    "Fotos (F…) nur die schönsten dazwischen, nie zwei Fotos hintereinander. Leute dürfen hier zu sehen sein und lachen.\n"
+    "Held und Ende dürfen länger stehen (lang=true).\n"
     "Keine zwei fast gleichen Bilder hintereinander, nichts Unscharfes/Verwackeltes/Dunkles, keine Leute, die in die Kamera "
-    "reden. Titel: kurzer, neugierig machender Aufhänger auf Deutsch (max. 6 Wörter) mit EINEM passenden Emoji am Ende, "
-    "z. B. „So entsteht unser Smashburger 🍔“. Musik: passend zur Stimmung aus der Liste."
+    "reden. Jede Stelle siehst du als Anfang | Mitte | Ende – nimm sie NUR, wenn ALLE drei Bilder sauber sind: niemand "
+    "schaut weg, greift ins Bild oder zieht den Teller weg, keine fremde Person taucht auf, niemand lacht/redet (außer das "
+    "Video handelt genau davon – bei PRIVAT sind fröhliche Leute erwünscht), kein Schwenk ins Leere. Lieber weniger, aber nur saubere Stellen. Titel: kurzer, neugierig machender Aufhänger auf Deutsch (max. 6 Wörter) mit EINEM passenden Emoji am Ende, "
+    "z. B. „So entsteht unser Smashburger 🍔“ oder „Unser Sommer in Kroatien 🌊“. Musik: passend zur Stimmung aus der Liste."
     + (f" Namen/Marken des Kunden (Schreibweise): {A.words}." if A.words else ""),
     parts + [{"text": "Musik:\n" + "\n".join(f"{n}: {d}" for n, d in musik.items())}],
     {"type": "object", "properties": {
+        "art": {"type": "string", "enum": ["food", "privat"]},
         "titel": {"type": "string"}, "musik": {"type": "string", "enum": list(musik) or ["keine"]},
         "stellen": {"type": "array", "items": {"type": "object", "properties": {
             "id": {"type": "string"}, "was": {"type": "string"}, "lang": {"type": "boolean"}}, "required": ["id", "was", "lang"]}}},
      "required": ["titel", "musik", "stellen"]}, deep=True)
 ki.require_or_exit("Schnittplan")
+if _PC and plan and not os.path.exists(_PC):
+    json.dump(plan, open(_PC, "w"), ensure_ascii=False)
 for s in shots:
     os.remove(s["img"])
 by_id = {s["id"]: s for s in shots}
@@ -157,7 +219,7 @@ for x in (plan or {}).get("stellen") or []:
         order.append({"s": s, "was": x.get("was", ""), "lang": bool(x.get("lang"))})
 if len(order) < 4:  # KI nicht erreichbar → einfach die schärfsten Stellen in Dateireihenfolge
     order = [{"s": s, "was": "", "lang": False} for s in sorted(shots, key=lambda s: -s["sharp"])[:12]]
-    order.sort(key=lambda o: (o["s"]["c"]["file"], o["s"]["a"]))
+    order.sort(key=lambda o: (o["s"].get("foto") or o["s"]["c"]["file"], o["s"]["a"]))
     order[-1]["lang"] = True
 title = ((plan or {}).get("titel") or "").strip()
 log("Plan:", title, "|", " → ".join(f"{o['s']['id']}{'*' if o['lang'] else ''} {o['was'][:25]}" for o in order))
@@ -195,13 +257,17 @@ def nbeats(target):
     return max(1, round(target / beat))
 
 
+PRIVAT = (plan or {}).get("art") == "privat"
 plan_b = []
 for k, o in enumerate(order):
-    tgt = 1.9 if o["lang"] else (1.3 if k == 0 else 0.85)
+    if PRIVAT:  # Urlaub/Vlog: Bilder brauchen Zeit zum Wirken (Regel 90) – ~1,2 s, Held/Ende ~2,4 s
+        tgt = 2.4 if o["lang"] else (1.7 if k == 0 else 1.2)
+    else:
+        tgt = 1.9 if o["lang"] else (1.3 if k == 0 else 0.85)
     if k == len(order) - 1:
-        tgt = max(tgt, 2.2)
+        tgt = max(tgt, 2.6 if PRIVAT else 2.2)
     plan_b.append(nbeats(tgt))
-while sum(plan_b) * beat > 22 and len(order) > 6:  # max ~22 s
+while sum(plan_b) * beat > (30 if PRIVAT else 22) and len(order) > 6:  # max ~22 s (Privat 30 s)
     del order[-2], plan_b[-2]
 cuts = [0]
 for n in plan_b:
@@ -225,13 +291,24 @@ for k, o in enumerate(order):
     vf = (f"setpts=PTS/{speed:.4f},fps={FPS},scale={TW}:{TH}:force_original_aspect_ratio=increase,crop={TW}:{TH},"
           f"scale=w='trunc({TW}*({zoom})/2)*2':h='trunc({TH}*({zoom})/2)*2':eval=frame,crop={TW}:{TH},setsar=1,format=yuv420p")
     out = os.path.join(A.out, f"m_{k:02d}.mp4")
+    if s.get("foto"):
+        fit = (f"split[bg][fg];[bg]scale={TW}:{TH}:force_original_aspect_ratio=increase,crop={TW}:{TH},boxblur=30:2,eq=brightness=-0.08[bgb];"
+               f"[fg]scale={TW}:-2[fgs];[bgb][fgs]overlay=(W-w)/2:(H-h)/2" if s.get("quer") else
+               f"scale={TW}:{TH}:force_original_aspect_ratio=increase,crop={TW}:{TH}")
+        fv = (f"[0:v]fps={FPS},scale=iw:ih:out_range=limited,format=yuv420p,{fit},scale=w='trunc({TW}*({zoom})/2)*2':h='trunc({TH}*({zoom})/2)*2':eval=frame,"
+              f"crop={TW}:{TH},setsar=1,format=yuv420p[v]")
+        run(["ffmpeg", "-v", "error", "-y", "-loop", "1", "-t", f"{d + 0.2:.3f}", "-i", s["foto"], "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
+             "-filter_complex", fv, "-map", "[v]", "-map", "1:a", "-frames:v", str(nf), "-t", f"{d:.4f}", "-ac", "2", "-color_range", "tv", "-c:v", "libx264",
+             "-preset", "veryfast", "-crf", "17", "-r", str(FPS), "-c:a", "aac", "-b:a", "192k", out])
+        parts_v.append(out)
+        continue
     cmd = ["ffmpeg", "-v", "error", "-y", "-ss", f"{a:.3f}", "-t", f"{src_len + 0.3:.3f}", "-i", s["c"]["file"]]
     if s["c"]["audio"]:
         af = f"atempo={max(speed, 0.5):.4f},apad,atrim=0:{d:.4f},aresample=48000"
         cmd += ["-vf", vf, "-af", af]
     else:
         cmd += ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-vf", vf, "-map", "0:v", "-map", "1:a", "-shortest"]
-    cmd += ["-frames:v", str(nf), "-t", f"{d:.4f}", "-ac", "2", "-c:v", "libx264", "-preset", "veryfast", "-crf", "17", "-r", str(FPS),
+    cmd += ["-frames:v", str(nf), "-t", f"{d:.4f}", "-ac", "2", "-color_range", "tv", "-c:v", "libx264", "-preset", "veryfast", "-crf", "17", "-r", str(FPS),
             "-c:a", "aac", "-b:a", "192k", out]
     run(cmd)
     parts_v.append(out)
@@ -246,16 +323,16 @@ for f in parts_v + [lst]:
 # ─────────────────────────────── 5. Titel, Logo, Musik → fertig ───────────────────────────────
 stage("Legt Musik, Titel und Logo an …", 85)
 final = os.path.join(A.out, "clip-1.mp4")
-inputs = ["-i", body, "-ss", f"{t_first:.3f}", "-i", song]
+inputs = ["-i", body]
 fc = ["[0:v]eq=contrast=1.04:saturation=1.10[v0]" if A.style != "clean" else "[0:v]null[v0]"]
-vin, ni = "v0", 2
+vin, ni = "v0", 1
 card = hook_card(title, os.path.join(A.out, "titel.png")) if title else None
 logo = A.logo if A.logo and os.path.exists(A.logo) else None
 hy = HOOK_Y + (LOGO_PX + 20 if logo else 0)
 if card:
-    inputs += ["-loop", "1", "-t", "3.3", "-i", card]
+    inputs += ["-loop", "1", "-framerate", str(FPS), "-i", card]  # endlos + shortest: ein endender Bild-Eingang ließ ffmpeg hängen
     fc.append(f"[{ni}:v]format=rgba,fade=t=in:st=0:d=0.3:alpha=1,fade=t=out:st=2.9:d=0.4:alpha=1[hc]")
-    fc.append(f"[{vin}][hc]overlay=x=(W-w)/2:y='{hy}-36*pow(1-clip(t/0.35,0,1),3)':eof_action=pass[vh]")
+    fc.append(f"[{vin}][hc]overlay=x=(W-w)/2:y='{hy}-36*pow(1-clip(t/0.35,0,1),3)':shortest=1:enable='lt(t,3.4)'[vh]")
     vin, ni = "vh", ni + 1
 if logo:
     inputs += ["-loop", "1", "-i", logo]
@@ -263,14 +340,19 @@ if logo:
     fc.append(f"[{vin}][lg]overlay=x=48:y={LOGO_Y}:shortest=1[vl]")
     vin, ni = "vl", ni + 1
 # Musik vorne, Originalton (Brutzeln, Messer) leise darunter; weich raus; Limiter
-fc.append(f"[1:a]atrim=0:{total:.3f},asetpts=PTS-STARTPTS,aresample=48000,volume=0.9,"
+# Bild und Ton in ZWEI Durchgängen: in einem gemeinsamen Filtergraphen (Endlos-Bild + Tonmischung) blieb ffmpeg hängen
+bild = os.path.join(A.out, "m_bild.mp4")
+run(["ffmpeg", "-v", "error", "-y", *inputs, "-filter_complex", ";".join(fc), "-map", f"[{vin}]", "-an",
+     "-t", f"{total:.3f}", "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p", "-r", str(FPS), bild])
+fc = []
+fc.append(f"[2:a]atrim=0:{total:.3f},asetpts=PTS-STARTPTS,aresample=48000,volume=0.9,"
           f"afade=t=out:st={max(0, total - 1.2):.3f}:d=1.2[mu]")
-fc.append("[0:a]volume=0.22[amb]")
+fc.append("[1:a]volume=0.22[amb]")
 fc.append("[mu][amb]amix=inputs=2:duration=first:normalize=0,loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000[a]")
-run(["ffmpeg", "-v", "error", "-y", *inputs, "-filter_complex", ";".join(fc), "-map", f"[{vin}]", "-map", "[a]",
-     "-t", f"{total:.3f}", "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p", "-r", str(FPS),
-     "-c:a", "aac", "-b:a", "256k", "-movflags", "+faststart", final])
+run(["ffmpeg", "-v", "error", "-y", "-i", bild, "-i", body, "-ss", f"{t_first:.3f}", "-i", song, "-filter_complex", ";".join(fc),
+     "-map", "0:v", "-map", "[a]", "-t", f"{total:.3f}", "-c:v", "copy", "-c:a", "aac", "-b:a", "256k", "-movflags", "+faststart", final])
 os.remove(body)
+os.remove(bild)
 if card and os.path.exists(card):
     os.remove(card)
 

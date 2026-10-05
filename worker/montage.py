@@ -262,13 +262,20 @@ if images:
             parts += [{"text": f"Bild {b['id']}:"}, {"inline_data": {"mime_type": "image/jpeg", "data": base64.b64encode(open(sm, "rb").read()).decode()}}]
             os.remove(sm)
         res = gemini("Beschreibe jedes Bild in wenigen Wörtern (was ist es, z. B. „Cheesecake Lotus freigestellt“, „Logo“, "
-                     "„Preistafel“, „Foto Person“).", parts,
+                     "„Preistafel“, „Foto Person“) und ordne es ein: produkt, logo, kommentar (Screenshot eines Kommentars), "
+                     "foto oder grafik (Pfeil, Icon, Rahmen, Deko – nichts, was man als Sticker zeigen würde).", parts,
                      {"type": "object", "properties": {"bilder": {"type": "array", "items": {"type": "object", "properties": {
-                         "id": {"type": "string"}, "inhalt": {"type": "string"}}, "required": ["id", "inhalt"]}}}, "required": ["bilder"]})
+                         "id": {"type": "string"}, "inhalt": {"type": "string"},
+                         "art": {"type": "string", "enum": ["produkt", "logo", "kommentar", "foto", "grafik"]}},
+                         "required": ["id", "inhalt", "art"]}}}, "required": ["bilder"]})
         for d in (res or {}).get("bilder") or []:
             b = next((b for b in pics if b["id"] == d.get("id")), None)
             if b:
-                b["inhalt"] = d.get("inhalt", "")
+                b["inhalt"], b["art"] = d.get("inhalt", ""), d.get("art", "")
+        # Rückmeldung 05.10.: der weiße Pfeil an seiner Hand „passt nicht“ – Deko-Grafiken (Pfeile, Icons) nie als Sticker
+        for b in [b for b in pics if b.get("art") == "grafik"]:
+            os.remove(b["file"])
+            pics.remove(b)
 
 talk = [c for c in clips if c.get("talk")]
 log("Clips:", "; ".join(f"{c['id']} {c['dur']:.0f}s {'Sprache' if c.get('talk') else 'B-Roll'} {c.get('inhalt', '')[:40]}" for c in clips))
@@ -290,6 +297,9 @@ for b in pics:
 plans = gemini(
     "Du bist ein erfahrener Cutter für TikTok/Reels von Unternehmen. Der Kunde hat einen ganzen Ordner mit Rohclips (und evtl. "
     "Bildern) hochgeladen und will EIN fertiges, packendes Kurzvideo. Baue den Schnittplan:\n"
+    "0) THEMEN ZUERST: Ordne jeden Clip einem Thema/Video zu (z. B. „Juniorbox-Zubereitung“ ≠ „bester Burger in Mannheim“ "
+    "≠ „Angebote unter 10 €“ – andere Aussage, anderer Ort, andere Kleidung/Aufmachung = anderes Video). Eine Geschichte "
+    "verwendet NUR Clips aus EINEM Thema (Feld „clips“). Clips eines anderen Themas nie anhängen.\n"
     "1) SPRECHTEILE = roter Faden: welche Sätze aus welchen Clips in welcher Reihenfolge (Satz-Nummern wie C3.2). Eine klare "
     "Geschichte: Aufhänger am Anfang, Hauptteil, Auflösung/Aufruf am Ende. Vorgespräche, Absprachen, Fehlversuche, doppelte "
     "Takes (nur den besten/letzten), Verabschiedungen, Nebensächliches weglassen. Clips mit schlechter Qualität meiden. "
@@ -297,12 +307,18 @@ plans = gemini(
        f"Gehören die Clips zu VERSCHIEDENEN Themen/Videos (z. B. „neue Sorte“ und „Angebote unter 10 €“), baue je Thema eine "
        f"EIGENE Geschichte – höchstens {A.clips}, die stärkste zuerst, kein Satz in zwei Geschichten. Ist alles EIN Thema, nur "
        f"eine Geschichte (nicht künstlich aufteilen). ") +
+    "ENDE: Nach dem Abschluss-/Aufruf-Satz (z. B. „So sieht die Juniorbox aus … und dazu eine Capri-Sonne“) ist Schluss – "
+    "danach nichts mehr. "
+    "ZUBEREITUNG/ANLEITUNG: Schritte in der ECHTEN Reihenfolge (roh → braten/smashen → belegen → verpacken → fertig; die "
+    "Clip-Nummern folgen meist der Drehreihenfolge) und VOLLSTÄNDIG – alle wesentlichen Schritte zeigen, auch Sätze, in "
+    "denen beim Zubereiten erklärt wird. Lieber etwas länger und verständlich als lückenhaft. "
     "Länge je nach Format "
-    "(Umfrage mit einer Person 15–25 s, Vorstellung/Promo 20–40 s, max. 60 s).\n"
+    "(Umfrage mit einer Person 15–25 s, Vorstellung/Promo 20–40 s, Zubereitung/Anleitung 30–60 s, max. 60 s).\n"
     "2) ZWISCHENSCHNITTE (B-Roll) – wie ein Profi: Wird etwas genannt, das es als B-Roll-Material gibt, sieht man es GENAU in "
     "dem Moment (z. B. „Cheeseburger“ → Nahaufnahme Cheeseburger; „wir sind vom 1,99-Laden“ → Preistafel/Laden). Dann wieder "
     "die Person. Rhythmus: wenn passendes Material da ist, etwa alle 4–7 s ein Zwischenschnitt von 1–2,5 s; nie zwei direkt "
-    "hintereinander, nie über Reaktionen/Pointen im Gesicht, nicht in den ersten 1,5 s. Gib das B-Roll-Material (z. B. C3w1), "
+    "hintereinander, nie über Reaktionen/Pointen im Gesicht, nicht in den ersten 1,5 s. Ein Zwischenschnitt darf keinen "
+    "späteren Schritt vorwegnehmen (nicht das fertig gebratene Patty zeigen, bevor es gesmasht wird). Gib das B-Roll-Material (z. B. C3w1), "
     "den Satz (ueber) und das Wort, bei dem es erscheinen soll.\n"
     "3) BILDER: Produktbilder/Sticker kurz einblenden, wenn genau dieses Produkt genannt wird (Satz + Wort). Nur wenn es "
     "wirklich passt.\n"
@@ -310,6 +326,7 @@ plans = gemini(
     [{"text": "\n".join(lines)}],
     {"type": "object", "properties": {"geschichten": {"type": "array", "items": {"type": "object", "properties": {
         "format": {"type": "string"}, "titel": {"type": "string"}, "ziel_s": {"type": "integer"},
+        "clips": {"type": "array", "items": {"type": "string"}},
         "sprechteile": {"type": "array", "items": {"type": "string"}},
         "broll": {"type": "array", "items": {"type": "object", "properties": {
             "material": {"type": "string"}, "ueber": {"type": "string"}, "wort": {"type": "string"}, "dauer_s": {"type": "number"}},
@@ -443,6 +460,15 @@ def build(plan, odir):
 
 
 stories = [g for g in ((plans or {}).get("geschichten") or []) if g.get("sprechteile")][:max(1, A.clips)]
+for g in stories:  # Regel 82: nur Clips aus dem Thema dieser Geschichte (Sätze/B-Roll aus fremden Clips fliegen raus)
+    own = {str(c).strip() for c in g.get("clips") or []}
+    if own:
+        keep = [x for x in g["sprechteile"] if x.split(".")[0].strip() in own]
+        if keep:
+            g["sprechteile"] = keep
+        # B-Roll aus stummen Clips bleibt erlaubt – raus nur B-Roll aus Sprech-Clips eines ANDEREN Themas
+        fremd = {c["id"] for c in clips if c.get("talk")} - own
+        g["broll"] = [b for b in g.get("broll") or [] if str(b.get("material", "")).split("w")[0].strip() not in fremd]
 used, results = set(), []
 for g in stories:  # kein Satz in zwei Videos
     g["sprechteile"] = [x for x in g["sprechteile"] if x.strip() not in used]

@@ -7,12 +7,13 @@ ENV="$APP/worker/.env"
 echo ""
 echo "1. aistudio.google.com/apikey öffnen"
 echo "2. „API-Schlüssel erstellen“ → „In neuem Projekt erstellen“ (KEIN Projekt mit Zahlungsdaten!)"
-echo "3. Den neuen Schlüssel kopieren (beginnt mit AIza…)"
+echo "3. Den neuen Schlüssel kopieren (beginnt mit AIza… oder AQ.…)"
 echo "4. Dann hier nur Enter drücken (nichts einfügen)."
 read -rs _
 K="$(pbpaste | tr -d '[:space:]')"
-[[ "$K" == AIza* && ${#K} -ge 30 ]] || { echo "✗ In der Zwischenablage ist kein Gemini-Schlüssel (beginnt mit „${K:0:4}…“). Bitte nochmal kopieren und neu starten."; exit 1; }
-echo "Gefunden: AIza… (${#K} Zeichen) – teste …"
+# Google-Schlüssel beginnen mit „AIza…“ oder (neues Format) „AQ.…“ – ob er gilt, entscheidet der Test unten
+[[ ${#K} -ge 30 && ${#K} -le 300 && "$K" =~ '^[A-Za-z0-9._-]+$' ]] || { echo "✗ In der Zwischenablage ist kein Gemini-Schlüssel. Bitte nochmal kopieren und neu starten."; exit 1; }
+echo "Gefunden: ${K:0:4}… (${#K} Zeichen) – teste …"
 CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "x-goog-api-key: $K" -H "Content-Type: application/json" \
   -d '{"contents":[{"parts":[{"text":"ok"}]}],"generationConfig":{"maxOutputTokens":1}}' \
   "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-lite-latest:generateContent")

@@ -56,6 +56,51 @@ const friendly = (msg) => (/Traceback|Error\b|Exception|errno|ffmpeg|\.py\b|unde
 // Pipeline hängt (keine Rückmeldung) → abbrechen, damit die Maschine frei wird
 const HANG_MS = 30 * 60e3;
 
+// E-Mails verschickt die App (Resend-Schlüssel liegt nur dort); die Maschine meldet sich mit dem service_role-Schlüssel
+const APP_URL = process.env.APP_URL || 'https://velox-cut.de';
+async function mail(body) {
+  try {
+    const r = await fetch(`${APP_URL}/api/intern/mail`, {
+      method: 'POST', body: JSON.stringify(body),
+      headers: { Authorization: `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}`, 'Content-Type': 'application/json' },
+    });
+    if (!r.ok) log('E-Mail nicht gesendet:', r.status, (await r.text()).slice(0, 120));
+  } catch (e) { log('E-Mail nicht gesendet:', e.message); }
+}
+
+// KI-Wächter: Ohne KI (Guthaben leer, Google-Störung) würden Videos ohne Satzauswahl, Lektorat und Abnahme geschnitten –
+// dann lieber warten. Aufträge bleiben in der Schlange, der Betreiber bekommt eine E-Mail (höchstens alle 3 Stunden).
+const ai = { ok: true, checked: 0, warned: 0, since: 0 };
+async function aiReady() {
+  if (!process.env.GEMINI_API_KEY) return true;
+  if (Date.now() - ai.checked < (ai.ok ? 10 * 60e3 : 2 * 60e3)) return ai.ok;
+  ai.checked = Date.now();
+  let code = 0;
+  try {
+    const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent', {
+      method: 'POST', signal: AbortSignal.timeout(30_000),
+      headers: { 'x-goog-api-key': process.env.GEMINI_API_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contents: [{ parts: [{ text: 'ok' }] }], generationConfig: { maxOutputTokens: 1 } }),
+    });
+    code = r.status;
+  } catch { code = -1; }
+  const was = ai.ok;
+  ai.ok = code === 200 || code === 429 || code === 503; // ausgelastet/überlastet: die Pipeline wiederholt selbst und weicht aus
+  if (!ai.ok && was) { ai.since = Date.now(); log(`KI nicht erreichbar (HTTP ${code}) – Aufträge warten`); }
+  if (ai.ok && !was) {
+    log('KI wieder erreichbar – es geht weiter');
+    await mail({ art: 'warnung', betreff: 'KI wieder erreichbar', text: `Die KI antwortet wieder. Wartende Aufträge werden jetzt geschnitten (Ausfall ca. ${Math.round((Date.now() - ai.since) / 60e3)} Min.).` });
+  }
+  if (!ai.ok && Date.now() - ai.warned > 3 * 3600e3) {
+    ai.warned = Date.now();
+    const grund = code === 402 ? 'Das Guthaben bei Google (Gemini) ist aufgebraucht. Bitte in aistudio.google.com → Billing aufladen und Auto-Aufladen einschalten.'
+      : code === 401 || code === 403 ? 'Der Gemini-Schlüssel wird abgelehnt (ungültig oder gesperrt).'
+      : `Google antwortet nicht richtig (HTTP ${code}).`;
+    await mail({ art: 'warnung', betreff: 'KI nicht erreichbar – Aufträge warten', text: `${grund}\n\nNeue Aufträge bleiben so lange in der Warteschlange und starten automatisch, sobald die KI wieder antwortet. Kunden sehen „startet gleich“.` });
+  }
+  return ai.ok;
+}
+
 /** Google-Drive-Freigabelink → direkter Download */
 function driveDirect(url) {
   const id = /\/d\/([\w-]{20,})/.exec(url)?.[1] || new URL(url).searchParams.get('id');
@@ -234,7 +279,7 @@ async function processJob(job) {
       const path = `${job.user_id}/${job.id}/clip-${i + 1}.mp4`;
       const up = await r2put(`outputs/${path}`, await readFile(c.file));
       if (!up.ok) throw new Error('Hochladen des Clips fehlgeschlagen.');
-      outputs.push({ path, title: c.title || `Clip ${i + 1}`, seconds: c.seconds, songs: c.songs ?? [] });
+      outputs.push({ path, title: c.title || `Clip ${i + 1}`, seconds: c.seconds, songs: c.songs ?? [], post: c.post ?? null });
     }
     // weniger Clips als bezahlt → Differenz erstatten
     if (outputs.length < job.clips) {
@@ -252,6 +297,7 @@ async function processJob(job) {
     if (job.source_path) { await r2del(`uploads/${job.source_path}`); await setJob(job.id, { source_path: null }); }
     if (job.source_paths?.length) { for (const p of job.source_paths) await r2del(`uploads/${p}`); await setJob(job.id, { source_paths: [] }); }
     log('✓', job.id, `${outputs.length} Clip(s)`);
+    await mail({ art: 'fertig', job: job.id }); // „Dein Video ist fertig“ – Kunde muss das Studio nicht offen lassen
   } catch (e) {
     log('✗', job.id, e.message);
     await setJob(job.id, { status: 'failed', error: friendly(String(e.message)).slice(0, 300), finished_at: new Date().toISOString() }).eq('status', 'processing');
@@ -287,6 +333,12 @@ let lastCleanup = 0;
 for (;;) {
   try {
     if (Date.now() - lastCleanup > 6 * 3600e3) { await cleanup(); await refreshTrends().catch(() => null); lastCleanup = Date.now(); }
+    const { count } = await sb.from('jobs').select('id', { count: 'exact', head: true }).eq('status', 'queued');
+    if (count && !(await aiReady())) {
+      await sb.from('jobs').update({ stage: 'Startet gleich – kurze Verzögerung' }).eq('status', 'queued');
+      await new Promise((r) => setTimeout(r, 30_000));
+      continue;
+    }
     const { data, error } = await sb.rpc('claim_next_job', { p_worker: WORKER });
     if (error) log('Fehler beim Abholen:', error.message);
     const job = data?.[0];

@@ -1951,6 +1951,32 @@ def pick_music(kept):
 TRENDS = os.path.join(MASCHINE, "trends.json")
 
 
+def post_text(kept, title):
+    """Fertiger Beschreibungstext zum Posten (TikTok/Instagram/YouTube Shorts) – spart dem Kunden die Arbeit nach dem
+    Download: 1–2 kurze Sätze + Aufruf, 5–8 Hashtags (Nische, Ort falls genannt, ein, zwei breite)."""
+    return post_text_for(title, " ".join(w["t"] for w in kept)[:2500])
+
+
+def post_text_for(title, inhalt):
+    res = gemini("Du bist Social-Media-Manager für Unternehmen. Schreibe den Beschreibungstext für diesen Kurzvideo-Post "
+                 "(TikTok/Instagram Reels/YouTube Shorts) auf Deutsch: 1–2 kurze, natürliche Sätze, die neugierig machen oder "
+                 "den Nutzen nennen, dann ein kurzer Aufruf (Kommentieren, Vorbeikommen, Folgen – passend zum Inhalt). Höchstens "
+                 "2 Emojis, keine Übertreibungen, nichts erfinden (keine Preise/Orte, die nicht vorkommen). Dazu 5–8 Hashtags ohne "
+                 "Leerzeichen: 3–4 zur Nische/zum Produkt, der Ort, falls er genannt wird, 1–2 breite (z. B. #foodtok)."
+                 + (f" Schreibweise von Namen/Marken: {A.words}." if A.words else ""),
+                 f"Titel: {title}\nGesagt wird: {inhalt}",
+                 {"type": "object", "properties": {"text": {"type": "string"}, "hashtags": {"type": "array", "items": {"type": "string"}}},
+                  "required": ["text", "hashtags"]})
+    if not res or not (res.get("text") or "").strip():
+        return None
+    tags = []
+    for h in res.get("hashtags") or []:
+        h = "#" + re.sub(r"[^\wäöüÄÖÜß]", "", str(h))
+        if len(h) > 2 and h.lower() not in (t.lower() for t in tags):
+            tags.append(h)
+    return {"text": res["text"].strip()[:600], "hashtags": tags[:8]}
+
+
 def suggest_songs(kept, title):
     """2–3 Trend-Songs als VORSCHLAG (nicht eingebaut): der Kunde fügt sie beim Posten in der TikTok-App hinzu. Quelle:
     Shazam-Charts DE (trends.py, wöchentlich). Unpassendes (derb, düster, falsche Stimmung für eine Marke) fliegt raus."""
@@ -2831,7 +2857,8 @@ for n, m in enumerate(MOMENTS, 1):
     log(f"Clip {n}: {orig:.1f} s → {secs} s, {len(c['ranges'])} Abschnitte, {len(words) - len(kept)} Wörter entfernt")
     step(0.95, "Letzter Qualitäts-Check …")
     quality_check(f, words, kept, orig, secs)
-    results.append({"file": f, "title": title[:80], "seconds": secs, "songs": suggest_songs(kept, card_title)})
+    results.append({"file": f, "title": title[:80], "seconds": secs, "songs": suggest_songs(kept, card_title),
+                    "post": post_text(kept, card_title)})
 
 if not A.keep_work:
     os.remove(wav)

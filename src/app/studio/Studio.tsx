@@ -3,12 +3,13 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import CaptionPreview from './CaptionPreview';
+import Results from './Results';
 import { jobCost, MAX_CLIPS_PER_JOB, MAX_UPLOAD_BYTES, STYLES, type StyleId } from '@/lib/pricing';
 
 type Job = {
   id: string; status: 'queued' | 'processing' | 'done' | 'failed'; style: StyleId; clips: number; source_name: string | null;
   source_kind: string; credits_charged: number; progress: number; error: string | null; created_at: string;
-  outputs: { title?: string; songs?: { song: string; artist: string; warum?: string }[] }[];
+  outputs: { title?: string; songs?: { song: string; artist: string; warum?: string }[]; post?: { text: string; hashtags: string[] } | null }[];
   started_at?: string | null; stage?: string | null;
 };
 
@@ -93,6 +94,11 @@ export default function Studio({ credits, initialJobs }: { credits: number; init
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<React.ReactNode>('');
   const [jobs, setJobs] = useState<Job[]>(initialJobs);
+  // Ergebnis-Ansicht: der neueste fertige Auftrag ist aufgeklappt, wenn er höchstens einen Tag alt ist
+  const [open, setOpen] = useState<string | null>(() => {
+    const j = initialJobs.find((x) => x.status === 'done');
+    return j && Date.now() - new Date(j.created_at).getTime() < 864e5 ? j.id : null;
+  });
   const [online, setOnline] = useState<boolean | null>(null);
   const [balance, setBalance] = useState(credits);
   const [over, setOver] = useState(false);
@@ -335,6 +341,10 @@ export default function Studio({ credits, initialJobs }: { credits: number; init
             <button key={c} type="button" onClick={() => setColor(c)} aria-label={`Farbe ${c}`}
               style={{ width: 30, height: 30, borderRadius: '50%', background: c, border: color === c ? '3px solid #fff' : '2px solid rgba(255,255,255,.2)' }} />
           ))}
+          <label title="Eigene Farbe (z. B. deine Markenfarbe)" className="color-own"
+            style={{ border: COLORS.includes(color) ? '2px solid rgba(255,255,255,.2)' : '3px solid #fff', background: COLORS.includes(color) ? undefined : color }}>
+            <input type="color" value={color} onChange={(e) => setColor(e.target.value.toUpperCase())} aria-label="Eigene Akzentfarbe wählen" />
+          </label>
         </div>
 
         <div className="stack" style={{ gap: 10 }}>
@@ -420,7 +430,15 @@ export default function Studio({ credits, initialJobs }: { credits: number; init
                   <span className="note">Firmenkonten sehen in TikTok nur Songs aus der „Commercial Music Library“ – ist ein Tipp dort nicht zu finden, nimm einen ähnlichen von dort.</span>
                 </div>
               ) : null}
-              {j.status === 'done' ? <div className="dl"><button className="btn" style={{ padding: '7px 14px', fontSize: 14 }} onClick={() => download(j.id)}>⬇ Herunterladen</button></div> : null}
+              {j.status === 'done' ? (
+                <div className="dl">
+                  <button className="btn btn-acc" style={{ padding: '7px 14px', fontSize: 14 }} onClick={() => setOpen((o) => (o === j.id ? null : j.id))}>
+                    {open === j.id ? 'Schließen' : `▶ Ansehen & posten`}
+                  </button>
+                  <button className="btn" style={{ padding: '7px 14px', fontSize: 14 }} onClick={() => download(j.id)}>⬇ {j.outputs?.length > 1 ? 'Alle herunterladen' : 'Herunterladen'}</button>
+                </div>
+              ) : null}
+              {j.status === 'done' && open === j.id ? <Results jobId={j.id} /> : null}
             </div>
           ))}
         </div>

@@ -12,8 +12,8 @@ export default function Topbar({ p, on }: { p: Profile; on?: 'studio' | 'konto' 
         <nav>
           <span className="credit-pill" title="Paket-Credits + nachgekaufte Credits"><b>{p.plan_credits + p.topup_credits}</b> Credits</span>
           <Link href="/studio" className={on === 'studio' ? 'on' : ''}>Studio</Link>
-          <Link href="/konto" className={on === 'konto' ? 'on' : ''}>Abo &amp; Credits</Link>
-          <form action="/auth/abmelden" method="post"><button className="btn" style={{ padding: '7px 14px', fontSize: 14 }}>Abmelden</button></form>
+          <Link href="/konto" className={on === 'konto' ? 'on' : ''}>Abo<span className="tb-long"> &amp; Credits</span></Link>
+          <form action="/auth/abmelden" method="post"><button className="btn tb-out" style={{ padding: '7px 14px', fontSize: 14 }} aria-label="Abmelden">Abmelden</button></form>
         </nav>
       </div>
     </header>

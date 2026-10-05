@@ -26,6 +26,8 @@ export const STYLES: Record<StyleId, { name: string; credits: number; desc: stri
 };
 
 export const EXTRA_MINUTE_CREDITS = 5;
+/** Einmaliger Bonus nach dem Hinterlegen der Karte (10 Free-Credits + 10 = ein Viral-Video zum Testen) */
+export const WELCOME_CREDITS = 10;
 export const MAX_CLIPS_PER_JOB = 5;
 export const MAX_UPLOAD_BYTES = 4 * 1024 ** 3; // 4 GB (R2 erlaubt bis 5 GB pro Datei; große Dateien verkleinert die Schnitt-Maschine selbst)
 

@@ -184,3 +184,33 @@ label.f { display: grid; gap: 6px; font-size: 14px; font-weight: 600; color: #c9
 }
 .job-live { grid-column: 1 / -1; display: grid; gap: 6px; }
 .job-live .m b { color: var(--txt); }
+
+/* Ergebnis-Ansicht im Studio: Clips abspielen, herunterladen, Beschreibung kopieren */
+.res-full { grid-column: 1 / -1; }
+.res { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; margin-top: 4px; }
+.res-clip { display: grid; gap: 10px; padding: 12px; border-radius: 14px; border: 1px solid var(--line); background: var(--bg2); min-width: 0; }
+.res-clip video, .res-novid { width: 100%; max-height: 62vh; aspect-ratio: 9 / 16; object-fit: contain; border-radius: 10px; background: #000; }
+.res-novid { display: grid; place-items: center; color: var(--mut); font-size: 13px; }
+.res-body { display: grid; gap: 8px; min-width: 0; }
+.res-dl { padding: 7px 14px; font-size: 14px; justify-self: start; }
+.res-post { display: grid; gap: 6px; padding: 10px 12px; border-radius: 10px; background: rgba(255,255,255,.04); font-size: 13.5px; line-height: 1.5; }
+.res-post p { margin: 0; overflow-wrap: anywhere; }
+.res-post-h { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.res-copy { padding: 4px 12px; font-size: 12.5px; }
+.res-tags { color: var(--acc); }
+
+/* Obere Leiste auf dem Handy: alles passt in eine Zeile (vorher 85 px zu breit) */
+@media (max-width: 520px) {
+  .topbar .wrap { gap: 10px; padding-left: 16px; padding-right: 16px; }
+  .topbar img { height: 24px; }
+  .topbar nav { gap: 2px; }
+  .topbar nav a { padding: 7px 9px; font-size: 13.5px; }
+  .topbar .credit-pill { padding: 5px 9px; font-size: 12.5px; }
+  .topbar .tb-long { display: none; }
+  .topbar .tb-out { padding: 6px 10px !important; font-size: 13px !important; }
+}
+
+/* Eigene Akzentfarbe im Studio (Farbrad) */
+.color-own { position: relative; width: 30px; height: 30px; border-radius: 50%; cursor: pointer; overflow: hidden;
+  background: conic-gradient(#ff3d7f, #ffb23d, #f6e27f, #3dff9a, #38d6ff, #4f9eff, #9b5cff, #ff3d7f); }
+.color-own input { position: absolute; inset: 0; opacity: 0; width: 100%; height: 100%; cursor: pointer; }

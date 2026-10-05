@@ -307,4 +307,21 @@ try:
         f.write(json.dumps({"t": time.strftime("%Y-%m-%d %H:%M:%S"), **STATS}, ensure_ascii=False) + "\n")
 except OSError:
     pass
-print(json.dumps({"clips": [{"file": final, "title": title or "Musik-Schnitt", "seconds": round(total), "songs": songs}]}), flush=True)
+# Beschreibungstext + Hashtags zum Posten (wie pipeline.py)
+post = None
+res = gemini("Du bist Social-Media-Manager für Unternehmen. Schreibe den Beschreibungstext für diesen Kurzvideo-Post (B-Roll auf "
+             "Musik, niemand spricht) auf Deutsch: 1–2 kurze, appetitmachende Sätze und ein kurzer Aufruf (Vorbeikommen, "
+             "Kommentieren, Folgen). Höchstens 2 Emojis, nichts erfinden (keine Preise/Orte, die nicht vorkommen). Dazu 5–8 "
+             "Hashtags ohne Leerzeichen: 3–4 zur Nische/zum Produkt, 1–2 breite (z. B. #foodtok)."
+             + (f" Schreibweise von Namen/Marken: {A.words}." if A.words else ""),
+             [{"text": f"Titel: {title}\nZu sehen: {'; '.join(o['was'] for o in order)[:1500]}"}],
+             {"type": "object", "properties": {"text": {"type": "string"}, "hashtags": {"type": "array", "items": {"type": "string"}}},
+              "required": ["text", "hashtags"]}, timeout=60)
+if res and (res.get("text") or "").strip():
+    tags = []
+    for h in res.get("hashtags") or []:
+        h = "#" + re.sub(r"[^\wäöüÄÖÜß]", "", str(h))
+        if len(h) > 2 and h.lower() not in (t.lower() for t in tags):
+            tags.append(h)
+    post = {"text": res["text"].strip()[:600], "hashtags": tags[:8]}
+print(json.dumps({"clips": [{"file": final, "title": title or "Musik-Schnitt", "seconds": round(total), "songs": songs, "post": post}]}), flush=True)

@@ -416,7 +416,7 @@ const capMore = document.getElementById('capMore');
 capMore?.addEventListener('click', () => {
   const open = document.getElementById('capCtl').classList.toggle('all');
   capMore.setAttribute('aria-expanded', open);
-  capMore.textContent = open ? '− Weniger zeigen' : '+ Alle 20 Stile & Farben';
+  capMore.textContent = open ? '− Weniger zeigen' : '+ Mehr Farben';
 });
 
 // ---------- Preis-Rechner: was kostet Schnitt heute vs. Velox Cut ----------

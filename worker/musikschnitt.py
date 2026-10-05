@@ -8,6 +8,7 @@ leise darunter.
   python musikschnitt.py --out <ordner> [--style viral] [--music auto|<name>] [--logo logo.png] <datei oder ordner> [...]
 Ausgabe (letzte Zeile, JSON) wie pipeline.py: {"clips": [{"file", "title", "seconds", "songs"}]}
 """
+import urllib.error
 import argparse, ast, base64, json, os, re, subprocess, sys, time, urllib.request
 import numpy as np
 
@@ -47,9 +48,42 @@ def run(cmd):
     return r
 
 
-def gemini(system, parts, schema, timeout=120):
+TOK = {"aufrufe": 0, "ein": 0, "aus": 0, "denken": 0}  # KI-Verbrauch (Kosten) dieses Laufs
+
+
+def gemini(system, parts, schema, timeout=120, deep=False):
+    """deep=True nur für den Schnittplan – sonst ohne Nachdenken (spart den Großteil der KI-Kosten)."""
     if not KEY:
         return None
+    for model in ("gemini-flash-latest", "gemini-3-flash-preview", "gemini-2.5-flash"):
+        think = True
+        for _ in range(3):
+            cfg = {"temperature": 0.3, "responseMimeType": "application/json", "responseSchema": schema}
+            if think:
+                cfg["thinkingConfig"] = ({"thinkingBudget": 1024 if deep else 0} if model.startswith("gemini-2.5")
+                                         else {"thinkingLevel": "low" if deep else "minimal"})
+            body = json.dumps({"systemInstruction": {"parts": [{"text": system}]}, "contents": [{"role": "user", "parts": parts}],
+                               "generationConfig": cfg}).encode()
+            try:
+                req = urllib.request.Request(f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent", data=body,
+                                             headers={"x-goog-api-key": KEY, "Content-Type": "application/json"})
+                d = json.loads(urllib.request.urlopen(req, timeout=timeout).read())
+                u = d.get("usageMetadata") or {}
+                TOK["aufrufe"] += 1
+                TOK["ein"] += int(u.get("promptTokenCount") or 0)
+                TOK["aus"] += int(u.get("candidatesTokenCount") or 0)
+                TOK["denken"] += int(u.get("thoughtsTokenCount") or 0)
+                return json.loads("".join(p.get("text", "") for p in d["candidates"][0]["content"]["parts"]))
+            except urllib.error.HTTPError as e:
+                log(f"Gemini {model}: HTTP {e.code}")
+                if e.code == 400 and think:  # Modell kennt die Denk-Einstellung nicht → ohne wiederholen
+                    think = False
+                    continue
+                break
+            except Exception as e:  # noqa: BLE001
+                log(f"Gemini {model}: {str(e)[:100]}")
+                break
+    return None
     body = json.dumps({"systemInstruction": {"parts": [{"text": system}]}, "contents": [{"role": "user", "parts": parts}],
                        "generationConfig": {"temperature": 0.3, "responseMimeType": "application/json", "responseSchema": schema}}).encode()
     for model in ("gemini-flash-latest", "gemini-3-flash-preview", "gemini-2.5-flash"):
@@ -147,7 +181,7 @@ plan = gemini(
         "titel": {"type": "string"}, "musik": {"type": "string", "enum": list(musik) or ["keine"]},
         "stellen": {"type": "array", "items": {"type": "object", "properties": {
             "id": {"type": "string"}, "was": {"type": "string"}, "lang": {"type": "boolean"}}, "required": ["id", "was", "lang"]}}},
-     "required": ["titel", "musik", "stellen"]})
+     "required": ["titel", "musik", "stellen"]}, deep=True)
 for s in shots:
     os.remove(s["img"])
 by_id = {s["id"]: s for s in shots}
@@ -300,7 +334,7 @@ def suggest_songs():
 
 
 songs = suggest_songs()
-STATS.update(titel=title, sekunden=round(total, 1), bilder=len(order), plan=[o["s"]["id"] for o in order])
+STATS.update(titel=title, sekunden=round(total, 1), bilder=len(order), plan=[o["s"]["id"] for o in order], ki_tokens=TOK)
 joblog = os.environ.get("VELOX_JOBLOG", os.path.join(MASCHINE, "logs", "jobs.jsonl"))
 try:
     with open(joblog, "a") as f:

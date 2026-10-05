@@ -14,6 +14,7 @@ Ablauf:
 Ausgabe (letzte Zeile, JSON): {"src": ".../montage.mp4", "plan": ".../plan.json"} – {"musik": true}, wenn niemand spricht
 (dann schneidet musikschnitt.py) – oder Fehlertext auf stderr.
 """
+import urllib.error
 import argparse, base64, json, os, re, subprocess, sys, urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
@@ -47,9 +48,42 @@ def run(cmd):
     return r
 
 
-def gemini(system, parts, schema, timeout=90):
+TOK = {"aufrufe": 0, "ein": 0, "aus": 0, "denken": 0}  # KI-Verbrauch (Kosten) dieses Laufs
+
+
+def gemini(system, parts, schema, timeout=90, deep=False):
+    """deep=True nur für den Schnittplan – sonst ohne Nachdenken (spart den Großteil der KI-Kosten)."""
     if not KEY:
         return None
+    for model in ("gemini-flash-latest", "gemini-3-flash-preview", "gemini-2.5-flash"):
+        think = True
+        for _ in range(3):
+            cfg = {"temperature": 0.2, "responseMimeType": "application/json", "responseSchema": schema}
+            if think:
+                cfg["thinkingConfig"] = ({"thinkingBudget": 1024 if deep else 0} if model.startswith("gemini-2.5")
+                                         else {"thinkingLevel": "low" if deep else "minimal"})
+            body = json.dumps({"systemInstruction": {"parts": [{"text": system}]}, "contents": [{"role": "user", "parts": parts}],
+                               "generationConfig": cfg}).encode()
+            try:
+                req = urllib.request.Request(f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent", data=body,
+                                             headers={"x-goog-api-key": KEY, "Content-Type": "application/json"})
+                d = json.loads(urllib.request.urlopen(req, timeout=timeout).read())
+                u = d.get("usageMetadata") or {}
+                TOK["aufrufe"] += 1
+                TOK["ein"] += int(u.get("promptTokenCount") or 0)
+                TOK["aus"] += int(u.get("candidatesTokenCount") or 0)
+                TOK["denken"] += int(u.get("thoughtsTokenCount") or 0)
+                return json.loads("".join(p.get("text", "") for p in d["candidates"][0]["content"]["parts"]))
+            except urllib.error.HTTPError as e:
+                log(f"Gemini {model}: HTTP {e.code}")
+                if e.code == 400 and think:  # Modell kennt die Denk-Einstellung nicht → ohne wiederholen
+                    think = False
+                    continue
+                break
+            except Exception as e:  # noqa: BLE001
+                log(f"Gemini {model}: {str(e)[:100]}")
+                break
+    return None
     body = json.dumps({"systemInstruction": {"parts": [{"text": system}]}, "contents": [{"role": "user", "parts": parts}],
                        "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json", "responseSchema": schema}}).encode()
     for model in ("gemini-flash-latest", "gemini-3-flash-preview", "gemini-2.5-flash"):
@@ -318,7 +352,7 @@ plans = gemini(
             "required": ["material", "ueber", "wort"]}},
         "bilder": {"type": "array", "items": {"type": "object", "properties": {
             "bild": {"type": "string"}, "bei": {"type": "string"}, "wort": {"type": "string"}}, "required": ["bild", "bei", "wort"]}}},
-     "required": ["format", "titel", "sprechteile", "broll", "bilder"]}}}, "required": ["geschichten"]}, timeout=150)
+     "required": ["format", "titel", "sprechteile", "broll", "bilder"]}}}, "required": ["geschichten"]}, timeout=150, deep=True)
 
 
 def ref(s):
@@ -454,5 +488,10 @@ for n, g in enumerate(stories):
 for p in pics:  # ungenutzte Bilder wegräumen
     if not any(st["file"] == p["file"] for r in results for st in r["stickers"]):
         os.remove(p["file"])
+log(f"KI-Verbrauch Montage: {TOK}")
+for r in results:  # die Pipeline zählt den Montage-Verbrauch zu ihrem eigenen dazu (jobs.jsonl → ki_tokens)
+    pj = json.load(open(r["plan"]))
+    pj["ki_tokens"] = TOK if r is results[0] else {"aufrufe": 0, "ein": 0, "aus": 0, "denken": 0}
+    json.dump(pj, open(r["plan"], "w"), ensure_ascii=False, indent=1)
 print(json.dumps({"src": results[0]["src"], "plan": results[0]["plan"],
                   "videos": [{"src": r["src"], "plan": r["plan"]} for r in results]}), flush=True)

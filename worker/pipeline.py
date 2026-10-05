@@ -40,6 +40,8 @@ FONTS = os.environ.get("VELOX_FONTS", os.path.join(MASCHINE, "fonts"))
 WHISPER = os.environ.get("VELOX_WHISPER", "mlx-community/whisper-large-v3-turbo")
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 STATS = {}  # Protokoll je Auftrag (jobs.jsonl) – früh anlegen, gemini() schreibt schon beim Story-Schritt hinein
+if PLAN and PLAN.get("ki_tokens"):  # KI-Verbrauch der Montage mitzählen (Kosten je Auftrag)
+    STATS["ki_tokens"] = {"aufrufe": 0, "ein": 0, "aus": 0, "denken": 0, **{k: int(v) for k, v in PLAN["ki_tokens"].items()}}
 os.makedirs(A.out, exist_ok=True)
 
 
@@ -328,10 +330,60 @@ def repeat_idx(words):
     return out
 
 
-def gemini(system, user, schema, parts=None, timeout=45, models=None):
-    """Gemini (optional). None, wenn kein Schlüssel oder Fehler – dann gelten nur die Regeln. parts: z. B. ein Video."""
+def think_cfg(model, deep):
+    """Sparsam denken (Kosten): einfache Aufgaben ohne, wichtige (Satzauswahl, Abnahme) mit wenig Nachdenken.
+    Gemini 2.5 kennt thinkingBudget, Gemini 3.x thinkingLevel."""
+    if model.startswith("gemini-2.5"):
+        return {"thinkingBudget": 1024 if deep else 0}
+    return {"thinkingLevel": "low" if deep else "minimal"}
+
+
+def count_tokens(d, model):
+    """Verbrauch je Auftrag mitschreiben (jobs.jsonl → ki_tokens) – so sieht man, was ein Video an KI kostet."""
+    u = d.get("usageMetadata") or {}
+    t = STATS.setdefault("ki_tokens", {"aufrufe": 0, "ein": 0, "aus": 0, "denken": 0})
+    t["aufrufe"] += 1
+    t["ein"] += int(u.get("promptTokenCount") or 0)
+    t["aus"] += int(u.get("candidatesTokenCount") or 0)
+    t["denken"] += int(u.get("thoughtsTokenCount") or 0)
+
+
+def gemini(system, user, schema, parts=None, timeout=45, models=None, deep=False):
+    """Gemini (optional). None, wenn kein Schlüssel oder Fehler – dann gelten nur die Regeln. parts: z. B. ein Video.
+    deep=True für Entscheidungen, bei denen Nachdenken die Qualität hebt (Satzauswahl, Abnahme)."""
     if not GEMINI_KEY:
         return None
+    import time
+    for model in models or ("gemini-flash-latest", "gemini-3-flash-preview", "gemini-3.1-flash-lite", "gemini-flash-lite-latest"):
+        think = True
+        for attempt in range(3):  # bei Überlastung (503/429) kurz warten und erneut versuchen
+            cfg = {"temperature": 0.2, "responseMimeType": "application/json", "responseSchema": schema}
+            if think:
+                cfg["thinkingConfig"] = think_cfg(model, deep)
+            body = json.dumps({"systemInstruction": {"parts": [{"text": system}]},
+                               "contents": [{"role": "user", "parts": (parts or []) + [{"text": user}]}],
+                               "generationConfig": cfg}).encode()
+            try:
+                req = urllib.request.Request(f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent", data=body,
+                                             headers={"x-goog-api-key": GEMINI_KEY, "Content-Type": "application/json"})
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    d = json.loads(resp.read())
+                STATS["gemini_model"] = model
+                count_tokens(d, model)
+                return json.loads("".join(p.get("text", "") for p in d["candidates"][0]["content"]["parts"]))
+            except urllib.error.HTTPError as e:
+                log(f"Gemini {model}: HTTP {e.code}")
+                if e.code == 400 and think:  # Modell kennt die Denk-Einstellung nicht → ohne wiederholen
+                    think = False
+                    continue
+                if e.code in (429, 500, 503) and attempt < 2:
+                    time.sleep(4 * (attempt + 1))
+                    continue
+                break
+            except Exception as e:  # noqa: BLE001
+                log(f"Gemini {model}: {e}")
+                break
+    return None
     body = json.dumps({"systemInstruction": {"parts": [{"text": system}]},
                        "contents": [{"role": "user", "parts": (parts or []) + [{"text": user}]}],
                        "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json", "responseSchema": schema}}).encode()
@@ -483,7 +535,7 @@ def gemini_story(words):
             "keep": {"type": "array", "items": {"type": "integer"}},
             "removed": {"type": "array", "items": {"type": "object", "properties": {
                 "n": {"type": "integer"}, "why": {"type": "string"}}, "required": ["n", "why"]}}},
-         "required": ["format", "ziel_s", "keep"]})
+         "required": ["format", "ziel_s", "keep"]}, deep=True)
     # Drei unabhängige Entscheidungen, ein Satz bleibt bei Mehrheit (Prüfstand 01.10.: einzelne Durchläufe schwankten
     # bei derselben Umfrage zwischen 17 und 31 s) – parallel, kostet kaum Zeit
     from concurrent.futures import ThreadPoolExecutor
@@ -524,7 +576,7 @@ def gemini_story(words):
             "schwächere Antworten. Die Geschichte muss ohne die gestrichenen Sätze verständlich bleiben. Satz-Nummern der Sätze, "
             "die bleiben, in Reihenfolge. Sätze als [Nummer|Dauer] Text.",
             "\n".join(f"[{k}|{sents[k][-1]['e'] - sents[k][0]['s']:.1f}s] {' '.join(w['t'] for w in sents[k])}" for k in keep),
-            {"type": "object", "properties": {"keep": {"type": "array", "items": {"type": "integer"}}}, "required": ["keep"]})
+            {"type": "object", "properties": {"keep": {"type": "array", "items": {"type": "integer"}}}, "required": ["keep"]}, deep=True)
         k2 = sorted({k for k in (res2 or {}).get("keep") or [] if k in keep})
         if k2 and min(12, goal * 0.6) <= est_len(k2) <= 90:
             log(f"Story (KI) gestrafft: ca. {est_len(keep):.0f} s → {est_len(k2):.0f} s")
@@ -553,7 +605,7 @@ def drop_doubles(sents, keep):
         "Gib die Nummern der FRÜHEREN/schwächeren Fassungen zurück, die raus sollen – die letzte, vollständige Fassung bleibt. "
         "Nichts anderes streichen; wenn nichts doppelt ist, leere Liste.",
         "\n".join(f"[{k}] {' '.join(w['t'] for w in sents[k])}" for k in keep),
-        {"type": "object", "properties": {"raus": {"type": "array", "items": {"type": "integer"}}}, "required": ["raus"]})
+        {"type": "object", "properties": {"raus": {"type": "array", "items": {"type": "integer"}}}, "required": ["raus"]}, deep=True)
     from concurrent.futures import ThreadPoolExecutor
     with ThreadPoolExecutor(2) as ex:
         runs = [set((r or {}).get("raus") or []) for r in ex.map(lambda _: ask(), range(2))]
@@ -2544,7 +2596,7 @@ def gemini_review(path, words_out, title):
                 "von": {"type": "number"}, "bis": {"type": "number"}, "text": {"type": "string"}},
                 "required": ["von", "bis", "text"]}}},
          "required": ["note", "fazit", "probleme", "untertitel_korrekturen", "ergaenzen"]},
-        parts=[video], timeout=120, models=("gemini-flash-latest", "gemini-3-flash-preview"))
+        parts=[video], timeout=120, models=("gemini-flash-latest", "gemini-3-flash-preview"), deep=True)
 
 
 def apply_caption_adds(words_out, adds, total):
@@ -2669,7 +2721,7 @@ def gemini_fix_story(m, kept, problems):
         + STORY_RULES + " Antworte mit den Nummern ALLER Sätze, die ins korrigierte Video gehören (in Reihenfolge).",
         f"Befunde der Abnahme:\n{probs}\n\nSätze:\n" + "\n".join(lines),
         {"type": "object", "properties": {"keep": {"type": "array", "items": {"type": "integer"}}, "warum": {"type": "string"}},
-         "required": ["keep"]})
+         "required": ["keep"]}, deep=True)
     keep = sorted({k for k in (res or {}).get("keep") or [] if isinstance(k, int) and 0 <= k < len(sents)})
     if not keep:
         return None

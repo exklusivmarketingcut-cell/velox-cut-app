@@ -828,11 +828,69 @@ def subtract(ranges, cuts):
     return [r for r in out if r[1] - r[0] > 0.06]
 
 
+_PANS = []
+
+
+def pans():
+    """Regel 96 (Nutzer 05.10.: „die Kamera schwenkt rüber zu den Beilagen – das will keiner sehen, da schaltet man ab“):
+    Strecken finden, in denen die Kamera nur von A nach B schwenkt (≥ 1,5 s lang mehr als ~½ Bildbreite pro Sekunde).
+    Einmal für das ganze Material messen (10 Bilder/s, klein)."""
+    if _PANS:
+        return _PANS[0]
+    import numpy as np
+    import cv2
+    R, SW, SH = 10, 160, 284
+    out = []
+    try:
+        raw = subprocess.run(["ffmpeg", "-v", "error", "-i", A.src, "-vf", f"fps={R},scale={SW}:{SH},format=gray", "-f", "rawvideo", "-"],
+                             capture_output=True, stdin=subprocess.DEVNULL, timeout=900).stdout
+        n = len(raw) // (SW * SH)
+        fr = np.frombuffer(raw[: n * SW * SH], np.uint8).reshape(n, SH, SW).astype(np.float32)
+        win = cv2.createHanningWindow((SW, SH), cv2.CV_32F)
+        v = np.array([np.hypot(*cv2.phaseCorrelate(fr[i], fr[i + 1], win)[0]) for i in range(n - 1)])
+        v = np.array([np.median(v[max(0, i - 2): i + 3]) for i in range(len(v))])  # einzelne Ausreißer (harte Schnitte) zählen nicht
+        i = 0
+        while i < len(v):
+            if v[i] >= 8:
+                j, last = i, i
+                while j < len(v) and (v[j] >= 5 or j - last <= 3):
+                    if v[j] >= 8:
+                        last = j
+                    j += 1
+                if (last + 1 - i) / R >= 1.5:
+                    out.append((i / R, (last + 1) / R))
+                i = max(j, i + 1)
+            else:
+                i += 1
+    except Exception as e:  # noqa: BLE001
+        log(f"Schwenk-Erkennung übersprungen: {str(e)[:80]}")
+    if out:
+        log("Kameraschwenks: " + ", ".join(f"{a:.1f}–{b:.1f} s" for a, b in out))
+    STATS["schwenks"] = [(round(a, 1), round(b, 1)) for a, b in out]
+    _PANS.append(out)
+    return out
+
+
 def keep_ranges(words, safe=False, extra_drop=frozenset()):
     """Zeitbereiche, die bleiben: ohne Füllwörter/Wiederholungen, Stille raus, Schnitte nur zwischen Wörtern."""
     fil, rep, gem = filler_idx(words), repeat_idx(words), gemini_cuts(words)
     ret, final = retake_idx(words)
     drop = (fil | rep | gem | ret | set(extra_drop)) - (final - fil)  # letzte Fassung einer Wiederholung bleibt immer
+    # Regel 96: Was WÄHREND eines Kameraschwenks nebenbei gesagt wird („lassen es kurz hierhin“), fliegt mit dem Schwenk raus –
+    # außer den letzten Wörtern, mit denen der nächste Satz schon beginnt („jetzt zwei Gurken“)
+    pan_cuts = []
+    for pa, pb in pans():  # auch im sicheren Modus
+        inside = [w for w in words if pa <= w["s"] < pb]
+        tail_s = pb
+        nxt = next((w for w in words if w["s"] >= pb), None)
+        for w in reversed(inside):
+            ref = nxt["s"] if tail_s == pb and nxt else tail_s
+            if w["s"] >= pb - 1.2 and ref - w["s"] <= 2.2:
+                tail_s = w["s"]
+            else:
+                break
+        drop |= {w["i"] for w in inside if w["s"] < tail_s}
+        pan_cuts.append((pa + 0.1, min(pb, tail_s) - 0.12))
     STATS.update(filler=len(fil), repeats=len(rep), gemini=len(gem), retakes=len(ret), gemini_on=bool(GEMINI_KEY),
                  removed=[w["t"] for w in words if w["i"] in drop][:80])
     kept = [w for w in words if w["i"] not in drop]
@@ -915,6 +973,10 @@ def keep_ranges(words, safe=False, extra_drop=frozenset()):
     out = [r for r in out if r[1] - r[0] > 0.08]
     if not safe:
         out = subtract(out, hidden_cuts(kept))
+    pan_cuts = [(a, b) for a, b in pan_cuts if b - a >= 0.8]
+    if pan_cuts:
+        out = [r for r in subtract(out, pan_cuts) if r[1] - r[0] > 0.08]
+        STATS["schwenk_cut_s"] = round(sum(b - a for a, b in pan_cuts), 1)
     # Lange Strecken ohne Worte (Essen, Jubel, Warten, Musik): ein Profi zeigt davon ~2 s und springt weiter.
     # Anfang (0,8 s) und Ende (0,5 s) der Strecke bleiben – so bleibt die Handlung sichtbar (Nutzer zeigt Kauen kaum).
     # Unverständliches Gemurmel (Kauen, Nuscheln – ohne Untertitel) zählt dabei wie Stille: sonst bleiben 10 s „mhm“ stehen

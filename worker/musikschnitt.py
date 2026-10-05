@@ -22,6 +22,7 @@ ap.add_argument("--words", default="")
 ap.add_argument("inputs", nargs="+")
 A = ap.parse_args()
 A.out = os.path.abspath(A.out)
+A.out = os.path.abspath(A.out)
 os.makedirs(A.out, exist_ok=True)
 MASCHINE = os.environ.get("VELOX_MASCHINE", os.path.join(HERE, "..", "..", "schnitt-maschine"))
 MUSIC_DIR = os.environ.get("VELOX_MUSIK", os.path.join(MASCHINE, "musik"))
@@ -258,6 +259,30 @@ def nbeats(target):
 
 
 PRIVAT = (plan or {}).get("art") == "privat"
+FAHRT = [False]  # letzte Stelle ist eine Kamerafahrt/ein schneller Schwenk (Roller, Auto) → nur fein ausgleichen
+
+
+def calmest(path, t0, t1, need, default):
+    """Regel 94: aus jeder Stelle den RUHIGSTEN Teil nehmen (wenigstes Wackeln), nicht einfach die Mitte."""
+    R, SW, SH = 15, 160, 284
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-ss", f"{t0:.3f}", "-t", f"{t1 - t0:.3f}", "-i", path, "-vf",
+                          f"fps={R},scale={SW}:{SH},format=gray", "-f", "rawvideo", "-"], capture_output=True, stdin=subprocess.DEVNULL).stdout
+    n = len(raw) // (SW * SH)
+    if n < 6:
+        return default
+    fr = np.frombuffer(raw[: n * SW * SH], np.uint8).reshape(n, SH, SW).astype(np.float32)
+    win = cv2.createHanningWindow((SW, SH), cv2.CV_32F)
+    d = np.array([cv2.phaseCorrelate(fr[i], fr[i + 1], win)[0] for i in range(n - 1)])
+    FAHRT[0] = float(np.median(np.hypot(d[:, 0], d[:, 1]))) > 1.2  # > ~8 px je Bild bei 1080 Breite: Bild wandert ständig
+    jit = np.hypot(*(np.diff(d, axis=0)).T)  # Ruck = Änderung der Bewegung (gleichmäßiger Schwenk zählt nicht)
+    w = max(2, int(need * R))
+    if len(jit) <= w or t1 - t0 - need < 0.25:
+        return default
+    cs = np.concatenate([[0], np.cumsum(jit)])
+    cost = cs[w:] - cs[:-w]
+    return t0 + min(float(np.argmin(cost)) / R, max(0.0, t1 - t0 - need))
+
+
 plan_b = []
 for k, o in enumerate(order):
     if PRIVAT:  # Urlaub/Vlog: Bilder brauchen Zeit zum Wirken (Regel 90) – ~1,2 s, Held/Ende ~2,4 s
@@ -286,7 +311,10 @@ for k, o in enumerate(order):
     speed = 1.0 if avail >= d else max(avail / d, 0.6)  # zu kurz → leichte Zeitlupe (sieht bei Food gut aus)
     src_len = min(avail, d * speed)
     a = s["a"] + max(0.0, (avail - src_len) / 2)
-    z0, z1 = (1.0, 1.07) if k % 2 == 0 else (1.07, 1.0)  # sanfter Push-in / Pull-out im Wechsel
+    FAHRT[0] = False
+    if not s.get("foto"):
+        a = calmest(s["c"]["file"], s["a"], s["b"], src_len, a)
+    z0, z1 = (1.0, 1.04) if k % 2 == 0 else (1.04, 1.0)  # sanfter Push-in / Pull-out im Wechsel
     zoom = f"{z0}+({z1}-{z0})*t/{d:.3f}"
     vf = (f"setpts=PTS/{speed:.4f},fps={FPS},scale={TW}:{TH}:force_original_aspect_ratio=increase,crop={TW}:{TH},"
           f"scale=w='trunc({TW}*({zoom})/2)*2':h='trunc({TH}*({zoom})/2)*2':eval=frame,crop={TW}:{TH},setsar=1,format=yuv420p")
@@ -302,7 +330,20 @@ for k, o in enumerate(order):
              "-preset", "veryfast", "-crf", "17", "-r", str(FPS), "-c:a", "aac", "-b:a", "192k", out])
         parts_v.append(out)
         continue
-    cmd = ["ffmpeg", "-v", "error", "-y", "-ss", f"{a:.3f}", "-t", f"{src_len + 0.3:.3f}", "-i", s["c"]["file"]]
+    # Regel 92: jede Einstellung wird stabilisiert (wie Gimbal): 1. Durchgang misst das Wackeln, 2. gleicht es aus
+    trf = f"stab_{k:02d}.trf"
+    # vorher auf Arbeitsgröße (4K/60 wäre minutenlang): Hochformat 1080 breit, Querformat 1920 hoch; 30 Bilder/s
+    PRE = f"fps={FPS},scale=w='if(lt(iw,ih),{TW},-2)':h='if(lt(iw,ih),-2,{TH})'"
+    seek = ["-ss", f"{a:.3f}", "-t", f"{src_len + 0.3:.3f}", "-i", s["c"]["file"]]
+    r = subprocess.run(["ffmpeg", "-v", "error", "-y", *seek, "-vf", f"{PRE},vidstabdetect=shakiness=8:accuracy=9:stepsize=6:result={trf}",
+                        "-an", "-f", "null", "-"], capture_output=True, text=True, stdin=subprocess.DEVNULL, cwd=A.out, timeout=600)
+    if r.returncode == 0 and os.path.exists(os.path.join(A.out, trf)):
+        # Regel 93: nicht zoomen – Bild vorher rundum 160 px gespiegelt erweitern, ausgleichen (höchstens 120 px), Rand wieder ab
+        vf = (f"{PRE},pad=iw+320:ih+320:160:160,fillborders=160:160:160:160:mode=mirror,"
+              f"vidstabtransform=input={trf}:smoothing=30:optzoom=0:zoom=0:maxshift={24 if FAHRT[0] else 120}:maxangle=0.04:interpol=bicubic:crop=black,"
+              f"crop=iw-320:ih-320,unsharp=5:5:0.5:3:3:0.0," + vf)
+        STATS["stabilisiert"] = STATS.get("stabilisiert", 0) + 1
+    cmd = ["ffmpeg", "-v", "error", "-y", *seek]
     if s["c"]["audio"]:
         af = f"atempo={max(speed, 0.5):.4f},apad,atrim=0:{d:.4f},aresample=48000"
         cmd += ["-vf", vf, "-af", af]
@@ -310,7 +351,12 @@ for k, o in enumerate(order):
         cmd += ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-vf", vf, "-map", "0:v", "-map", "1:a", "-shortest"]
     cmd += ["-frames:v", str(nf), "-t", f"{d:.4f}", "-ac", "2", "-color_range", "tv", "-c:v", "libx264", "-preset", "veryfast", "-crf", "17", "-r", str(FPS),
             "-c:a", "aac", "-b:a", "192k", out]
-    run(cmd)
+    try:
+        subprocess.run(cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL, cwd=A.out, timeout=900, check=True)
+    except Exception:  # noqa: BLE001 – notfalls ohne Stabilisierung
+        run([x.replace(vf, vf.split("unsharp=5:5:0.5:3:3:0.0,")[-1]) if x == vf else x for x in cmd])
+    if os.path.exists(os.path.join(A.out, trf)):
+        os.remove(os.path.join(A.out, trf))
     parts_v.append(out)
     print(f"PROGRESS {35 + int(45 * (k + 1) / len(order))}", flush=True)
 lst = os.path.join(A.out, "m_liste.txt")
@@ -324,11 +370,43 @@ for f in parts_v + [lst]:
 stage("Legt Musik, Titel und Logo an …", 85)
 final = os.path.join(A.out, "clip-1.mp4")
 inputs = ["-i", body]
-fc = ["[0:v]eq=contrast=1.04:saturation=1.10[v0]" if A.style != "clean" else "[0:v]null[v0]"]
+PREMIUM = A.style == "premium"
+grade = {"clean": "null", "viral": "eq=contrast=1.04:saturation=1.10",
+         # Premium: Kino-Look – weiche Kontraste, satte Farben, leichte Vignette, weich ein- und ausgeblendet
+         "premium": f"eq=contrast=1.07:saturation=1.16:gamma=0.98,vignette=PI/8,fade=t=in:st=0:d=0.35,fade=t=out:st={max(0, total - 0.6):.3f}:d=0.6"}[A.style]
+fc = [f"[0:v]{grade}[v0]"]
 vin, ni = "v0", 1
-card = hook_card(title, os.path.join(A.out, "titel.png")) if title else None
+def serif_card(text, path):
+    """Premium-Titel: große, elegante Serifenschrift ohne Kasten (wie ein Filmtitel), weicher Schatten."""
+    from PIL import Image, ImageDraw, ImageFilter, ImageFont
+    text = re.sub(r"[^\w\s\-–&'’.,!?äöüÄÖÜß]", "", text).strip()
+    if not text:
+        return None
+    font = ImageFont.truetype(os.path.join(_ns["FONTS"], "PlayfairDisplay-italic-700.ttf"), 104)
+    words, lines = text.split(), []
+    for w in words:
+        if lines and font.getlength(lines[-1] + " " + w) <= 900:
+            lines[-1] += " " + w
+        else:
+            lines.append(w)
+    if len(lines) == 2:  # zwei möglichst gleich lange Zeilen („Unser Sommer / auf Bali“ statt „… auf / Bali“)
+        k = min(range(1, len(words)), key=lambda i: max(font.getlength(" ".join(words[:i])), font.getlength(" ".join(words[i:]))))
+        lines = [" ".join(words[:k]), " ".join(words[k:])]
+    lh, wd = 128, int(max(font.getlength(l) for l in lines)) + 80
+    im = Image.new("RGBA", (wd, lh * len(lines) + 60), (0, 0, 0, 0))
+    sh = Image.new("RGBA", im.size, (0, 0, 0, 0))
+    for layer, col in ((sh, (0, 0, 0, 170)), (im, (255, 255, 255, 255))):
+        d = ImageDraw.Draw(layer)
+        for i, l in enumerate(lines):
+            d.text(((wd - font.getlength(l)) / 2, 20 + i * lh + (4 if layer is sh else 0)), l, font=font, fill=col)
+    out = Image.alpha_composite(sh.filter(ImageFilter.GaussianBlur(9)), im)
+    out.save(path)
+    return path
+
+
+card = (serif_card(title, os.path.join(A.out, "titel.png")) if PREMIUM else hook_card(title, os.path.join(A.out, "titel.png"))) if title else None
 logo = A.logo if A.logo and os.path.exists(A.logo) else None
-hy = HOOK_Y + (LOGO_PX + 20 if logo else 0)
+hy = (560 if PREMIUM else HOOK_Y) + (LOGO_PX + 20 if logo else 0)
 if card:
     inputs += ["-loop", "1", "-framerate", str(FPS), "-i", card]  # endlos + shortest: ein endender Bild-Eingang ließ ffmpeg hängen
     fc.append(f"[{ni}:v]format=rgba,fade=t=in:st=0:d=0.3:alpha=1,fade=t=out:st=2.9:d=0.4:alpha=1[hc]")

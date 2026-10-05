@@ -654,6 +654,7 @@ def gemini_proofread(words):
     → Korrektur übernehmen). Unverständlicher Kauderwelsch bekommt KEINEN Untertitel (lieber keiner als ein falscher)."""
     import difflib
     fixed = unclear = 0
+    BRAND_N = {norm(x) for x in re.split(r"[,;\s]+", BRAND or "") if norm(x)}
     for c0 in range(0, len(words), 150):
         chunk = words[c0:c0 + 150]
         res = gemini(
@@ -661,7 +662,7 @@ def gemini_proofread(words):
             "automatisches Transkript (evtl. kleingeschrieben, ohne Satzzeichen, teils verhört). Schreibe es als sauberen "
             "Untertiteltext: korrekte Rechtschreibung, Groß-/Kleinschreibung, Satzzeichen; offensichtlich verhörte Wörter und "
             "verstümmelte Namen aus dem Zusammenhang korrigieren (z. B. „Schmarm“ → „Schmarrn“ an einem Kaiserschmarrn-Stand). "
-            "Umgangssprache/Dialekt bleibt. Wörter NICHT umstellen, nichts weglassen, nichts hinzufügen. Zusätzlich: Liste der "
+            "Umgangssprache/Dialekt bleibt. Wörter NICHT umstellen, nichts weglassen, nichts hinzufügen, NICHTS umformulieren oder durch ein anderes Wort ersetzen – es muss genau das dastehen, was gesagt wurde. Zusätzlich: Liste der "
             "Wortfolgen aus dem ORIGINAL, die sinnloser Kauderwelsch sind und sich nicht sicher korrigieren lassen." +
             (f" Diese Namen/Marken kommen im Video vor – verhörte Varianten genau so schreiben: {BRAND}." if BRAND else ""),
             " ".join(w["t"] for w in chunk),
@@ -677,6 +678,11 @@ def gemini_proofread(words):
                 for d in range(i2 - i1):
                     w, t = chunk[i1 + d], new[j1 + d]
                     if t != w["t"]:
+                        # Regel 91: Der Untertitel zeigt, was GESAGT wurde. Ein anderes Wort nur, wenn es fast gleich klingt
+                        # (verhört: „Bürger“ → „Burger“) oder ein Kunden-Name ist – nie „schöner formulieren“.
+                        na, nb = norm(w["t"]), norm(t)
+                        if na != nb and nb not in BRAND_N and difflib.SequenceMatcher(a=na, b=nb).ratio() < 0.4:
+                            continue
                         w["t"] = t
                         fixed += 1
             elif tag == "replace" and i2 - i1 == 2 and j2 - j1 == 1:  # zusammengeschrieben („weiter empfehlen“ → „weiterempfehlen“)
@@ -1077,8 +1083,8 @@ def plan_crops(ranges, zs=1.0, shift=None, pad=None):
 # Handwackeln, leichtes Kippen und der Sprung des Hintergrunds an Jump-Cuts (Kamera ist in der weggeschnittenen Zeit
 # verrutscht) verschwinden. Alles subpixel-genau (kein Stufen-Ruckeln wie bei ganzzahligem Zuschneiden).
 STAB_RATE = min(30.0, FPS)
-STAB_SIGMA = 1.0 if LOUD else 1.4  # Glättung (s): Clean fast wie vom Stativ, Viral/Premium etwas lebendiger
-STAB_ZOOM_MAX = 1.10               # höchstens 10 % Zusatz-Zoom für den Ausgleichsrand (CapCut „empfohlen“ ≈ 1,1)
+STAB_SIGMA = 2.6                   # Glättung (s): wie vom Stativ/Gimbal – Nutzer: „da darf nichts wackeln“ (Regel 92)
+STAB_ZOOM_MAX = 1.20               # bestimmt nur noch, wie weit ausgeglichen wird (± ~7 % des Bildes) – gezoomt wird NICHT (Regel 93)
 TRACK_W = 320
 
 
@@ -1093,9 +1099,7 @@ def _bg_mask(g):
     for fx, fy, fw, fh in faces:
         fx, fy, fw, fh = fx / 2, fy / 2, fw / 2, fh / 2
         cv2.rectangle(mask, (int(fx - 1.8 * fw), int(fy - 0.9 * fh)), (int(fx + 2.8 * fw), sh), 0, -1)
-    if not len(faces):
-        cv2.rectangle(mask, (int(sw * 0.22), int(sh * 0.12)), (int(sw * 0.78), sh), 0, -1)
-    return mask
+    return mask  # kein Gesicht (B-Roll, Nahaufnahme): ganzes Bild verfolgen – RANSAC ignoriert bewegte Hände/Dinge
 
 
 def _motion(a, b, mask, far=False):
@@ -1121,6 +1125,9 @@ def _motion(a, b, mask, far=False):
     return dx * W / sw, dy * W / sw, ang
 
 
+CUTS_FOUND = []  # Zeiten harter Schnitte der zuletzt verfolgten Strecke
+
+
 def _track(t0, t1):
     """Kamerabahn zwischen t0 und t1 (STAB_RATE Bilder/s): kumuliert (x, y, Winkel) – Hintergrund, Personen ausgeblendet."""
     SW = TRACK_W
@@ -1129,6 +1136,7 @@ def _track(t0, t1):
                              f"fps={STAB_RATE:.3f},scale={SW}:{SH},format=gray", "-f", "rawvideo", "-"], stdout=subprocess.PIPE)
     prev, mask, path, n = None, None, [], 0
     cur = np.zeros(3)
+    CUTS_FOUND.clear()
     while True:
         buf = proc.stdout.read(SW * SH)
         if len(buf) < SW * SH:
@@ -1141,6 +1149,8 @@ def _track(t0, t1):
             d = _motion(prev, g, mask)
             if d is not None:
                 cur = cur + d
+            elif float(np.abs(g.astype(np.int16) - prev).mean()) > 22:  # harter Schnitt im Material (z. B. Zwischenschnitt)
+                CUTS_FOUND.append(t0 + (n - 1) / STAB_RATE)
         path.append(cur.copy())
         prev = g
     proc.wait()
@@ -1221,6 +1231,7 @@ def plan_stab(ranges):
     for b in blocks:
         b["t0"] = max(0.0, ranges[b["ks"][0]][0] - 0.1)
         b["path"] = _track(b["t0"], min(DUR, ranges[b["ks"][-1]][1] + 0.4))
+        b["cuts"] = sorted(CUTS_FOUND)
     nf = seg_frames(ranges)
     seq, scene, off, breaks = [], [], np.zeros(3), 0
     P = {}
@@ -1254,7 +1265,14 @@ def plan_stab(ranges):
         for k in b["ks"]:
             s = ranges[k][0]
             for i in range(nf[k]):
-                seq.append(pos(k, s + i * SPEED[0] / OF) + off)
+                tt = s + i * SPEED[0] / OF
+                # Regel 92: jede Einstellung für sich beruhigen – sonst zieht die Glättung das Wackeln der einen
+                # Einstellung über den Schnitt in die nächste („an den Übergängen wackelt es“)
+                while b["cuts"] and b["cuts"][0] <= tt + 0.5 / STAB_RATE:
+                    b["cuts"].pop(0)
+                    sid += 1
+                    breaks += 1
+                seq.append(pos(k, tt) + off)
                 scene.append(sid)
             b.setdefault("off", {})[k] = off.copy()
     Q = np.array(seq)
@@ -1687,7 +1705,10 @@ def render_cut(idx, ranges):
     stab = plan_stab(ranges)
     shift, pad = (stab["mean"], stab["lim"]) if stab else (None, None)
     crops = plan_crops(ranges, 1.0, shift, pad)
-    zs = stab_zoom(stab, crops) if stab else 1.0
+    # Regel 93 (Nutzer 05.10.: „perfekt stabil, aber NICHT reinzoomen“): kein Zusatz-Zoom mehr. Der Ausschnitt darf beim
+    # Ausgleichen über den Bildrand hinaus – der schmale fehlende Streifen wird gespiegelt aufgefüllt (fällt am Rand nicht auf).
+    zs = 1.0
+    STATS["stab_zoom"] = 1.0
     if zs > 1.0005:
         crops = plan_crops(ranges, zs, shift, pad)
     xd = transitions(ranges, crops)
@@ -1720,14 +1741,8 @@ def render_cut(idx, ranges):
                 cx, cy = cx + dx - a * (cy - H / 2), cy + dy + a * (cx - W / 2)  # Drehung um die Bildmitte gemessen → Hebel
             sa, ca = abs(np.sin(a)), np.cos(a)
             ex, ey = (w * ca + h * sa) / 2, (w * sa + h * ca) / 2
-            for _ in range(6):  # gedrehtes Fenster passt nicht → Drehung zurücknehmen
-                if ex <= W / 2 and ey <= H / 2:
-                    break
-                a *= 0.6
-                sa, ca = abs(np.sin(a)), np.cos(a)
-                ex, ey = (w * ca + h * sa) / 2, (w * sa + h * ca) / 2
-            ncx, ncy = min(max(cx, ex), W - ex), min(max(cy, ey), H - ey)
-            clamped += abs(ncx - cx) > 0.5 or abs(ncy - cy) > 0.5
+            ncx, ncy = cx, cy  # nicht am Bildrand festhalten (das wäre wieder Wackeln) – der Rand wird gespiegelt
+            clamped += cx < ex or cx > W - ex or cy < ey or cy > H - ey
             fr.append((ncx, ncy, w, a, ex, ey))
         zc = min(ZOOM_MAX, zc + ZOOM_RATE * olen(s, e))
         off += olen(s, e)
@@ -1784,7 +1799,7 @@ def render_cut(idx, ranges):
                 # Quelle → Ausgabe: um −a drehen, skalieren, Fenster-Mitte auf Bildmitte
                 ox, oy = rx - cx, ry - cy
                 M = np.array([[co, si, co * ox + si * oy + 540.0], [-si, co, -si * ox + co * oy + 960.0]])
-                out = cv2.warpAffine(src, M, (1080, 1920), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+                out = cv2.warpAffine(src, M, (1080, 1920), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REFLECT_101)
                 if i >= nf[k]:
                     new_tail.append(out)
                     continue

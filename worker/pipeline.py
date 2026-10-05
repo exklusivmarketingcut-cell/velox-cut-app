@@ -2978,6 +2978,14 @@ for n, m in enumerate(MOMENTS, 1):
             if m3:
                 step(0.94, "Verbessert den Schnitt nach dem Sinn-Check …")
                 c3 = make_cut(n, fix_bounds(m3), step)
+                # Regel 95: Der Nachschnitt darf glätten, aber nicht das halbe Video wegwerfen (Test 05.10.: 86 s → 35 s,
+                # die ganze Zubereitung fehlte). Wird es mehr als 15 % kürzer, bleibt die geprüfte Fassung.
+                if c3 and c3["secs"] < 0.85 * c["secs"]:
+                    log(f"Sinn-Check: Nachschnitt verworfen ({c['secs']} s → {c3['secs']} s wäre zu viel Verlust)")
+                    STATS["sinn"]["verworfen"] = True
+                    if c3["cut"] != c["cut"] and os.path.exists(c3["cut"]) and not A.keep_work:
+                        os.remove(c3["cut"])
+                    c3 = None
                 if c3:
                     if c["cut"] != c3["cut"] and os.path.exists(c["cut"]) and not A.keep_work:
                         os.remove(c["cut"])

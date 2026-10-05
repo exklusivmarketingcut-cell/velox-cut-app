@@ -4,7 +4,7 @@ import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
 
-export default function SignupForm({ next, loginHref, invite }: { next: string; loginHref: string; invite?: string }) {
+export default function SignupForm({ next, loginHref, invite, code }: { next: string; loginHref: string; invite?: string; code?: string }) {
   const router = useRouter();
   const [err, setErr] = useState('');
   const [sent, setSent] = useState(false);
@@ -25,7 +25,7 @@ export default function SignupForm({ next, loginHref, invite }: { next: string; 
     const { data, error } = await supabase.auth.signUp({
       email,
       password,
-      options: { data: { name, ...(invite ? { ref: invite } : {}) }, emailRedirectTo: `${location.origin}/auth/bestaetigen?weiter=${encodeURIComponent(next)}` },
+      options: { data: { name, ...(invite ? { ref: invite } : {}), ...(code ? { code } : {}) }, emailRedirectTo: `${location.origin}/auth/bestaetigen?weiter=${encodeURIComponent(next)}` },
     });
     setBusy(false);
     if (error) return setErr(error.message.includes('registered') ? 'Diese E-Mail hat schon ein Konto. Bitte einloggen.' : 'Das hat nicht geklappt. Bitte versuch es noch einmal.');

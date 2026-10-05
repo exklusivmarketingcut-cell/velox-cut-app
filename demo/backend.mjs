@@ -29,7 +29,7 @@ const rid = (p) => `${p}_${crypto.randomBytes(12).toString('hex')}`;
 const days = (n) => new Date(Date.now() + n * 864e5).toISOString();
 
 // ───────────────────────────── Datenbank (wie supabase/migrations/0001_init.sql) ─────────────────────────────
-const db = { profiles: [], credit_ledger: [], jobs: [], beta_requests: [], cancellations: [], stripe_events: [] };
+const db = { profiles: [], credit_ledger: [], jobs: [], beta_requests: [], cancellations: [], stripe_events: [], codes: [], code_uses: [] };
 const users = new Map(); // email → {id, email, password, meta}
 let serial = 1;
 
@@ -42,8 +42,10 @@ const DEFAULTS = {
   beta_requests: () => ({ id: serial++, created_at: now() }),
   cancellations: () => ({ id: serial++, created_at: now() }),
   stripe_events: () => ({ created_at: now() }),
+  codes: () => ({ credits: 0, plan: null, max_uses: null, uses: 0, valid_until: null, active: true, note: null, created_at: now() }),
+  code_uses: () => ({ card_fp: null, created_at: now() }),
 };
-const PK = { profiles: 'id', jobs: 'id', stripe_events: 'id' };
+const PK = { profiles: 'id', jobs: 'id', stripe_events: 'id', codes: 'code' };
 class Conflict extends Error {}
 
 function insert(table, row) {
@@ -54,6 +56,8 @@ function insert(table, row) {
   if (table === 'credit_ledger' && ['topup', 'plan_period'].includes(r.reason) && db.credit_ledger.some((x) => x.ref === r.ref && x.reason === r.reason))
     throw new Conflict('duplicate key value violates unique constraint "credit_ledger_ref_once"');
   if (table === 'profiles' && (r.plan_credits < 0 || r.topup_credits < 0)) throw new Error('check constraint');
+  if (table === 'code_uses' && db.code_uses.some((x) => x.code === r.code && (x.user_id === r.user_id || (r.card_fp && x.card_fp === r.card_fp))))
+    throw new Conflict('duplicate key value violates unique constraint "code_uses_pkey"');
   db[table].push(r);
   return r;
 }
@@ -62,6 +66,25 @@ const ledger = (user_id, delta, bucket, reason, ref = null) => insert('credit_le
 
 // Datenbank-Funktionen (gleiche Logik wie die SQL-Funktionen)
 const RPC = {
+  redeem_code({ p_code, p_user, p_card, p_art }) {
+    const c = db.codes.find((x) => x.code === String(p_code).trim().toUpperCase());
+    if (!c) return 'unbekannt';
+    if (!c.active) return 'inaktiv';
+    if (c.valid_until && c.valid_until < now()) return 'abgelaufen';
+    if (c.max_uses !== null && c.uses >= c.max_uses) return 'aufgebraucht';
+    if (c.art !== p_art) return 'falsche_art';
+    try { insert('code_uses', { code: c.code, user_id: p_user, card_fp: p_card }); } catch {
+      return db.code_uses.some((x) => x.code === c.code && x.user_id === p_user) ? 'schon_eingeloest' : 'karte_schon_genutzt';
+    }
+    c.uses += 1;
+    if (c.art === 'credits') { ledger(p_user, c.credits, 'topup', 'topup', `code-${c.code}-${p_user}`); profile(p_user).topup_credits += c.credits; }
+    return 'ok';
+  },
+  unredeem_code({ p_code, p_user }) {
+    const i = db.code_uses.findIndex((x) => x.code === p_code && x.user_id === p_user);
+    if (i >= 0) { db.code_uses.splice(i, 1); const c = db.codes.find((x) => x.code === p_code); if (c) c.uses = Math.max(0, c.uses - 1); }
+    return null;
+  },
   spend_credits({ p_user, p_amount, p_reason, p_ref }) {
     const p = profile(p_user);
     if (!p) return false;
@@ -178,8 +201,8 @@ async function rest(req, res, url, role, uid) {
   }
   // Zugriffsschutz wie RLS: Nutzer lesen nur eigene Zeilen, schreiben gar nicht
   if (role !== 'service') {
-    if (req.method !== 'GET') return json(res, 403, { code: '42501', message: 'permission denied' });
-    const own = { profiles: 'id', credit_ledger: 'user_id', jobs: 'user_id' }[table];
+    if (req.method !== 'GET' && req.method !== 'HEAD') return json(res, 403, { code: '42501', message: 'permission denied' });
+    const own = { profiles: 'id', credit_ledger: 'user_id', jobs: 'user_id', code_uses: 'user_id' }[table];
     if (!own || !uid) return json(res, 200, []);
     filters.push((x) => x[own] === uid);
   }
@@ -197,6 +220,8 @@ async function rest(req, res, url, role, uid) {
     return json(res, status, list.map(pick));
   };
 
+  // Zählen ohne Daten (supabase-js: select(…, { count: 'exact', head: true }) → HEAD + Content-Range)
+  if (req.method === 'HEAD') return send(res, 200, '', { 'Content-Range': `${rows.length ? `0-${rows.length - 1}` : '*'}/${rows.length}` });
   if (req.method === 'GET') {
     if (order) {
       const [col, dir] = order.split('.');
@@ -437,7 +462,7 @@ async function stripeApi(req, res, url) {
       return json(res, 402, { error: { message: 'Deine Karte wurde abgelehnt.' } });
     }
     const pm = { id: rid('pm'), object: 'payment_method', type: 'card', customer: si.customer,
-      card: { brand: num.startsWith('4') ? 'visa' : num.startsWith('5') ? 'mastercard' : 'amex', last4: num.slice(-4), exp_month: +b.exp.split('/')[0], exp_year: 2000 + +b.exp.split('/')[1] } };
+      card: { brand: num.startsWith('4') ? 'visa' : num.startsWith('5') ? 'mastercard' : 'amex', last4: num.slice(-4), exp_month: +b.exp.split('/')[0], exp_year: 2000 + +b.exp.split('/')[1], fingerprint: 'fp_' + num } };
     S.payment_methods.set(pm.id, pm);
     Object.assign(si, { status: 'succeeded', payment_method: pm.id });
     log('💳 Karte gespeichert', pm.card.brand, '…' + pm.card.last4, '– 0 € abgebucht');
@@ -475,24 +500,30 @@ async function stripeApi(req, res, url) {
     const keys = [].concat(q.lookup_keys ?? []);
     return json(res, 200, { object: 'list', data: PRICES.filter((x) => !keys.length || keys.includes(x.lookup_key)), has_more: false, url: '/v1/prices' });
   }
+  if ((m = /^\/v1\/payment_methods\/(\w+)$/.exec(p)) && req.method === 'GET') {
+    const pm = S.payment_methods.get(m[1]);
+    return pm ? json(res, 200, pm) : stripeErr(res, 404, 'No such payment_method');
+  }
   if (p === '/v1/subscriptions' && req.method === 'POST') {
     const price = priceById(q.items?.[0]?.price);
     if (!price) return stripeErr(res, 400, 'No such price');
     const pm = S.payment_methods.get(q.default_payment_method);
-    const ok = cardOk(pm);
+    const trial = +(q.trial_period_days ?? 0);
+    const ok = trial > 0 || cardOk(pm);
+    const amount = trial > 0 ? 0 : price.unit_amount;
     const id = rid('sub');
-    const inv = { id: rid('in'), object: 'invoice', status: ok ? 'paid' : 'open', amount_due: price.unit_amount, amount_paid: ok ? price.unit_amount : 0, currency: 'eur',
+    const inv = { id: rid('in'), object: 'invoice', status: ok ? 'paid' : 'open', amount_due: amount, amount_paid: ok ? amount : 0, currency: 'eur',
       customer: q.customer, number: `VELOX-${String(S.invoices.size + 1).padStart(4, '0')}`, created: ts(),
       parent: { type: 'subscription_details', subscription_details: { subscription: id, metadata: q.metadata ?? {} } }, confirmation_secret: null,
       lines: { data: [{ description: `Velox Cut ${price.lookup_key.split('_')[1]} (${price.recurring.interval === 'year' ? 'jährlich' : 'monatlich'})`, amount: price.unit_amount }] } };
     S.invoices.set(inv.id, inv);
     const end = ts() + (price.recurring.interval === 'year' ? 365 : 30) * 86400;
-    const sub = { id, object: 'subscription', status: ok ? 'active' : 'incomplete', customer: q.customer, default_payment_method: q.default_payment_method,
+    const sub = { id, object: 'subscription', status: trial > 0 ? 'trialing' : ok ? 'active' : 'incomplete', trial_end: trial > 0 ? ts() + trial * 86400 : null, customer: q.customer, default_payment_method: q.default_payment_method,
       metadata: q.metadata ?? {}, cancel_at_period_end: false, cancel_at: null, created: ts(), latest_invoice: inv.id,
       items: { object: 'list', data: [{ id: rid('si'), object: 'subscription_item', price, quantity: 1, current_period_start: ts(), current_period_end: end }] } };
     S.subscriptions.set(id, sub);
-    if (ok) S.payments.push({ customer: q.customer, amount: price.unit_amount, text: inv.lines.data[0].description, number: inv.number, date: ts() });
-    log(ok ? '🧾 Abo gestartet' : '🧾 Abo – Zahlung abgelehnt', price.lookup_key, (price.unit_amount / 100).toFixed(2), '€');
+    if (ok && amount) S.payments.push({ customer: q.customer, amount: price.unit_amount, text: inv.lines.data[0].description, number: inv.number, date: ts() });
+    log(trial ? `🎁 Gratis-Abo (${trial} Tage Test)` : ok ? '🧾 Abo gestartet' : '🧾 Abo – Zahlung abgelehnt', price.lookup_key, (amount / 100).toFixed(2), '€');
     (async () => {
       await webhook('customer.subscription.created', sub);
       if (ok) await webhook('invoice.paid', inv);

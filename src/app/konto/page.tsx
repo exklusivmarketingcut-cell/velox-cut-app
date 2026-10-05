@@ -1,6 +1,6 @@
 import Topbar from '@/components/Topbar';
 import { requireProfile } from '@/lib/profile';
-import { createClient } from '@/lib/supabase/server';
+import { createClient, getUser } from '@/lib/supabase/server';
 import { INVITE_CREDITS, PACKS, PLANS, euro } from '@/lib/pricing';
 import Billing from './Billing';
 import Invite from './Invite';
@@ -15,6 +15,7 @@ const REASON: Record<string, string> = {
 
 const refLabel = (ref: string | null) => {
   const r = String(ref ?? '');
+  if (r.startsWith('code-')) return `Gutschein ${r.split('-')[1]}`;
   return r.startsWith('welcome-') ? 'Willkommens-Bonus' : r.startsWith('invite-') ? 'Empfehlung – dein Freund hat gekauft 🎉' : r.startsWith('invited-') ? 'Bonus für deine Einladung' : null;
 };
 
@@ -24,6 +25,10 @@ export default async function Page({ searchParams }: PageProps<'/konto'>) {
   const p = await requireProfile({ needCard: true });
   const supabase = await createClient();
   const { data: ledger } = await supabase.from('credit_ledger').select('*').order('created_at', { ascending: false }).limit(15);
+  // Gutschein-Code: aus dem Link (?code=) oder von der Registrierung (noch nicht eingelöst)
+  const meta = String((await getUser())?.user_metadata?.code ?? '');
+  const { count: metaUsed } = meta ? await supabase.from('code_uses').select('code', { count: 'exact', head: true }).eq('code', meta) : { count: 0 };
+  const initialCode = typeof q.code === 'string' ? q.code : meta && !metaUsed ? meta : undefined;
   const { count: invited } = await supabase.from('credit_ledger').select('id', { count: 'exact', head: true }).like('ref', 'invite-%');
   const plans = (['starter', 'pro', 'business'] as const).map((id) => ({ id, ...PLANS[id] }));
   const packs = (Object.keys(PACKS) as (keyof typeof PACKS)[]).map((id) => ({ id, ...PACKS[id] }));
@@ -36,7 +41,7 @@ export default async function Page({ searchParams }: PageProps<'/konto'>) {
             <h1>Abo &amp; Credits</h1>
             <p className="sub">
               Paket <b>{PLANS[p.plan].name}</b>{p.plan_interval ? ` (${p.plan_interval === 'yearly' ? 'jährlich' : 'monatlich'})` : ''}
-              {p.plan_status && p.plan !== 'free' ? ` · Status: ${p.plan_status === 'active' ? 'aktiv' : p.plan_status}` : ''}
+              {p.plan_status && p.plan !== 'free' ? ` · Status: ${p.plan_status === 'active' ? 'aktiv' : p.plan_status === 'trialing' ? 'Gratis-Monat' : p.plan_status}` : ''}
               {' · '}<b>{p.plan_credits}</b> Paket-Credits + <b>{p.topup_credits}</b> nachgekaufte Credits (verfallen nie)
             </p>
           </div>
@@ -47,6 +52,7 @@ export default async function Page({ searchParams }: PageProps<'/konto'>) {
             packs={packs.map((x) => ({ ...x, priceTxt: euro(x.price) }))}
             publishableKey={process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY!}
             choice={choice.paket === 'free' ? null : { plan: choice.paket, interval: choice.intervall }}
+            initialCode={initialCode}
           />
           <Invite link={`https://velox-cut.de/registrieren?einladung=${p.id}`} werber={INVITE_CREDITS.werber} freund={INVITE_CREDITS.freund} count={invited ?? 0} />
           <section className="card">

@@ -4,6 +4,7 @@ import { requireProfile } from '@/lib/profile';
 import { createAdmin } from '@/lib/supabase/server';
 import { PLANS, euro } from '@/lib/pricing';
 import { isAdmin } from '@/lib/admin';
+import Codes from './Codes';
 
 export const metadata = { title: 'Admin', robots: { index: false } };
 export const dynamic = 'force-dynamic';
@@ -15,9 +16,12 @@ type Job = {
   outputs: unknown[]; stage: string | null;
 };
 
+/** Uhrzeit der Anfrage (Server-Seite, wird bei jedem Aufruf neu gerendert) */
+const nowMs = () => Date.now();
+
 const ago = (iso: string | null) => {
   if (!iso) return '–';
-  const m = Math.round((Date.now() - new Date(iso).getTime()) / 60e3);
+  const m = Math.round((nowMs() - new Date(iso).getTime()) / 60e3);
   return m < 1 ? 'gerade' : m < 60 ? `vor ${m} Min.` : m < 1440 ? `vor ${Math.round(m / 60)} Std.` : `vor ${Math.round(m / 1440)} Tg.`;
 };
 const dt = (iso: string) => new Date(iso).toLocaleString('de-DE', { dateStyle: 'short', timeStyle: 'short', timeZone: 'Europe/Berlin' });
@@ -26,8 +30,8 @@ export default async function Page() {
   const p = await requireProfile();
   if (!isAdmin(p.email)) notFound();
   const db = createAdmin();
-  const d7 = new Date(Date.now() - 7 * 864e5).toISOString();
-  const d30 = new Date(Date.now() - 30 * 864e5).toISOString();
+  const d7 = new Date(nowMs() - 7 * 864e5).toISOString();
+  const d30 = new Date(nowMs() - 30 * 864e5).toISOString();
   const [{ data: profiles }, { data: jobs }, { data: workers }, { data: topups }] = await Promise.all([
     db.from('profiles').select('id, email, plan, plan_interval, plan_status, card_on_file, plan_credits, topup_credits, created_at').order('created_at', { ascending: false }).limit(1000),
     db.from('jobs').select('id, user_id, status, style, clips, source_kind, source_name, credits_charged, error, created_at, started_at, finished_at, outputs, stage').gte('created_at', d30).order('created_at', { ascending: false }).limit(1000),
@@ -52,7 +56,7 @@ export default async function Page() {
   const waiting = js.filter((j) => j.status === 'queued');
   const active = new Set(jobs7.map((j) => j.user_id)).size;
   const w = (workers ?? [])[0] as { name: string; last_seen: string; busy_job: string | null } | undefined;
-  const online = w && Date.now() - new Date(w.last_seen).getTime() < 120e3;
+  const online = w && nowMs() - new Date(w.last_seen).getTime() < 120e3;
   const errors = new Map<string, number>();
   failed7.forEach((j) => errors.set(j.error || 'ohne Meldung', (errors.get(j.error || 'ohne Meldung') ?? 0) + 1));
 
@@ -89,6 +93,7 @@ export default async function Page() {
               <ul className="adm-list">{[...errors].sort((a, b) => b[1] - a[1]).map(([e, n]) => <li key={e}><b>{n}×</b> {e}</li>)}</ul>
             </section>
           ) : null}
+          <Codes />
           <section className="card stack">
             <h2 style={{ margin: 0 }}>Letzte Aufträge</h2>
             <div className="adm-table">

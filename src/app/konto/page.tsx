@@ -1,8 +1,9 @@
 import Topbar from '@/components/Topbar';
 import { requireProfile } from '@/lib/profile';
 import { createClient } from '@/lib/supabase/server';
-import { PACKS, PLANS, euro } from '@/lib/pricing';
+import { INVITE_CREDITS, PACKS, PLANS, euro } from '@/lib/pricing';
 import Billing from './Billing';
+import Invite from './Invite';
 import { parseChoice } from '@/lib/choice';
 
 export const metadata = { title: 'Abo & Credits' };
@@ -12,12 +13,18 @@ const REASON: Record<string, string> = {
   topup: 'Nachkauf', job: 'Video geschnitten', refund: 'Erstattung', downgrade: 'Wechsel zu Free',
 };
 
+const refLabel = (ref: string | null) => {
+  const r = String(ref ?? '');
+  return r.startsWith('welcome-') ? 'Willkommens-Bonus' : r.startsWith('invite-') ? 'Empfehlung – dein Freund hat gekauft 🎉' : r.startsWith('invited-') ? 'Bonus für deine Einladung' : null;
+};
+
 export default async function Page({ searchParams }: PageProps<'/konto'>) {
   const q = await searchParams;
   const choice = parseChoice(q);
   const p = await requireProfile({ needCard: true });
   const supabase = await createClient();
   const { data: ledger } = await supabase.from('credit_ledger').select('*').order('created_at', { ascending: false }).limit(15);
+  const { count: invited } = await supabase.from('credit_ledger').select('id', { count: 'exact', head: true }).like('ref', 'invite-%');
   const plans = (['starter', 'pro', 'business'] as const).map((id) => ({ id, ...PLANS[id] }));
   const packs = (Object.keys(PACKS) as (keyof typeof PACKS)[]).map((id) => ({ id, ...PACKS[id] }));
   return (
@@ -41,11 +48,12 @@ export default async function Page({ searchParams }: PageProps<'/konto'>) {
             publishableKey={process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY!}
             choice={choice.paket === 'free' ? null : { plan: choice.paket, interval: choice.intervall }}
           />
+          <Invite link={`https://velox-cut.de/registrieren?einladung=${p.id}`} werber={INVITE_CREDITS.werber} freund={INVITE_CREDITS.freund} count={invited ?? 0} />
           <section className="card">
             <h2 style={{ font: '700 20px var(--display)', marginBottom: 10 }}>Verlauf</h2>
             {(ledger ?? []).map((l) => (
               <div key={l.id} className="row" style={{ justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--line)' }}>
-                <span>{REASON[l.reason] ?? l.reason} <span className="muted">· {new Date(l.created_at).toLocaleDateString('de-DE')}</span></span>
+                <span>{refLabel(l.ref) ?? REASON[l.reason] ?? l.reason} <span className="muted">· {new Date(l.created_at).toLocaleDateString('de-DE')}</span></span>
                 <b style={{ color: l.delta >= 0 ? 'var(--ok)' : 'var(--txt)' }}>{l.delta > 0 ? '+' : ''}{l.delta}</b>
               </div>
             ))}

@@ -9,7 +9,9 @@ import SignupForm from './SignupForm';
 export const metadata = { title: 'Konto erstellen' };
 
 export default async function Page({ searchParams }: PageProps<'/registrieren'>) {
-  const c = parseChoice(await searchParams);
+  const q = await searchParams;
+  const c = parseChoice(q);
+  const einladung = typeof q.einladung === 'string' && /^[0-9a-f-]{36}$/i.test(q.einladung) ? q.einladung : undefined;
   // schon eingeloggt → direkt weiter zum nächsten Schritt
   if (await getUser()) redirect(c.paket === 'free' ? '/studio' : afterCard(c));
   const plan = PLANS[c.paket];
@@ -23,7 +25,8 @@ export default async function Page({ searchParams }: PageProps<'/registrieren'>)
         intervall={c.intervall}
         plans={(Object.keys(PLANS) as PlanId[]).map((id) => ({ id, name: PLANS[id].name, credits: PLANS[id].credits, monthlyTxt: euro(PLANS[id].monthly), yearlyTxt: euro(PLANS[id].yearly), yearlyPerMonthTxt: euro(Math.round(PLANS[id].yearly / 12)) }))}
       />
-      <SignupForm next={`/karte${choiceQuery(c)}`} loginHref={`/login?weiter=${encodeURIComponent(c.paket === 'free' ? '/studio' : afterCard(c))}`} />
+      {einladung ? <p className="hint" style={{ margin: 0 }}>🎁 Du wurdest eingeladen: Beim ersten Kauf bekommst du 50 Bonus-Credits obendrauf.</p> : null}
+      <SignupForm invite={einladung} next={`/karte${choiceQuery(c)}`} loginHref={`/login?weiter=${encodeURIComponent(c.paket === 'free' ? '/studio' : afterCard(c))}`} />
     </AuthShell>
   );
 }

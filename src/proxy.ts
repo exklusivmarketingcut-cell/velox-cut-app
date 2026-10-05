@@ -1,7 +1,7 @@
 import { createServerClient } from '@supabase/ssr';
 import { NextResponse, type NextRequest } from 'next/server';
 
-const PROTECTED = ['/studio', '/konto', '/karte'];
+const PROTECTED = ['/studio', '/konto', '/karte', '/admin'];
 
 export async function proxy(request: NextRequest) {
   let response = NextResponse.next({ request });
@@ -32,5 +32,5 @@ export async function proxy(request: NextRequest) {
 
 export const config = {
   // Nur App-Seiten und Auth – nicht die statische Website, Bilder, Videos oder Webhooks
-  matcher: ['/studio/:path*', '/konto/:path*', '/karte/:path*', '/login', '/registrieren', '/auth/:path*'],
+  matcher: ['/studio/:path*', '/konto/:path*', '/karte/:path*', '/admin/:path*', '/login', '/registrieren', '/auth/:path*'],
 };

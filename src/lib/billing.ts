@@ -1,7 +1,7 @@
 import 'server-only';
 import type Stripe from 'stripe';
 import { createAdmin } from './supabase/server';
-import { PACKS, PLANS, type Interval, type PackId, type PlanId } from './pricing';
+import { INVITE_CREDITS, PACKS, PLANS, type Interval, type PackId, type PlanId } from './pricing';
 
 /** Paket + Intervall aus dem Lookup-Key eines Preises lesen (velox_pro_monthly). */
 export function planFromPrice(price?: Stripe.Price | null): { plan: Exclude<PlanId, 'free'>; interval: Interval } | null {
@@ -15,7 +15,28 @@ export async function creditTopup(pi: Stripe.PaymentIntent): Promise<boolean> {
   const pack = PACKS[pi.metadata.pack as PackId];
   if (!pack || pi.amount !== pack.price) return false;
   const { data } = await createAdmin().rpc('grant_topup', { p_user: pi.metadata.user_id, p_amount: pack.credits, p_ref: pi.id });
+  if (data) await rewardInvite(pi.metadata.user_id);
   return !!data;
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Freunde werben: Beim ersten Kauf eines eingeladenen Kunden bekommen Werber und Freund Bonus-Credits.
+ *  Wer eingeladen hat, steht in den Konto-Metadaten (ref, gesetzt bei der Registrierung über den Einladungslink).
+ *  Genau einmal je geworbenem Konto – grant_topup ist über die Referenz idempotent. */
+export async function rewardInvite(userId: string) {
+  try {
+    const admin = createAdmin();
+    const { data } = await admin.auth.admin.getUserById(userId);
+    const ref = String(data.user?.user_metadata?.ref ?? '');
+    if (!UUID.test(ref) || ref === userId) return;
+    const { data: werber } = await admin.from('profiles').select('id').eq('id', ref).maybeSingle();
+    if (!werber) return;
+    const { data: neu } = await admin.rpc('grant_topup', { p_user: ref, p_amount: INVITE_CREDITS.werber, p_ref: `invite-${userId}` });
+    if (neu) await admin.rpc('grant_topup', { p_user: userId, p_amount: INVITE_CREDITS.freund, p_ref: `invited-${userId}` });
+  } catch (e) {
+    console.error('Empfehlung nicht gutgeschrieben', e);
+  }
 }
 
 /** Abo-Stand ins Profil übernehmen. Paket gilt erst, wenn das Abo aktiv (bezahlt) ist. */

@@ -214,3 +214,15 @@ label.f { display: grid; gap: 6px; font-size: 14px; font-weight: 600; color: #c9
 .color-own { position: relative; width: 30px; height: 30px; border-radius: 50%; cursor: pointer; overflow: hidden;
   background: conic-gradient(#ff3d7f, #ffb23d, #f6e27f, #3dff9a, #38d6ff, #4f9eff, #9b5cff, #ff3d7f); }
 .color-own input { position: absolute; inset: 0; opacity: 0; width: 100%; height: 100%; cursor: pointer; }
+
+/* Admin-Übersicht */
+.adm-kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px; }
+.adm-kpi { display: grid; gap: 4px; padding: 16px 18px; }
+.adm-kpi small { color: var(--mut); font-size: 12.5px; }
+.adm-kpi b { font-size: 26px; font-family: var(--display); }
+.adm-kpi span { font-size: 12.5px; }
+.adm-list { margin: 0; padding-left: 18px; display: grid; gap: 4px; font-size: 14px; }
+.adm-table { overflow-x: auto; }
+.adm-table table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+.adm-table th, .adm-table td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.adm-table th { color: var(--mut); font-weight: 600; font-size: 12.5px; }

@@ -4,7 +4,7 @@ import Stripe from 'stripe';
 const cryptoProvider = Stripe.createSubtleCryptoProvider();
 import { stripe } from '@/lib/stripe';
 import { createAdmin } from '@/lib/supabase/server';
-import { creditTopup, planFromPrice, syncSubscription } from '@/lib/billing';
+import { creditTopup, planFromPrice, rewardInvite, syncSubscription } from '@/lib/billing';
 import { PLANS } from '@/lib/pricing';
 
 // Stripe meldet hier Zahlungen und Abo-Änderungen. In Stripe als Endpoint eintragen: https://velox-cut.de/api/stripe/webhook
@@ -36,6 +36,7 @@ export async function POST(request: Request) {
         await syncSubscription(sub);
         // neuer Abrechnungszeitraum → Paket-Credits auf die Paketmenge (Jahres-Abo: danach monatlich über refresh_credits)
         await admin.rpc('reset_plan_credits', { p_user: userId, p_amount: PLANS[info.plan].credits, p_ref: inv.id });
+        if ((inv.amount_paid ?? 0) > 0) await rewardInvite(userId); // Freunde werben: erster bezahlter Monat
         break;
       }
       case 'customer.subscription.created':

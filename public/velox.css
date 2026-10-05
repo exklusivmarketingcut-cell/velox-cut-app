@@ -770,3 +770,15 @@ button:disabled { opacity: .6; cursor: progress; }
 @media (min-width: 681px) { .fan-sec { height: 720px; } }
 @media (max-width: 680px) { .fan-sec { height: 495px; } }
 @media (min-width: 681px) and (max-width: 900px) { .fan-sec { margin-top: 60px; height: 680px; } .hero-head .hero-3d-space { margin: 0 auto; width: 140px; height: 140px; } }
+
+/* ---------- Hero v7 (05.10.): Logo exakt mittig im freien Raum zwischen Überschrift und rechtem Rand der Navigation,
+   etwas größer. Kopfzeile reicht genau bis zur Navigation (Inhalt 880 px, Navigation bis 1200 px bzw. 40 px Rand). ---------- */
+@media (min-width: 1200px) {
+  .hero-head { margin-right: calc(-1 * min(50vw - 480px, 160px)); }
+  .hero-head .hero-3d-space { margin: -40px auto; width: clamp(220px, 16.5vw, 280px); height: clamp(220px, 16.5vw, 280px); }
+}
+
+/* Instagram mit Original-Logo (Kontakt + Fußzeile) */
+.ig-link { display: inline-flex; align-items: center; gap: 8px; }
+.ig-logo { width: 20px; height: 20px; flex: 0 0 auto; border-radius: 6px; }
+.foot-col .ig-link .ig-logo { width: 16px; height: 16px; border-radius: 4.5px; }

@@ -295,7 +295,7 @@ const SUBJECTS = {
 };
 const mailFallback = (f, name, email) => {
   const body = `Name: ${name}\nE-Mail: ${email}\n\n${f.elements.msg.value.trim()}`;
-  window.location.href = 'mailto:infoveloxcut@gmail.com?subject=' + encodeURIComponent(SUBJECTS[f.elements.topic.value]) + '&body=' + encodeURIComponent(body);
+  window.location.href = 'mailto:info@velox-cut.de?subject=' + encodeURIComponent(SUBJECTS[f.elements.topic.value]) + '&body=' + encodeURIComponent(body);
 };
 // Anfrage an die App (/api/beta); lokal (file://) oder bei Fehlern -> E-Mail-Programm
 document.getElementById('contactForm').addEventListener('submit', async e => {

@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { createAdmin } from '@/lib/supabase/server';
 import { stripe } from '@/lib/stripe';
-import { OWNER, sendMail } from '@/lib/email';
+import { OWNER, SUPPORT, sendMail } from '@/lib/email';
 
 const Body = z.object({
   art: z.string().min(1).max(80),
@@ -61,8 +61,8 @@ export async function POST(request: Request) {
     `Name: ${b.name}`, `E-Mail: ${b.email}`, `Paket: ${b.paket}${b.vertragsnummer ? `\nKunden-/Rechnungsnummer: ${b.vertragsnummer}` : ''}`,
     `Gewünschtes Ende: ${b.zeitpunkt}${b.datum ? ` (${b.datum})` : ''}`,
   ].join('\n');
-  const text = `Hallo ${b.name},\n\nwir bestätigen den Eingang deiner Kündigung am ${fmt(eingang)}.\n\n${ende}\n\nDeine Angaben:\n${inhalt}\n\nNachgekaufte Credits behältst du, solange dein Konto besteht. Deine Beta-Preisgarantie endet mit dem Vertrag.\n\nViele Grüße\nNunu Alexandru Petru Pasca · Velox Cut\nWeiherstraße 23 · 73730 Esslingen am Neckar · infoveloxcut@gmail.com`;
-  const sent = await sendMail(b.email, 'Bestätigung deiner Kündigung – Velox Cut Studio', text, OWNER);
+  const text = `Hallo ${b.name},\n\nwir bestätigen den Eingang deiner Kündigung am ${fmt(eingang)}.\n\n${ende}\n\nDeine Angaben:\n${inhalt}\n\nNachgekaufte Credits behältst du, solange dein Konto besteht. Deine Beta-Preisgarantie endet mit dem Vertrag.\n\nViele Grüße\nNunu Alexandru Petru Pasca · Velox Cut\nWeiherstraße 23 · 73730 Esslingen am Neckar · info@velox-cut.de`;
+  const sent = await sendMail(b.email, 'Bestätigung deiner Kündigung – Velox Cut Studio', text, SUPPORT);
   await sendMail(OWNER, `Kündigung: ${b.name} (${b.paket})`, `${inhalt}\n\nEingang: ${fmt(eingang)}\nAutomatisch: ${ende}\nBestätigung an Kunden gesendet: ${sent ? 'ja' : 'NEIN – bitte manuell bestätigen!'}`);
   return NextResponse.json({ ok: true, ende });
 }

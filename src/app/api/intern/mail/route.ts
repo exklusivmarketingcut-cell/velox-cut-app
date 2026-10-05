@@ -2,7 +2,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { createAdmin } from '@/lib/supabase/server';
-import { OWNER, sendMail } from '@/lib/email';
+import { OWNER, SUPPORT, sendMail } from '@/lib/email';
 
 // Nur für die Schnitt-Maschine: sie meldet sich mit dem service_role-Schlüssel (hat sie ohnehin) und lässt die App
 // E-Mails verschicken – so braucht die Maschine keinen eigenen Resend-Schlüssel.
@@ -50,6 +50,6 @@ export async function POST(request: Request) {
     'Viel Erfolg beim Posten!',
     'Dein Velox-Cut-Team',
   ].join('\n');
-  const ok = await sendMail(p.email, n === 1 ? `🎬 Dein Video ist fertig: ${outs[0]?.title || 'Clip 1'}` : `🎬 Deine ${n} Videos sind fertig`, text, OWNER);
+  const ok = await sendMail(p.email, n === 1 ? `🎬 Dein Video ist fertig: ${outs[0]?.title || 'Clip 1'}` : `🎬 Deine ${n} Videos sind fertig`, text, SUPPORT);
   return NextResponse.json({ ok });
 }

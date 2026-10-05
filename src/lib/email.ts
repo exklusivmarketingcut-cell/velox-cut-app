@@ -1,7 +1,9 @@
 import 'server-only';
 
 const FROM = process.env.EMAIL_FROM || 'Velox Cut <noreply@velox-cut.de>';
-export const OWNER = process.env.OWNER_EMAIL || 'infoveloxcut@gmail.com';
+export const OWNER = process.env.OWNER_EMAIL || 'infoveloxcut@gmail.com'; // Empfänger der Betreiber-Mails
+/** Öffentliche Adresse für Kunden (Antworten, Texte) – leitet ins Postfach des Betreibers weiter */
+export const SUPPORT = 'info@velox-cut.de';
 
 /** E-Mail über Resend senden. Ohne API-Key: nur ins Log schreiben (lokales Testen). */
 export async function sendMail(to: string, subject: string, text: string, replyTo?: string) {

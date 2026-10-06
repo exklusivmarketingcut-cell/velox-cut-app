@@ -365,6 +365,49 @@ def ref(s):
     return (c, k) if c and 0 <= k < len(c["sents"]) else None
 
 
+def bild_zum_wort(kand):
+    """Regel 111 (Inhaber 06.10.: „Wenn er sagt ‚zwei Gurken drauf‘, will ich sehen, wie zwei Gurken draufkommen. Kommt die
+    Handlung erst in den Sekunden danach, schieb diese Sekunden vor über die Stimme.“) Die KI sieht je Stelle den Satz und
+    Bilder mit Zeitangabe vom Satzanfang bis zum nächsten Satz und sagt, ab wann die angesagte Handlung wirklich zu sehen
+    ist. Rückgabe {nr: {...}}; ohne KI oder im Zweifel bleibt alles, wie es ist."""
+    parts = []
+    for k in kand:
+        step = max(1.0, (k["tb"] - k["ta"]) / 12)
+        pat = os.path.join(A.out, f"bw_{k['nr']}_%02d.jpg")
+        try:
+            run(["ffmpeg", "-v", "error", "-y", "-ss", f"{k['ta']:.2f}", "-to", f"{k['tb']:.2f}", "-i", k["c"]["file"],
+                 "-vf", f"fps=1/{step:.3f},scale=288:-2", "-q:v", "6", pat])
+        except RuntimeError:
+            continue
+        imgs = sorted(f for f in os.listdir(A.out) if f.startswith(f"bw_{k['nr']}_"))
+        if not imgs:
+            continue
+        parts.append({"text": f"Stelle {k['nr']} – der Sprecher sagt von Sekunde {k['ta']:.1f} bis {k['te']:.1f}: „{k['satz']}“. "
+                              f"Der nächste Satz beginnt bei Sekunde {k['tb']:.1f}. Bilder:"})
+        for j, f in enumerate(imgs):
+            p = os.path.join(A.out, f)
+            parts.append({"text": f"Sekunde {k['ta'] + (j + 0.5) * step:.1f}:"})
+            parts.append({"inline_data": {"mime_type": "image/jpeg", "data": base64.b64encode(open(p, "rb").read()).decode()}})
+            os.remove(p)
+    if not parts:
+        return {}
+    res = gemini("Du bist Cutter für Kurzvideos. Ein Sprecher sagt an, was er tut („jetzt kommen zwei Gurken drauf“) – die Handlung "
+                 "passiert im Rohmaterial oft erst ein paar Sekunden NACH dem Satz. Für jede Stelle bekommst du den Satz und Bilder "
+                 "mit Zeitangabe vom Satzanfang bis zum nächsten Satz. Bestimme je Stelle: "
+                 "sprecher_im_bild = sieht man WÄHREND des Satzes das Gesicht des Sprechers (er spricht in die Kamera)? "
+                 "sichtbar = ist die angesagte Handlung bzw. das genannte Ding in den Bildern eindeutig zu sehen? "
+                 "von = Sekunde, in der die angesagte Handlung wirklich beginnt (NICHT das Hingreifen in einen Behälter, nicht der "
+                 "Kameraschwenk dorthin – der Moment, in dem das Angesagte passiert: die Gurken landen auf dem Burger). "
+                 "bis = Sekunde, in der die Handlung fertig ist. was = was man dort sieht (kurz). "
+                 "Nur angeben, was du wirklich siehst; im Zweifel sichtbar=false. Sagt der Satz keine Handlung an "
+                 "(Begrüßung, Meinung, Preis), dann sichtbar=false.",
+                 parts, {"type": "object", "properties": {"stellen": {"type": "array", "items": {"type": "object", "properties": {
+                     "nr": {"type": "integer"}, "sprecher_im_bild": {"type": "boolean"}, "sichtbar": {"type": "boolean"},
+                     "von": {"type": "number"}, "bis": {"type": "number"}, "was": {"type": "string"}},
+                     "required": ["nr", "sprecher_im_bild", "sichtbar"]}}}, "required": ["stellen"]}, timeout=180)
+    return {int(d["nr"]): d for d in (res or {}).get("stellen") or [] if isinstance(d.get("nr"), (int, float))}
+
+
 def build(plan, odir):
     """Eine Geschichte → montage.mp4 + plan.json in <odir>."""
     os.makedirs(odir, exist_ok=True)
@@ -429,6 +472,61 @@ def build(plan, odir):
     allw = {id(c): [w for st in c["sents"] for w in st] for c in clips}
     first_of = {id(st[0]): f"{c['id']}.{k}" for c in clips for k, st in enumerate(c["sents"])}
     sent_of = {id(w): f"{c['id']}.{k}" for c in clips for k, st in enumerate(c["sents"]) for w in st}
+    # ── Regel 111: Das Bild folgt dem Wort ──
+    # Kandidaten: letzter Satz eines Stücks, nach dem im Rohclip mind. 1,5 s wortlos weiterläuft (dort passiert die Handlung).
+    kand = []
+    for n, p in enumerate(subs):
+        c, ws = p["c"], p["ws"]
+        cw = allw[id(c)]
+        i1 = next(i for i, w in enumerate(cw) if w is ws[-1])
+        next_s = cw[i1 + 1]["s"] if i1 + 1 < len(cw) else c["dur"]
+        ls = [w for w in ws if sent_of[id(w)] == sent_of[id(ws[-1])]]
+        if next_s - ws[-1]["e"] >= 1.5 and len(ls) >= 2:
+            kand.append({"nr": n, "c": c, "ls": ls, "ta": ls[0]["s"], "te": ls[-1]["e"], "tb": min(next_s, ls[-1]["e"] + 12.0),
+                         "next_s": next_s, "satz": " ".join(w["t"] for w in ls)})
+    bw = {}
+    if kand:
+        stage("Sucht zu jedem Satz das passende Bild …")
+        try:
+            for i in range(0, len(kand), 8):
+                bw.update(bild_zum_wort(kand[i:i + 8]))
+        except Exception as e:  # noqa: BLE001
+            log(f"Bild folgt dem Wort: KI-Schritt ausgefallen ({e}) – Bild bleibt, wie gedreht")
+    neu, n_shift = [], 0
+    for n, p in enumerate(subs):
+        k, d = next((k for k in kand if k["nr"] == n), None), bw.get(n)
+        if not k or not d:
+            neu.append(p)
+            continue
+        ls, kurz = k["ls"], f"{sent_of[id(k['ls'][0])]} „{k['satz'][:46]}“"
+        if d.get("sprecher_im_bild") or not d.get("sichtbar") or d.get("von") is None:
+            log(f"  Bild↔Wort {kurz}: " + ("Sprecher im Bild – bleibt lippensynchron" if d.get("sprecher_im_bild")
+                                              else "Handlung im Material nicht zu sehen – bleibt, wie gedreht"))
+            neu.append(p)
+            continue
+        von = min(max(float(d["von"]), k["ta"]), k["tb"])
+        bis = min(max(float(d.get("bis") or von + 1.5), von + 0.5), k["tb"])
+        vor = len(p["ws"]) - len(ls)                      # Wörter des Stücks VOR dem letzten Satz bleiben, wie sie sind
+        x = (p["ws"][vor - 1]["e"] + ls[0]["s"]) / 2 if vor else None
+        s0 = x if vor else max(0.0, ls[0]["s"] - 0.35)
+        s1 = min(k["next_s"] - 0.05, ls[-1]["e"] + 0.6)
+        shift = min((von - 0.4) - ls[0]["s"], (k["next_s"] - 0.05) - s1)   # nie in den nächsten Satz hinein
+        if shift < 0.7:
+            log(f"  Bild↔Wort {kurz}: Handlung ab {von:.1f} s – passt schon (Versatz {max(0.0, shift):.1f} s)")
+            neu.append(p)
+            continue
+        if vor:
+            neu.append({"c": p["c"], "ws": p["ws"][:vor], "s1": x})
+        extra_a = s1 + shift
+        extra_b = min(bis + 0.3, k["next_s"] - 0.05, extra_a + 2.5)
+        neu.append({"c": p["c"], "ws": ls, "s0": s0, "s1": s1, "shift": shift,
+                    "extra": (extra_a, extra_b) if extra_b - extra_a >= 0.5 else None})
+        n_shift += 1
+        log(f"  Bild↔Wort {kurz}: Handlung {von:.1f}–{bis:.1f} s ({str(d.get('was') or '')[:50]}) → Bild {shift:.1f} s vorgezogen"
+            + (f", danach {extra_b - extra_a:.1f} s Handlung weiter" if extra_b - extra_a >= 0.5 else ""))
+    if kand:
+        log(f"Bild folgt dem Wort: {len(kand)} Stellen geprüft, {n_shift} mal das Bild vorgezogen")
+    subs = neu
     for n, p in enumerate(subs):
         c, ws = p["c"], p["ws"]
         cw = allw[id(c)]
@@ -440,11 +538,17 @@ def build(plan, odir):
         s0 = max(0.0, prev_e + 0.05, ws[0]["s"] - 0.35)
         s1 = min(c["dur"], next_s - 0.05, ws[-1]["e"] + (1.3 if n == len(subs) - 1 else 0.6))
         s1 = max(s1, ws[-1]["e"] + 0.05)
+        s0, s1 = p.get("s0", s0), p.get("s1", s1)  # Regel 111: geteilte/verschobene Stücke bringen ihre Grenzen mit
         out = os.path.join(odir, f"teil_{n:02d}.mp4")
         vf = f"scale={TW}:{TH}:force_original_aspect_ratio=increase,crop={TW}:{TH},fps={FPS:.3f},setsar=1"
-        run(["ffmpeg", "-v", "error", "-y", "-ss", f"{s0:.3f}", "-to", f"{s1:.3f}", "-i", c["file"], "-vf", vf,
-             "-af", "aresample=48000,afade=t=in:d=0.02", "-ac", "2", "-c:v", "libx264", "-preset", "veryfast", "-crf", "17",
-             "-c:a", "aac", "-b:a", "256k", out])
+        enc = ["-af", "aresample=48000,afade=t=in:d=0.02", "-ac", "2", "-c:v", "libx264", "-preset", "veryfast", "-crf", "17",
+               "-c:a", "aac", "-b:a", "256k"]
+        if p.get("shift"):  # Ton des Satzes, Bild aus der Handlung danach (Regel 111)
+            run(["ffmpeg", "-v", "error", "-y", "-ss", f"{s0:.3f}", "-to", f"{s1:.3f}", "-i", c["file"],
+                 "-ss", f"{s0 + p['shift']:.3f}", "-t", f"{s1 - s0:.3f}", "-i", c["file"], "-map", "1:v:0", "-map", "0:a:0",
+                 "-vf", vf, "-t", f"{s1 - s0:.3f}"] + enc + [out])
+        else:
+            run(["ffmpeg", "-v", "error", "-y", "-ss", f"{s0:.3f}", "-to", f"{s1:.3f}", "-i", c["file"], "-vf", vf] + enc + [out])
         for w in ws:
             ref_s = sent_of[id(w)]
             if id(w) in first_of:
@@ -455,6 +559,12 @@ def build(plan, odir):
         if n:
             joins.append(round(t, 3))  # hier stoßen zwei Clips aneinander → in der Pipeline immer ein Schnitt
         t += s1 - s0
+        if p.get("extra"):  # die Handlung läuft nach dem Satz noch weiter → mit eigenem Bild und Ton anhängen
+            ea, eb = p["extra"]
+            out2 = os.path.join(odir, f"teil_{n:02d}_h.mp4")
+            run(["ffmpeg", "-v", "error", "-y", "-ss", f"{ea:.3f}", "-to", f"{eb:.3f}", "-i", c["file"], "-vf", vf] + enc + [out2])
+            files_c.append(out2)
+            t += eb - ea  # bewusst KEINE Clip-Grenze in „joins“: Bild läuft nahtlos weiter, die Pipeline soll hier nicht trennen
     lst = os.path.join(odir, "teile.txt")
     open(lst, "w").write("".join(f"file '{f}'\n" for f in files_c))
     src = os.path.join(odir, "montage.mp4")

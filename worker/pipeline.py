@@ -2591,13 +2591,21 @@ def burn(idx, cut, words_out, title, ranges=None, kept=None):
         emo = [] if PREM else [f for f in fx if f["emoji"] and os.path.exists(os.path.join(EMOJI_DIR, f"{EMOJIS[f['emoji']]}.png"))]
         STATS.update(sfx=len(snd), emojis=len(emo), fx=[(round(f["t"], 1), f["emoji"], f["sfx"]) for f in fx])
         # Emojis UNTER den Untertiteln, dezent (140 px), gleiten abwechselnd von links/rechts/unten/oben herein und wieder weg
-        ey = min(1660, caption_y() + int(CAPFS[0] * 0.55) + 105)  # knapp unter der (immer einzeiligen) Untertitel-Zeile
+        gap = int(CAPFS[0] * 0.55) + 105                           # Mindestabstand Emoji-Mitte ↔ Untertitel-Mitte
+        ey = caption_y() + gap                                     # knapp unter der (immer einzeiligen) Untertitel-Zeile
         ex = 540
-        if hits_face(ex - 90, ey - 90, ex + 90, ey + 90):  # Regel 86: über die Untertitel, sonst neben das Gesicht
+        # Regel 100 (Testlauf 06.10.: 🎁 lag AUF „Muttertag“): Früher wurde auf 1660 gekappt – seit die Zeile dem Gesicht
+        # nach unten ausweichen kann, drückte das die Emojis auf den Text. Ist unten kein Platz, gilt die Ausweichliste.
+        if ey > 1760 or hits_face(ex - 90, ey - 90, ex + 90, ey + 90):  # Regel 86: über die Untertitel, sonst neben das Gesicht
             fbx = face_box()
             cand = [(540, caption_y() - int(CAPFS[0] * 0.55) - 105), (fbx[3] + 100, (fbx[0] + fbx[1]) / 2), (fbx[2] - 100, (fbx[0] + fbx[1]) / 2)]
-            ok = [(x, y) for x, y in cand if 90 <= x <= 990 and 330 <= y <= 1800 and not hits_face(x - 90, y - 90, x + 90, y + 90)]
-            ex, ey = (int(ok[0][0]), int(ok[0][1])) if ok else (ex, ey)
+            ok = [(x, y) for x, y in cand if 90 <= x <= 990 and 330 <= y <= 1760 and abs(y - caption_y()) >= gap
+                  and not hits_face(x - 90, y - 90, x + 90, y + 90)]
+            if ok:
+                ex, ey = int(ok[0][0]), int(ok[0][1])
+            else:  # nirgends frei → lieber kein Emoji als eines über Gesicht oder Text
+                emo = []
+                STATS["emojis_weggelassen"] = True
         slide = [("-{a}", ""), ("+{a}", ""), ("", "+{a}"), ("", "-{a}")]
         for k, f in enumerate(emo):
             t0 = f["t"]
@@ -2748,6 +2756,12 @@ def apply_caption_fixes(words_out, fixes):
         nums = [int(x) for x in wrong if x.isdigit()]
         # Zahl zerhackt verstanden: „neun-und-achtzig“ als „9, 80.“ → „89“ (Summe) bzw. dieselben Ziffern in anderer Reihenfolge
         same_digits = bool(dr) and (sorted(dr) == sorted(dw) or (len(nums) == len(wrong) > 1 and dr.isdigit() and sum(nums) == int(dr)))
+        # Regel 99 (Testlauf 06.10.: Abnahme machte aus dem richtigen „11.05.“ ein „12.05.“ – falsches Veranstaltungsdatum
+        # im Werbevideo): Sobald Ziffern im Spiel sind, darf nur UMFORMATIERT werden (gleiche Ziffern: „1105.“ → „11.05.“).
+        # Ein anderes Datum, ein anderer Preis, eine andere Uhrzeit wird nie übernommen – die KI hört es nicht besser als der Ton.
+        if (dw or dr) and not same_digits:
+            STATS.setdefault("zahl_korrektur_abgelehnt", []).append(f"{f.get('falsch')} → {f.get('richtig')}"[:80])
+            continue
         if not wrong or not right or len(wrong) > 5 or len(right) > len(wrong) + 2 or (not same_digits and
                 difflib.SequenceMatcher(a=" ".join(wrong), b=norm(" ".join(right))).ratio() < 0.35):
             continue

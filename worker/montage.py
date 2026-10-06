@@ -462,7 +462,7 @@ def build(plan, odir):
             pieces[-1]["k1"] = k
         else:
             pieces.append({"c": c, "k0": k, "k1": k})
-    files_c, t, anchors, joins, wanchors = [], 0.0, {}, [], {}
+    files_c, t, anchors, joins, wanchors, zeigen = [], 0.0, {}, [], {}, []
     low = lambda x: re.sub(r"[^\wäöüß]", "", (x or "").lower())
 
 
@@ -518,9 +518,16 @@ def build(plan, odir):
     if kand:
         stage("Sucht zu jedem Satz das passende Bild …")
         try:
-            with ThreadPoolExecutor(3) as ex:
-                for r in ex.map(bild_zum_wort, [kand[i:i + 6] for i in range(0, len(kand), 6)]):
-                    bw.update(r)
+            for i in range(0, len(kand), 6):   # nacheinander – parallele Bild-Anfragen sprengen das Gratis-Limit pro Minute
+                bw.update(bild_zum_wort(kand[i:i + 6]))
+            offen = [u for u in kand if u["nr"] not in bw]
+            if offen:  # Antwort abgeschnitten/ausgefallen (06.10.: ein ganzer Block fehlte) → in kleinen Portionen noch einmal
+                log(f"Bild folgt dem Wort: {len(offen)} Sätze ohne Antwort – zweiter Versuch in kleinen Portionen")
+                for i in range(0, len(offen), 3):
+                    bw.update(bild_zum_wort(offen[i:i + 3]))
+                offen = [u for u in kand if u["nr"] not in bw]
+                if offen:
+                    log(f"Bild folgt dem Wort: {len(offen)} Sätze weiter ohne Antwort – bleiben, wie gedreht")
         except Exception as e:  # noqa: BLE001
             log(f"Bild folgt dem Wort: KI-Schritt ausgefallen ({e}) – Bild bleibt, wie gedreht")
     # Regel 106: Pannen-Sätze („das Fleisch verbrannt“) kommen nie ins Video – die KI markiert sie hier gleich mit
@@ -530,8 +537,40 @@ def build(plan, odir):
             u["raus"] = True
             log(f"  Panne gestrichen: {sent_of[id(u['ws'][0])]} „{u['satz'][:60]}“")
     units = [u for u in units if not u.get("raus")]
+    # ── Regel 114: Zubereitung wie der Inhaber sie selbst schneidet (sein fertiger Junior-Burger-Schnitt, 28 s): Begrüßung
+    # gesprochen, dann die Arbeitsschritte als SCHNELLE BILDFOLGE ohne Erzählung (je Schritt gut 1 s, Musik), dann wieder
+    # gesprochen („jetzt ist der Burger fertig“, Verpackung, Schluss). Jeder angesagte Schritt, dessen Handlung die KI im
+    # Bild gefunden hat, wird zu einem stummen Zeige-Stück genau an der Handlung; Erklär-Sätze ohne eigene Handlung entfallen
+    # dort. Sätze mit Sprecher im Bild bleiben gesprochen. Ohne Auskunft der KI bleibt der Satz, wie er ist.
+    schnell = bool(re.search(r"zubereit|anleitung|tutorial|rezept|so wird|so entsteht|behind", str((plan or {}).get("format") or "").lower()))
+    n_zeig = sum(1 for u in units if (bw.get(u["nr"]) or {}).get("sichtbar") and not (bw.get(u["nr"]) or {}).get("sprecher_im_bild"))
+    if schnell and n_zeig >= 3:
+        neu_u, frei_z, weg = [], {}, 0
+        for u in units:
+            d, c = bw.get(u["nr"]) or {}, u["c"]
+            if not d or d.get("sprecher_im_bild"):
+                neu_u.append(u)
+                continue
+            if not d.get("sichtbar") or d.get("von") is None:
+                weg += 1
+                continue
+            von = min(max(float(d["von"]), u["ta"] - 0.5), c["dur"] - 1.0)
+            bis = max(float(d.get("bis") or von + 1.2), von + 0.6)
+            a = max(von - 0.15, frei_z.get(id(c), 0.0))
+            b = min(c["dur"] - 0.05, a + min(1.5, max(1.0, bis - von + 0.3)))
+            if b - a < 0.7:
+                weg += 1
+                continue
+            frei_z[id(c)] = b
+            neu_u.append({**u, "zeig": (a, b), "s0": a, "s1": b})
+            log(f"  Zeige-Stück {sent_of[id(u['ws'][0])]} „{u['satz'][:40]}“ → {a:.1f}–{b:.1f} s ({str(d.get('was') or '')[:50]})")
+        log(f"Zubereitung als schnelle Bildfolge: {sum(1 for u in neu_u if u.get('zeig'))} Arbeitsschritte gezeigt, "
+            f"{weg} Erklär-Sätze ohne eigene Handlung entfallen, {sum(1 for u in neu_u if not u.get('zeig'))} Sätze gesprochen")
+        units = neu_u
     n_shift, frei = 0, {}
     for k, u in enumerate(units):
+        if u.get("zeig"):
+            continue
         d, c, L = bw.get(u["nr"]) or {}, u["c"], u["s1"] - u["s0"]
         kurz = f"{sent_of[id(u['ws'][0])]} „{u['satz'][:44]}“"
         fest = bool(d.get("sprecher_im_bild")) or not d   # ohne Auskunft der KI: nichts verschieben
@@ -573,12 +612,13 @@ def build(plan, odir):
     subs = []
     for u in units:
         v = subs[-1] if subs else None
-        if v and u["innen"] and v["c"] is u["c"] and not v.get("shift") and not u.get("shift") and not v.get("extra") and abs(v["s1"] - u["s0"]) < 0.01:
+        if v and u["innen"] and not u.get("zeig") and not v.get("zeig") and v["c"] is u["c"] and not v.get("shift") and not u.get("shift") and not v.get("extra") and abs(v["s1"] - u["s0"]) < 0.01:
             v["ws"] = v["ws"] + u["ws"]
             v["s1"] = u["s1"]
             v["extra"] = u.get("extra")
         else:
-            subs.append({"c": u["c"], "ws": list(u["ws"]), "s0": u["s0"], "s1": u["s1"], "shift": u.get("shift"), "extra": u.get("extra")})
+            subs.append({"c": u["c"], "ws": list(u["ws"]), "s0": u["s0"], "s1": u["s1"], "shift": u.get("shift"), "extra": u.get("extra"),
+                         "zeig": u.get("zeig")})
     for n, p in enumerate(subs):
         c, ws = p["c"], p["ws"]
         cw = allw[id(c)]
@@ -595,20 +635,27 @@ def build(plan, odir):
         vf = f"scale={TW}:{TH}:force_original_aspect_ratio=increase,crop={TW}:{TH},fps={FPS:.3f},setsar=1"
         enc = ["-af", "aresample=48000,afade=t=in:d=0.02", "-ac", "2", "-c:v", "libx264", "-preset", "veryfast", "-crf", "17",
                "-c:a", "aac", "-b:a", "256k"]
-        if p.get("shift"):  # Ton des Satzes, Bild aus der Handlung danach (Regel 111)
+        if p.get("zeig"):  # Regel 114: stummes Zeige-Stück (Bild der Handlung, kein Ton – die Pipeline legt Musik darunter)
+            run(["ffmpeg", "-v", "error", "-y", "-ss", f"{s0:.3f}", "-to", f"{s1:.3f}", "-i", c["file"], "-f", "lavfi", "-t", f"{s1 - s0:.3f}",
+                 "-i", "anullsrc=r=48000:cl=stereo", "-map", "0:v:0", "-map", "1:a:0", "-vf", vf, "-t", f"{s1 - s0:.3f}"] + enc + [out])
+            if zeigen and abs(zeigen[-1][1] - t) < 0.01:
+                zeigen[-1][1] = round(t + s1 - s0, 3)
+            else:
+                zeigen.append([round(t, 3), round(t + s1 - s0, 3)])
+        elif p.get("shift"):  # Ton des Satzes, Bild aus der Handlung danach (Regel 111)
             run(["ffmpeg", "-v", "error", "-y", "-ss", f"{s0:.3f}", "-to", f"{s1:.3f}", "-i", c["file"],
                  "-ss", f"{s0 + p['shift']:.3f}", "-t", f"{s1 - s0:.3f}", "-i", c["file"], "-map", "1:v:0", "-map", "0:a:0",
                  "-vf", vf, "-t", f"{s1 - s0:.3f}"] + enc + [out])
         else:
             run(["ffmpeg", "-v", "error", "-y", "-ss", f"{s0:.3f}", "-to", f"{s1:.3f}", "-i", c["file"], "-vf", vf] + enc + [out])
-        for w in ws:
+        for w in ([] if p.get("zeig") else ws):
             ref_s = sent_of[id(w)]
             if id(w) in first_of:
                 anchors[ref_s] = t + (w["s"] - s0)
             wanchors.setdefault(ref_s, []).append((w["t"], t + (w["s"] - s0)))
             anchors.setdefault(ref_s, t + (w["s"] - s0))
         files_c.append(out)
-        if n:
+        if n and not (p.get("zeig") and subs[n - 1].get("zeig")):
             joins.append(round(t, 3))  # hier stoßen zwei Clips aneinander → in der Pipeline immer ein Schnitt
         t += s1 - s0
         if p.get("extra"):  # die Handlung läuft nach dem Satz noch weiter → mit eigenem Bild und Ton anhängen
@@ -650,7 +697,7 @@ def build(plan, odir):
             stickers.append({"file": pic["file"], "t_src": at, "dur": 1.8, "alpha": pic["alpha"], "was": pic.get("inhalt", "")[:60]})
     plan_out = {"format": (plan or {}).get("format", ""), "titel": (plan or {}).get("titel", ""), "ziel_s": (plan or {}).get("ziel_s"),
                 "clips": [{k: c.get(k) for k in ("id", "file", "dur", "talk", "inhalt", "qualitaet", "broll_ok")} for c in clips],
-                "sprechteile": [f"{c['id']}.{k}" for c, k in order], "joins": joins, "broll": brolls, "bilder": stickers}
+                "sprechteile": [f"{c['id']}.{k}" for c, k in order], "joins": joins, "zeigen": zeigen, "broll": brolls, "bilder": stickers}
     plan_path = os.path.join(odir, "plan.json")
     json.dump(plan_out, open(plan_path, "w"), ensure_ascii=False, indent=1)
     return {"src": src, "plan": plan_path, "stickers": stickers}

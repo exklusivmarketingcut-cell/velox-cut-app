@@ -892,6 +892,10 @@ def keep_ranges(words, safe=False, extra_drop=frozenset()):
     fil, rep, gem = filler_idx(words), repeat_idx(words), gemini_cuts(words)
     ret, final = retake_idx(words)
     drop = (fil | rep | gem | ret | set(extra_drop)) - (final - fil)  # letzte Fassung einer Wiederholung bleibt immer
+    # Regel 114: stumme Zeige-Strecken der Montage (Arbeitsschritte als schnelle Bildfolge). Dort gibt es keine Sprache –
+    # was die Erkennung trotzdem „hört“ (Halluzination auf Stille), wird nie Untertitel.
+    zeigen = [(float(a), float(b)) for a, b in ((PLAN or {}).get("zeigen") or []) if b - a > 0.2]
+    drop |= {w["i"] for w in words if any(a - 0.05 <= w["s"] < b for a, b in zeigen)}
     # Regel 96: Was WÄHREND eines Kameraschwenks nebenbei gesagt wird („lassen es kurz hierhin“), fliegt mit dem Schwenk raus –
     # außer den letzten Wörtern, mit denen der nächste Satz schon beginnt („jetzt zwei Gurken“)
     pan_cuts = []
@@ -1037,6 +1041,12 @@ def keep_ranges(words, safe=False, extra_drop=frozenset()):
         out = [r for r in subtract(out, long_gaps) if r[1] - r[0] > 0.08]
         kept = [w for w in kept if not any(a <= w["s"] and w["e"] <= b for a, b in long_gaps)]  # weggeraffte Wörter
         STATS["long_gaps_cut_s"] = round(sum(y - x for x, y in long_gaps), 1)
+    if zeigen:  # Regel 114: Zeige-Strecken bleiben vollständig stehen (keine Stille-/Pausen-Kürzung), Sprache drumherum wie immer
+        lo_t = words[0]["s"] - 1.0 if words else 0.0
+        hi_t = words[-1]["e"] + 1.0 if words else DUR
+        zz = [(a, b) for a, b in zeigen if b > lo_t and a < hi_t]
+        out = sorted([r for r in subtract(out, zz) if r[1] - r[0] > 0.08] + [[a + 0.02, b - 0.02] for a, b in zz])
+        STATS["zeige_strecken_s"] = round(sum(b - a for a, b in zz), 1)
     for a, b in out:  # Diagnose: lange Abschnitte mit wenig Text (Pausen, die nicht gerafft wurden)
         inside = [w for w in kept if a <= w["s"] < b]
         if b - a > 8:
@@ -2186,7 +2196,7 @@ MUSIC_PICK = {}
 
 def pick_music(kept):
     """Passende Hintergrundmusik: bei --music auto wählt die KI nach Inhalt und Stimmung, sonst der genannte Titel."""
-    if A.music == "none":
+    if A.music == "none" and not (PLAN or {}).get("zeigen"):  # stumme Zeige-Strecken brauchen Musik (Regel 114)
         return None
     have = {n: d for n, d in MUSIC.items() if os.path.exists(os.path.join(MUSIC_DIR, f"{n}.mp3"))}
     if A.music in have:

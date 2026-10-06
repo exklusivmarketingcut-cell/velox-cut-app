@@ -3097,6 +3097,12 @@ def make_cut(n, m, step):
         # lief zweimal genau dieser Pfad, die Abschnitte gingen dann wieder über Clip-Wechsel hinweg.
         ranges, kept = limit60(split_joins(ranges, kept), kept)
         ranges = tidy(ranges)
+        if os.environ.get("VELOX_DEBUG"):  # Fehlersuche: auch die Schnittliste des sicheren Modus ablegen
+            kid = {w["i"] for w in kept}
+            json.dump({"words": [[w["t"], round(w["s"], 2), round(w["e"], 2), w["i"] in kid] for w in words],
+                       "ranges": [[round(a, 2), round(b, 2)] for a, b in ranges], "sil": SIL,
+                       "joins": (PLAN or {}).get("joins"), "lv": [round(v, 1) for v in LV]},
+                      open(os.path.join(A.out, f"debug-{n}-sicher.json"), "w"), ensure_ascii=False)
         cut, secs = render_cut(n, ranges)
         heard = hear(cut)
         words_out, miss = align(ranges, kept, heard)

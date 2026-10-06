@@ -3041,6 +3041,11 @@ def gemini_fix_story(m, kept, problems):
         "(„plötzlich heißt es ‚das Fleisch verbrannt‘“), dann diesen Satz ENTFERNEN – niemals durch mehr Drumherum "
         "„vervollständigen“ (Test 06.10.: der Nachschnitt nahm die ganze Pannen-Passage dazu, das Video wurde länger und schlechter). "
         "+ = Satz ist im Video (mit Sekunde im fertigen Video), − = rausgeschnitten. "
+        + ("WICHTIG – dies ist eine Zubereitung/Anleitung: Ein Arbeitsschritt (etwas wird draufgelegt, gewendet, mit Soße bestrichen, "
+           "eingepackt …) wird NIE entfernt, auch wenn der Satz holprig, kurz oder undeutlich gesprochen ist – der Zuschauer muss "
+           "jeden Schritt sehen (Inhaber 06.10.: „du hast viel zu viel rausgenommen“). Entfernen darfst du hier nur Pannen-Sätze, "
+           "Fehlstarts und Doppeltes. "
+           if re.search(r"zubereit|anleitung|tutorial|rezept|so wird|so entsteht|behind", str((PLAN or {}).get("format") or "").lower()) else "")
         + STORY_RULES + " Antworte mit den Nummern ALLER Sätze, die ins korrigierte Video gehören (in Reihenfolge).",
         f"Befunde der Abnahme:\n{probs}\n\nSätze:\n" + "\n".join(lines),
         {"type": "object", "properties": {"keep": {"type": "array", "items": {"type": "integer"}}, "warum": {"type": "string"}},

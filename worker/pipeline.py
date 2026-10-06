@@ -2712,10 +2712,20 @@ def gemini_review(path, words_out, title):
         parts=[video], timeout=120, deep=True)
 
 
+# Ergänzungen der Abnahme („hier wird gesprochen, aber es steht kein Untertitel“) wurden bisher UNGEPRÜFT eingesetzt – bis zu
+# 8 Wörter, die nur die Abnahme-KI „gehört“ hat. Dieselbe KI hat am 06.10. nachweislich ein Wort erfunden. AUS, bis jede
+# Ergänzung von der lokalen Hörprobe (hear) bestätigt wird. Grundsatz: lieber kein Untertitel als ein falscher.
+CAPTION_ADDS = False
+
+
 def apply_caption_adds(words_out, adds, total):
     """Gesprochenes ohne Untertitel (von der Abnahme gehört) nachtragen – nur in echten Lücken (dort steht noch nichts),
     Wörter gleichmäßig über die Lücke verteilt, höchstens 8 Wörter je Stelle."""
     out, done = list(words_out), []
+    if not CAPTION_ADDS:  # Regel 101: vorerst nichts einsetzen, nur festhalten (siehe CAPTION_ADDS)
+        if adds:
+            STATS.setdefault("ergaenzung_nicht_eingesetzt", []).extend(str(a.get("text", ""))[:60] for a in adds[:8])
+        return out, done
     for a in adds or []:
         words = [w for w in str(a.get("text", "")).split() if norm(w) and norm(w) not in FILLER][:8]
         try:
@@ -2745,6 +2755,21 @@ def apply_caption_adds(words_out, adds, total):
     return out, done
 
 
+FUNKTIONSWOERTER = set("der die das den dem des ein eine einen einem einer eines kein keine keinen mein dein sein ihr im in am "
+                       "an zum zur vom von zu bei mit auf aus und oder ist sind war hat haben wird".split())
+
+
+def _schreibvariante(a, b):
+    """b ist nur eine andere SCHREIBWEISE von a (Verhörer/Tippfehler desselben Worts) – kein anderes Wort."""
+    if a == b:  # nur Groß-/Kleinschreibung oder Satzzeichen
+        return True
+    if a in FUNKTIONSWOERTER or b in FUNKTIONSWOERTER:  # Artikel & Co. zu ändern hieße Grammatik „verbessern“
+        return False
+    if min(len(a), len(b)) <= 3:  # bei Kurzwörtern macht ein einziger Buchstabe ein anderes Wort (ist/isst)
+        return False
+    return difflib.SequenceMatcher(a=a, b=b).ratio() >= 0.5
+
+
 def apply_caption_fixes(words_out, fixes):
     """Korrekturen aus der Abnahme einsetzen: Die falschen Wörter müssen genau so (±2,5 s) im Untertitel stehen; die
     richtigen Wörter übernehmen deren Zeitspanne. Vorsichtig: nur kleine, ähnliche Korrekturen – nie ganze Sätze umschreiben."""
@@ -2762,8 +2787,14 @@ def apply_caption_fixes(words_out, fixes):
         if (dw or dr) and not same_digits:
             STATS.setdefault("zahl_korrektur_abgelehnt", []).append(f"{f.get('falsch')} → {f.get('richtig')}"[:80])
             continue
-        if not wrong or not right or len(wrong) > 5 or len(right) > len(wrong) + 2 or (not same_digits and
-                difflib.SequenceMatcher(a=" ".join(wrong), b=norm(" ".join(right))).ratio() < 0.35):
+        # Regel 101 (Testlauf 06.10.: Abnahme schrieb „Richtig lecker.“ – gesprochen wird „Mhh, lecker“): Die Abnahme darf
+        # im Untertitel nur die SCHREIBWEISE eines vorhandenen Worts berichtigen (Baglet → Baguelette, Bürger → Burger).
+        # Keine Wörter dazu oder weg, keine anderen Wörter, keine Grammatik „verbessern“ (der/das/dem bleiben, wie gesagt).
+        rn = [norm(x) for x in right if norm(x)]
+        if not wrong or not rn or len(wrong) > 5:
+            continue
+        if not same_digits and (len(rn) != len(wrong) or not all(_schreibvariante(a, b) for a, b in zip(wrong, rn))):
+            STATS.setdefault("korrektur_abgelehnt", []).append(f"{f.get('falsch')} → {f.get('richtig')}"[:80])
             continue
         t = float(f.get("sek", -99))
         for k in range(len(out) - len(wrong) + 1):

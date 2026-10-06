@@ -12,7 +12,7 @@ import mlx_whisper
 HERE = os.path.dirname(os.path.abspath(__file__))
 MASCHINE = os.path.join(HERE, "..", "..", "schnitt-maschine")
 PY = os.path.join(MASCHINE, "venv", "bin", "python")
-EM = "/Volumes/PortableSSD/exklusiv marketing "
+EM = "/Volumes/PortableSSD/novus media/kunden-rohmaterial"
 MAT = os.path.join(HERE, "..", "..", "material", "vorher-nachher")
 FAELLE = [  # Eingangsordner liegen als Verknüpfungen auf die Rohclips in schnitt-maschine/test/
     {"name": "cheesecake_neue_cancake", "art": "ordner", "eingang": "test/montage1/eingang",

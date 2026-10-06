@@ -443,7 +443,13 @@ STORY_RULES = (
     "8) KEINE HALBEN SACHEN (Nutzer 06.10.: „er fängt einen Satz an und dann wird er einfach weggeschnitten“): Ein Satz, der "
     "angefangen, aber nicht zu Ende gesprochen wird, fliegt GANZ raus – nie den Anfang stehen lassen. Ebenso Halbsätze, die "
     "etwas ankündigen, das danach nicht kommt oder im Bild nicht zu sehen ist („und wenn das Brot fertig ist …“, danach geht es "
-    "um Käse): ganz weglassen. Jeder Satz, der bleibt, muss für sich vollständig sein und zum nächsten passen.")
+    "um Käse): ganz weglassen. Jeder Satz, der bleibt, muss für sich vollständig sein und zum nächsten passen. "
+    "9) PANNEN GEHÖREN NIE INS VIDEO (Inhaber 06.10.: „‚das Fleisch ist verbrannt‘ darf man nicht hören – egal ob Clean, Pro oder "
+    "Premium“): alles, was der Sprecher über ein Missgeschick, einen Fehler oder seine eigene Unsicherheit sagt („das ist "
+    "vielleicht verbrannt“, „warte“, „scheiße“, „wie heißt das?“, „hab ich vergessen“, „nee, anders“), fliegt KOMPLETT raus – "
+    "auch als Halbsatz oder Nebensatz. Enthält ein sonst nützlicher Satz so einen Teil („wir holen es runter, dass es nicht "
+    "verbrannt ist“), den ganzen Satz weglassen, wenn sich der Teil nicht sauber abtrennen lässt. Ein Werbevideo zeigt, wie es "
+    "gelingt, nicht was schiefging.")
 STORY_EXAMPLES = (
     "Beispiele (| trennt Sätze): "
     "A) „Nehmt ihr dann den? | Ja. | Okay. | Hallo. | Hallo, ich hab gehört … | Nochmal von vorne. | Hallo! Wollt ihr einen "
@@ -991,7 +997,13 @@ def keep_ranges(words, safe=False, extra_drop=frozenset()):
     # Anfang (0,8 s) und Ende (0,5 s) der Strecke bleiben – so bleibt die Handlung sichtbar (Nutzer zeigt Kauen kaum).
     # Unverständliches Gemurmel (Kauen, Nuscheln – ohne Untertitel) zählt dabei wie Stille: sonst bleiben 10 s „mhm“ stehen
     clear = [w for w in kept if not w.get("unclear")]
-    long_gaps = [(a["e"] + 0.8, b["s"] - 0.5) for a, b in zip(clear, clear[1:]) if b["s"] - a["e"] > 2.4]
+    # Regel 107 (Inhaber 06.10.: „er sagt ‚jetzt kommt Soße auf den Deckel‘ und dann Cut – man sieht gar nicht, wie er es macht“):
+    # In Zubereitungs-/Anleitungs-Videos passiert die Handlung NACH der Ansage. Dort bleibt mehr von der wortlosen Strecke
+    # stehen (1,8 s statt 0,8 s) – Kameraschwenks darin sind an dieser Stelle schon herausgeschnitten (Regel 96/97).
+    _fmt = ((PLAN or {}).get("format") or (STATS.get("story_format") or {}).get("format") or "").lower()
+    nach = 1.8 if re.search(r"zubereit|anleitung|tutorial|rezept|behind|so wird|so entsteht", _fmt) else 0.8
+    long_gaps = [(a["e"] + nach, b["s"] - 0.5) for a, b in zip(clear, clear[1:]) if b["s"] - a["e"] > nach + 1.6]
+    STATS["handlung_nach_ansage_s"] = nach
     if long_gaps:
         out = [r for r in subtract(out, long_gaps) if r[1] - r[0] > 0.08]
         kept = [w for w in kept if not any(a <= w["s"] and w["e"] <= b for a, b in long_gaps)]  # weggeraffte Wörter
@@ -2875,7 +2887,10 @@ def gemini_fix_story(m, kept, problems):
     probs = "\n".join(f"- bei {p.get('sek', 0):.0f} s ({p.get('art')}): {p.get('was')}" for p in problems)
     res = gemini(
         CUTTER + "Die Abnahme des fertigen Videos hat Schnittfehler gefunden. Korrigiere die Satzauswahl so, dass genau diese "
-        "Fehler behoben sind – sonst nichts ändern. + = Satz ist im Video (mit Sekunde im fertigen Video), − = rausgeschnitten. "
+        "Fehler behoben sind – sonst nichts ändern. Bemängelt die Abnahme einen Pannen-Satz, Halbsatz oder eine Zwischenbemerkung "
+        "(„plötzlich heißt es ‚das Fleisch verbrannt‘“), dann diesen Satz ENTFERNEN – niemals durch mehr Drumherum "
+        "„vervollständigen“ (Test 06.10.: der Nachschnitt nahm die ganze Pannen-Passage dazu, das Video wurde länger und schlechter). "
+        "+ = Satz ist im Video (mit Sekunde im fertigen Video), − = rausgeschnitten. "
         + STORY_RULES + " Antworte mit den Nummern ALLER Sätze, die ins korrigierte Video gehören (in Reihenfolge).",
         f"Befunde der Abnahme:\n{probs}\n\nSätze:\n" + "\n".join(lines),
         {"type": "object", "properties": {"keep": {"type": "array", "items": {"type": "integer"}}, "warum": {"type": "string"}},

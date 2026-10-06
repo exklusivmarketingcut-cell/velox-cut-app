@@ -287,6 +287,9 @@ export default function Studio({ credits, initialJobs }: { credits: number; init
           </div>
         ) : null}
         {tab === 'upload' ? (
+          <p className="note" style={{ margin: '-4px 0 0' }}>📁 <b>Ein Ordner = ein Video.</b> Lade pro Ordner bitte nur das Rohmaterial für <b>ein</b> Video hoch. Für mehrere Videos: je Video einen eigenen Ordner.</p>
+        ) : null}
+        {tab === 'upload' ? (
           <div className="row" style={{ gap: 8, marginTop: -6 }}>
             <button type="button" className="btn" style={{ padding: '6px 12px', fontSize: 13 }} onClick={() => input.current?.click()}>Dateien wählen</button>
             <button type="button" className="btn" style={{ padding: '6px 12px', fontSize: 13 }} onClick={() => folderInput.current?.click()}>Ordner wählen</button>
@@ -297,7 +300,7 @@ export default function Studio({ credits, initialJobs }: { credits: number; init
           <label className="f">
             Google-Drive-Link (Video oder ganzer Ordner)
             <input className="inp" value={drive} onChange={(e) => setDrive(e.target.value)} placeholder="https://drive.google.com/drive/folders/…" />
-            <span className="note">In Drive: Rechtsklick → Freigeben → „Jeder mit dem Link“. Bei einem Ordner schneiden wir alle Clips und Bilder darin zu einem Video.</span>
+            <span className="note">In Drive: Rechtsklick → Freigeben → „Jeder mit dem Link“. Bei einem Ordner schneiden wir alle Clips und Bilder darin zu einem Video – bitte nur das Rohmaterial für ein Video in den Ordner legen.</span>
           </label>
         )}
 
@@ -333,7 +336,7 @@ export default function Studio({ credits, initialJobs }: { credits: number; init
               {Array.from({ length: MAX_CLIPS_PER_JOB }, (_, i) => <option key={i} value={i + 1}>{i + 1}</option>)}
             </select>
           </label>
-          <p className="note" style={{ flex: 1, margin: 0 }}>Kurze Videos (unter 2½ Min.) werden zu einem fertigen Clip geschnitten. Bei einem Ordner mit mehreren Themen gibt es je Thema ein eigenes Video (höchstens so viele wie gewählt). Zu viel gebuchte Credits bekommst du automatisch zurück.</p>
+          <p className="note" style={{ flex: 1, margin: 0 }}>Kurze Videos (unter 2½ Min.) werden zu einem fertigen Clip geschnitten. Ein Ordner wird zu einem Video – lade pro Ordner nur das Rohmaterial für ein Video hoch. Zu viel gebuchte Credits bekommst du automatisch zurück.</p>
         </div>
         <p className="f" style={{ marginBottom: -6 }}>Akzentfarbe</p>
         <div className="row" aria-label="Akzentfarbe">

@@ -991,6 +991,24 @@ def keep_ranges(words, safe=False, extra_drop=frozenset()):
                 cur = b - PAUSE_SIDE
         out.append([cur, e])
     out = [r for r in out if r[1] - r[0] > 0.08]
+    # Regel 113 (Fehlersuche 06.10., „Ja“ des Kameramanns im Angebote-Video): Ein gestrichenes Wort, das frei zwischen zwei
+    # Pausen steht (Zwischenruf, „Ja.“, „Danke.“, „So?“), wurde zwar gestrichen, blieb aber HÖRBAR – das Stück war kürzer
+    # als die Mindest-Schnittlänge bzw. wurde mit den Nachbarn wieder verbunden. Jetzt wird es wirklich herausgeschnitten,
+    # mit Schutzabstand zu den behaltenen Nachbarwörtern (Wiederholungen mitten im Satz bleiben davon unberührt).
+    ks = sorted((w["s"], w["e"]) for w in kept)
+    zw = []
+    for a, b in dropped:
+        prev_e = max((e for s_, e in ks if e <= a + 0.1), default=0.0)
+        next_s = min((s_ for s_, e in ks if s_ >= b - 0.1), default=DUR)
+        if any(a < (s_ + e) / 2 < b for s_, e in ks):
+            continue
+        c0, c1 = max(a, prev_e + 0.10), min(b, next_s - 0.08)
+        if c1 - c0 >= 0.15 and c1 - c0 >= 0.8 * (b - a):
+            zw.append((c0, c1))
+    if zw:
+        mit_wort = lambda r: any(r[0] - 0.05 <= s_ < r[1] for s_, e in ks)
+        out = [r for r in subtract(out, zw) if r[1] - r[0] > 0.08 and (r[1] - r[0] >= 0.3 or mit_wort(r))]
+        STATS["zwischenrufe_geschnitten"] = len(zw)
     if not safe:
         out = subtract(out, hidden_cuts(kept))
     pan_cuts = [(a, b) for a, b in pan_cuts if b - a >= 0.6]
@@ -1130,9 +1148,10 @@ def plan_crops(ranges, zs=1.0, shift=None, pad=None):
     moving = bool(found) and max(i["c"][0] for i in found) - min(i["c"][0] for i in found) > 0.25
     STATS.update(closeup=closeup, faces=round(med([i["n"] for i in found]), 1) if found else 0)
     FACES_OUT.clear()
-    crops, prev, zc = [], None, 1.0
+    crops, prev, zc, t_out = [], None, 1.0, 0.0
     for k, (s, e) in enumerate(ranges):
         gap = s - ranges[k - 1][1] if k else 0.0
+        t_a, t_out = t_out, t_out + olen(s, e)
         if viral:
             # Schnitt-Zooms etwas dezenter als früher – die großen Punches sitzen jetzt gezielt auf den Pointen (zoom_punches)
             zoom = [1.0, 1.1, 1.04, 1.14][k % 4] if closeup else [1.0, 1.06][k % 2]
@@ -1159,7 +1178,7 @@ def plan_crops(ranges, zs=1.0, shift=None, pad=None):
         for bx, by, bh in (infos[k]["boxes"] if infos[k] else []):
             cy, fh = (by * H - y) / ch * 1920, bh * H / ch * 1920
             if 0 < cy < 1920:
-                FACES_OUT.append((cy - fh * 0.75, cy + fh * 0.85, (bx * W - x) / cw * 1080))  # oben, unten, Mitte x
+                FACES_OUT.append((cy - fh * 0.75, cy + fh * 0.85, (bx * W - x) / cw * 1080, t_a, t_out))  # oben, unten, Mitte x, von–bis (Clip-Zeit)
         crops.append({"w": int(cw) // 2 * 2, "h": int(ch) // 2 * 2, "x": int(x) // 2 * 2, "y": int(y) // 2 * 2,
                       "fx": x, "fy": y, "fw": cw, "fh": ch, "zoom": zoom, "c": c})
     return crops
@@ -1432,7 +1451,14 @@ CAP = {
     "serif":   dict(font="Playfair Display", size=158, bold=1, ital=1, bord=0, shad=5, back="&H80000000", n=4, chars=16, case=None, pop=False, blur=0, file="PlayfairDisplay-italic-700.ttf", k=0.707),
 }
 CS = CAP.get(A.caption, CAP["rise"])
-CAP_MAXW = 840   # max. Zeilenbreite (px): links/rechts frei für die TikTok-/Reels-Knöpfe
+# Regel 112 (Nutzer 06.10., ausgemessen an seinen Bildschirmfotos von TikTok und Instagram, umgerechnet auf 1080×1920):
+# TikTok schneidet auf hohen Handys links/rechts je ~48 px ab, Instagram ~97 px. Oben liegen Suchleiste/Reiter (TikTok bis
+# ~230, Instagram bis ~200), rechts die Knopfspalte (TikTok ab x≈900 und y≈780, Instagram ab x≈880 und y≈910), unten
+# Profil/Beschreibung (Instagram ab ~1406, TikTok ab ~1675). Alles, was wir einblenden, bleibt in diesem Rahmen.
+SAFE_T, SAFE_B, SAFE_L, SAFE_R = 240, 1400, 110, 970
+SAFE_BTN_Y, SAFE_BTN_X = 770, 870   # ab dieser Höhe endet der freie Bereich rechts schon vor der Knopfspalte
+CAP_MAXW = 660   # max. Zeilenbreite (px): mittig 210–870 → endet vor der Knopfspalte von TikTok/Reels
+LAY = {}         # Platzvergabe des aktuellen Clips (plan_layout): cy, hy, title, lx, top, rects
 CAPFS = [CS["size"]]  # Schriftgröße dieses Videos (caption_groups passt sie an)
 _CAPFONT = []
 
@@ -1470,35 +1496,129 @@ def fmt_word(t):
     return re.sub(r"[.,;:]+$", "", t) if CS["case"] else t
 
 
-def face_box():
+def face_box(t0=None, t1=None):
     """Regel 86 (Kollege des Nutzers, 05.10.): über das Gesicht kommt NIE etwas – weder Untertitel, Emojis, Titel, Logo,
     Sticker noch Motion Graphics. Bereich, in dem das Gesicht im fertigen Bild vorkommt – über den ganzen Clip (10.–90.
     Perzentil, auch wenn sich die Person bewegt) plus Rand. (oben, unten, links, rechts) oder None."""
-    if not FACES_OUT:
+    # t0/t1 (Regel 112): nur die Gesichter, die in diesem Zeitfenster des fertigen Clips zu sehen sind – für alles, was nur
+    # kurz eingeblendet wird (Titel 0–3,4 s, Emojis). Sonst sperrt bei mehreren Personen/Einstellungen das ganze Bild.
+    fo = FACES_OUT if t0 is None else [f for f in FACES_OUT if len(f) < 5 or (f[3] < t1 and f[4] > t0)]
+    if not fo:
         return None
     q = lambda v, p: sorted(v)[min(len(v) - 1, int(p * len(v)))]
-    ft, fb = q([f[0] for f in FACES_OUT], 0.1) - 20, q([f[1] for f in FACES_OUT], 0.9) + 20
-    xs = [f[2] for f in FACES_OUT if len(f) > 2] or [540]
+    if t0 is not None:  # kurzes Fenster: jedes Gesicht zählt ganz (kein Abschneiden von Ausreißern)
+        q = lambda v, p: min(v) if p < 0.5 else max(v)
+    ft, fb = q([f[0] for f in fo], 0.1) - 20, q([f[1] for f in fo], 0.9) + 20
+    xs = [f[2] for f in fo if len(f) > 2] or [540]
     fw = (fb - ft) * 0.8
     return max(0, ft), min(1920, fb), max(0, q(xs, 0.1) - fw / 2 - 30), min(1080, q(xs, 0.9) + fw / 2 + 30)
 
 
-def hits_face(x0, y0, x1, y1):
-    fbx = face_box()
+def hits_face(x0, y0, x1, y1, t0=None, t1=None):
+    fbx = face_box(t0, t1)
     return bool(fbx) and x0 < fbx[3] and x1 > fbx[2] and y0 < fbx[1] and y1 > fbx[0]
 
 
+def emoji_gap():
+    """Mindestabstand Emoji-Mitte ↔ Untertitel-Mitte: halbe echte Schrifthöhe + halbes Emoji + Luft."""
+    return int(CAPFS[0] * CS["k"] * 0.62) + 95
+
+
+def _cut(a0, a1, b0, b1):
+    return a0 < b1 and a1 > b0
+
+
+def plan_layout(card=None, logo=False):
+    """Regel 112: EINE Platzvergabe für alles, was eingeblendet wird. Jedes Element bekommt seinen eigenen Platz:
+    Logo oben links, Titel oben, Untertitel im unteren Bereich, Emoji direkt unter (sonst über) den Untertiteln.
+    Nichts liegt übereinander, nichts über dem Gesicht, nichts unter den Knöpfen/Leisten von TikTok und Instagram.
+    card = (Breite, Höhe) des Titels oder None. Passt der Titel nirgends hin, entfällt er (lieber kein Titel als einer
+    über dem Gesicht oder auf den Untertiteln). Ergebnis in LAY."""
+    half = CAPFS[0] * 0.6
+    fbx = face_box()
+    lx = SAFE_L
+    if logo and hits_face(lx, SAFE_T, lx + LOGO_PX, SAFE_T + LOGO_PX):  # Regel 86: Logo nach rechts, wenn links das Gesicht ist
+        lx = SAFE_R - LOGO_PX
+        if hits_face(lx, SAFE_T, lx + LOGO_PX, SAFE_T + LOGO_PX):  # auch rechts das Gesicht → Logo entfällt in diesem Video
+            logo = False
+            STATS["logo_weggelassen"] = True
+            log("Logo weggelassen – oben ist in beiden Ecken das Gesicht (Regel 112)")
+    top = SAFE_T + (LOGO_PX + 20 if logo else 0)
+    lo, hi = top + half, SAFE_B - half
+    std = min(1250, SAFE_B - 85 - emoji_gap())  # so hoch, dass ein Emoji darunter noch über der Beschreibung bleibt
+    note = None
+    if not fbx or fbx[1] < std - half or fbx[0] > std + half:
+        cy = std
+    elif fbx[1] + 40 + half <= hi:      # unter dem Kinn ist Platz
+        cy = fbx[1] + 40 + half
+    elif fbx[1] + 10 + half <= hi:
+        cy = hi
+    elif fbx[0] - half - 60 >= lo:      # sonst über den Kopf
+        cy = fbx[0] - half - 60
+    elif fbx[0] - half - 15 >= lo:
+        cy = lo
+    else:                               # Gesicht füllt den ganzen freien Bereich → ganz unten (Kinn/Hals statt Augen)
+        cy, note = hi, "kein freier Platz neben dem Gesicht – Untertitel ganz unten"
+    hy, title = top, bool(card)
+    if card:
+        rand = 30 if not PREM else 0   # die Titel-Karte hat rundum 30 px weichen Schatten – es zählt die sichtbare Karte
+        cw, ch = card[0] - 2 * rand, card[1] - 2 * rand
+        x0, x1 = (1080 - cw) / 2, (1080 + cw) / 2
+        tbx = face_box(0.0, 3.4) if FACES_OUT and len(FACES_OUT[0]) >= 5 else fbx  # der Titel steht nur die ersten 3,4 s
+        free = lambda y: (not tbx or not (x0 < tbx[3] and x1 > tbx[2] and _cut(y, y + ch, tbx[0], tbx[1]))) \
+            and not _cut(y, y + ch, cy - half - 15, cy + half + 15) and top <= y and y + ch <= SAFE_B
+        cand = [top]
+        if tbx:
+            cand += [tbx[0] - ch - 20, tbx[1] + 21]
+        cand += [cy - half - 20 - ch, cy + half + 20]
+        ok = [y for y in cand if free(y)]
+        if ok:
+            hy = int(ok[0]) - rand
+        elif fbx and cy < fbx[0] and top + ch + 15 + half <= fbx[0] - half - 15:
+            hy, cy = top - rand, top + ch + 15 + half   # Untertitel stehen über dem Kopf: Titel ganz oben, Untertitel direkt darunter
+        else:
+            title = False
+            STATS["titel_weggelassen"] = True
+            log("Titel weggelassen – kein Platz, ohne Gesicht oder Untertitel zu verdecken (Regel 112)")
+    if note:
+        STATS["layout_hinweis"] = note
+        log(f"Platzvergabe: {note}")
+    LAY.clear()
+    LAY.update(cy=int(cy), hy=int(hy), title=title, lx=int(lx), top=int(top), logo=bool(logo),
+               trect=(x0, hy + rand, x1, hy + rand + ch) if card and title else None)
+    STATS["layout"] = dict(untertitel_y=int(cy), titel_y=int(hy) if title else None, gesicht=[int(v) for v in fbx] if fbx else None)
+    return LAY
+
+
+def emoji_spot(t0, t1):
+    """Platz für ein Emoji (Mitte x, y) oder None: unter den Untertiteln, sonst darüber, sonst neben dem Gesicht –
+    nie auf Untertitel, Titel (solange er steht), Logo oder Gesicht und immer im freien Rahmen der Apps."""
+    cy, gap, r = caption_y(), emoji_gap(), EMOJI_PX // 2 + 10
+    fbx = face_box(t0, t1)
+    cand = [(540, cy + gap), (540, cy - gap)]
+    if fbx:
+        my = (fbx[0] + fbx[1]) / 2
+        cand += [(fbx[3] + r + 20, my), (fbx[2] - r - 20, my)]
+    for x, y in cand:
+        xr = SAFE_BTN_X if y + r > SAFE_BTN_Y else SAFE_R
+        if x - r < SAFE_L or x + r > xr or y - r < LAY["top"] or y + r > SAFE_B or abs(y - cy) < gap:
+            continue
+        if hits_face(x - r, y - r, x + r, y + r, t0, t1):
+            continue
+        tr = LAY.get("trect")
+        if tr and t0 < 3.4 and _cut(x - r, x + r, tr[0], tr[2]) and _cut(y - r, y + r, tr[1] - 10, tr[3] + 10):
+            continue
+        if LAY.get("logo") and _cut(x - r, x + r, LAY["lx"], LAY["lx"] + LOGO_PX) and _cut(y - r, y + r, SAFE_T, SAFE_T + LOGO_PX):
+            continue
+        return int(x), int(y)
+    return None
+
+
 def caption_y():
-    """Untertitel standardmäßig im unteren Drittel – liegt dort das Gesicht, darüber bzw. darunter ausweichen."""
-    y, half = 1390, CAPFS[0] * 0.6
-    if not FACES_OUT:
-        return y
-    top, bot = face_box()[:2]
-    if bot < y - half or top > y + half:
-        return y
-    if bot + half + 40 < 1740:  # unter dem Kinn ist Platz
-        return int(bot + half + 40)
-    return int(max(330, top - half - 60))  # sonst über den Kopf
+    """Mitte der Untertitel-Zeile – kommt aus der gemeinsamen Platzvergabe (plan_layout, Regel 112)."""
+    if "cy" not in LAY:
+        plan_layout(None, bool(A.logo and os.path.exists(A.logo)))
+    return LAY["cy"]
 
 
 def cap_gap(fs):
@@ -1942,7 +2062,11 @@ def align(ranges, kept, heard):
         pos = next(((o + max(0.0, w["s"] - s) / SPEED[0], o + (min(e, w["e"]) - s) / SPEED[0]) for s, e, o in offs
                     if s - 0.05 <= w["s"] < e), None)
         est.append(pos)
-    stem = lambda x: norm(x)[:5]
+    # Zahlwort = Ziffer (Fehlersuche 06.10.: „fünf/drei/zwei“ im Original, „5/3/2“ in der Hörprobe galten als „nicht gehört“
+    # und lösten ohne Grund den sicheren Neuschnitt aus)
+    zahl = {norm(k): v for k, v in dict(zwei="2", drei="3", vier="4", fünf="5", sechs="6", sieben="7", acht="8", neun="9", zehn="10",
+                                         elf="11", zwölf="12", zwanzig="20", dreißig="30", vierzig="40", fünfzig="50", hundert="100").items()}
+    stem = lambda x: zahl.get(norm(x), norm(x))[:5]
     want = [stem(w["t"].split("-")[-1] or w["t"]) for w in kept]
     got = [stem(h["t"].split("-")[-1] or h["t"]) for h in heard]
     sm = difflib.SequenceMatcher(a=want, b=got, autojunk=False)
@@ -2212,8 +2336,8 @@ def viral_sounds(ranges, fx):
 
 
 EMOJI_PX = 140   # Emoji-Größe im fertigen Bild (Quelle 160 px → wird nur verkleinert, bleibt scharf)
-HOOK_Y = 250     # Oberkante der Titel-Karte (unter der Statusleiste/TikTok-Suche)
-LOGO_PX, LOGO_Y = 190, 120  # Kunden-Logo oben links (Breite, Oberkante)
+HOOK_Y = SAFE_T  # Oberkante der Titel-Karte (unter der Statusleiste/TikTok-Suche)
+LOGO_PX, LOGO_Y = 190, SAFE_T  # Kunden-Logo oben links (Breite, Oberkante) – unter den Leisten der Apps (Regel 112)
 APPLE_EMOJI = "/System/Library/Fonts/Apple Color Emoji.ttc"
 
 
@@ -2232,7 +2356,7 @@ def hook_card(text, path):
     if not words:
         return None
     font = ImageFont.truetype(os.path.join(FONTS, "Montserrat-Bold.otf"), 54 if calm else 64)
-    maxw = 800 if calm else 860
+    maxw = 700 if calm else 730  # Karte samt Rand ≤ 820 px → bleibt im sichtbaren Bereich von Instagram (Regel 112)
     one = " ".join(words)
     if font.getlength(one) + (82 if emo else 0) <= maxw:
         lines = [one]
@@ -2329,8 +2453,19 @@ def premium_events(fx, words_out, title):
     – an den stärksten Momenten ein großes Schlüsselwort mit 3D-Tiefe („Kinetic Typography“, 1,1 s), darüber klein die
       Wörter davor (z. B. „für diesen“ / SCHMARRN);
     – Zahlen (Preise, Bewertungen, Mengen) zählen hoch („Zähler“, 0,75 s) und bleiben kurz stehen."""
-    ev, cy = [], caption_y()
+    ev = []
     HIDE.clear()
+    clean_title = re.sub(r"[^\w\s&?!.,:'’\-€%/+]", "", title or "").strip().upper()  # „/“ bleibt: „10/10“
+    lines, fs_t = [], 0
+    if clean_title:
+        ws = clean_title.split()
+        lines = [clean_title]
+        if len(clean_title) > 16 and len(ws) > 1:
+            best = min(range(1, len(ws)), key=lambda k: max(len(" ".join(ws[:k])), len(" ".join(ws[k:]))))
+            lines = [" ".join(ws[:best]), " ".join(ws[best:])]
+        fs_t = min(fit_fs(max(lines, key=len), 800, 140), 140)
+    plan_layout((820, int(len(lines) * fs_t * 1.08) + 30) if lines else None, bool(A.logo and os.path.exists(A.logo)))
+    cy = caption_y()
     py = cy - 390 if cy > 900 else cy + 390
     if FACES_OUT:  # Grafik nie über ein Gesicht: unter das Kinn, sonst über den Kopf, sonst Standard
         ft, fb = face_box()[:2]
@@ -2338,17 +2473,10 @@ def premium_events(fx, words_out, title):
             py = int(min(cy - 200, fb + 150))
         elif ft - 200 > 560:
             py = int(ft - 150)
-    clean_title = re.sub(r"[^\w\s&?!.,:'’\-€%/+]", "", title or "").strip().upper()  # „/“ bleibt: „10/10“
-    if clean_title:
-        ws = clean_title.split()
-        lines = [clean_title]
-        if len(clean_title) > 16 and len(ws) > 1:
-            best = min(range(1, len(ws)), key=lambda k: max(len(" ".join(ws[:k])), len(" ".join(ws[k:]))))
-            lines = [" ".join(ws[:best]), " ".join(ws[best:])]
-        fs = min(fit_fs(max(lines, key=len), 940, 140), 140)
+    if lines and LAY["title"]:
         for li, line in enumerate(lines):
-            ty = 330 + (LOGO_PX + 10 if A.logo and os.path.exists(A.logo) else 0)
-            ev += text3d(line, 540, ty + li * int(fs * 1.08), 0.05 + li * 0.08, 3.0, fs, color=WHITE if li == 0 else ACC)
+            ev += text3d(line, 540, LAY["hy"] + 15 + int(fs_t * 0.54) + li * int(fs_t * 1.08), 0.05 + li * 0.08, 3.0, fs_t,
+                         color=WHITE if li == 0 else ACC)
     for f in fx:
         t0, txt = f["t"], (f.get("text") or "").strip().upper()
         if not txt or t0 < 3.2:  # nicht mit dem Titel überlappen
@@ -2360,7 +2488,7 @@ def premium_events(fx, words_out, title):
             dec = "," in raw
             start = val - 15 if 1900 <= val <= 2100 and not dec else 0.0
             pre, post = txt[:m.start()].strip(), txt[m.end():].strip()
-            fs = fit_fs(f"{pre} {raw} {post}".strip(), 920, 230)
+            fs = fit_fs(f"{pre} {raw} {post}".strip(), 740, 230)
             n = 22
             for k in range(n + 1):
                 p = k / n
@@ -2378,7 +2506,7 @@ def premium_events(fx, words_out, title):
             if len(txt) > 14 and len(ws) > 1:
                 cut_k = min(range(1, len(ws)), key=lambda k: max(len(" ".join(ws[:k])), len(" ".join(ws[k:]))))
                 rows = [" ".join(ws[:cut_k]), " ".join(ws[cut_k:])]
-            fs = min(fit_fs(r, 920, 150) for r in rows)
+            fs = min(fit_fs(r, 740, 150) for r in rows)
             for ri, row in enumerate(rows):
                 ev += text3d(row, 540, py + int((ri - (len(rows) - 1) / 2) * fs * 1.02), t0 + ri * 0.06, t0 + 1.25, fs, color=ACC)
             HIDE.append((t0 - 0.05, t0 + 1.25))
@@ -2496,7 +2624,7 @@ def sticker_spot(sw, sh):
     else:
         ft, fb, fl, fr = 560, 1120, 300, 780
     cap, ch = caption_y(), CAPFS[0] * 0.75 + 40
-    top_lim, bot_lim = 430, 1820
+    top_lim, bot_lim = max(430, int(LAY["trect"][3]) + 20 if LAY.get("trect") else 0), SAFE_B
 
     def free(x0, x1, y0, y1):  # Untertitel-Band aus dem Bereich herausnehmen → größerer Rest
         y0, y1 = max(y0, top_lim), min(y1, bot_lim)
@@ -2506,7 +2634,7 @@ def sticker_spot(sw, sh):
         return x0, x1, y0, y1
 
     best = None
-    for x0, x1, y0, y1 in (free(30, fl, 0, 1920), free(fr, 1050, 0, 1920), free(40, 1040, 0, ft - 20), free(40, 1040, fb + 20, 1920)):
+    for x0, x1, y0, y1 in (free(SAFE_L, fl, 0, 1920), free(fr, SAFE_BTN_X, 0, 1920), free(SAFE_L, SAFE_BTN_X, 0, ft - 20), free(SAFE_L, SAFE_BTN_X, fb + 20, 1920)):
         rw, rh = x1 - x0, y1 - y0
         if rw < 140 or rh < 140:
             continue
@@ -2530,6 +2658,14 @@ def burn(idx, cut, words_out, title, ranges=None, kept=None):
         FX[idx] = gemini_effects(kept, OUT_TIME)
     pfx = [{**f, "t": OUT_TIME[f["i"]]} for f in FX.get(idx, []) if f["i"] in OUT_TIME] if PREM else []
     caption_groups(words_out)  # legt die Schriftgröße fest – Grafiken/Emojis richten sich nach der Untertitel-Zeile
+    logo = A.logo if A.logo and os.path.exists(A.logo) else None
+    card = hook_card(title, os.path.join(A.out, f"titel-{idx}.png")) if title and not PREM else None
+    LAY.clear()
+    if not PREM:  # Regel 112: erst die Plätze vergeben, dann zeichnen (Premium vergibt sie in premium_events mit seinem 3D-Titel)
+        from PIL import Image as _Im
+        plan_layout(_Im.open(card).size if card else None, bool(logo))
+        if card and not LAY["title"]:
+            card = None
     pev = premium_events(pfx, words_out, title) if PREM else []
     if ranges and kept and idx not in QUIZ:
         QUIZ[idx] = gemini_quiz(kept, OUT_TIME)
@@ -2561,21 +2697,9 @@ def burn(idx, cut, words_out, title, ranges=None, kept=None):
         STATS["broll"] = [round(u, 1) for u in used]
     fc.append(f"[{base}]{vf}[vb]")
     vin = "vb"
-    card = hook_card(title, os.path.join(A.out, f"titel-{idx}.png")) if title and not PREM else None
-    logo = A.logo if A.logo and os.path.exists(A.logo) else None
-    hy = HOOK_Y + (LOGO_PX + 20 if logo else 0)  # mit Logo rutscht der Titel darunter
-    lx = 48
-    if logo and hits_face(lx, LOGO_Y, lx + LOGO_PX, LOGO_Y + LOGO_PX):  # Regel 86: Logo nach rechts, wenn links das Gesicht ist
-        lx = 1080 - 48 - LOGO_PX
-    if card:  # Regel 86: Titel-Karte nicht übers Gesicht – darüber oder darunter ausweichen
-        from PIL import Image as _Im
-        cw_, ch_ = _Im.open(card).size
-        if hits_face((1080 - cw_) / 2, hy, (1080 + cw_) / 2, hy + ch_):
-            ft_, fb_ = face_box()[:2]
-            if ft_ - ch_ - 20 >= 90:
-                hy = int(ft_ - ch_ - 20)
-            elif fb_ + 20 + ch_ < caption_y() - CAPFS[0] * 0.6 - 20:
-                hy = int(fb_ + 20)
+    hy, lx = LAY["hy"], LAY["lx"]
+    if logo and not LAY["logo"]:
+        logo = None
     if card:  # Titel oben: Viral gleitet sanft von oben rein, Clean blendet nur ruhig ein; bleibt 3 s
         inputs += ["-loop", "1", "-t", "3.3", "-i", card]
         fc.append(f"[{ni}:v]format=rgba,fade=t=in:st=0:d=0.3:alpha=1,fade=t=out:st=2.9:d=0.4:alpha=1[hc]")
@@ -2613,26 +2737,19 @@ def burn(idx, cut, words_out, title, ranges=None, kept=None):
         fx = [{**f, "t": OUT_TIME[f["i"]]} for f in FX[idx] if f["i"] in OUT_TIME]  # exakte Zeit im fertigen Clip
         snd = viral_sounds(ranges, fx)
         emo = [] if PREM else [f for f in fx if f["emoji"] and os.path.exists(os.path.join(EMOJI_DIR, f"{EMOJIS[f['emoji']]}.png"))]
-        STATS.update(sfx=len(snd), emojis=len(emo), fx=[(round(f["t"], 1), f["emoji"], f["sfx"]) for f in fx])
+        STATS.update(sfx=len(snd), fx=[(round(f["t"], 1), f["emoji"], f["sfx"]) for f in fx])
         # Emojis UNTER den Untertiteln, dezent (140 px), gleiten abwechselnd von links/rechts/unten/oben herein und wieder weg
-        gap = int(CAPFS[0] * 0.55) + 105                           # Mindestabstand Emoji-Mitte ↔ Untertitel-Mitte
-        ey = caption_y() + gap                                     # knapp unter der (immer einzeiligen) Untertitel-Zeile
-        ex = 540
-        # Regel 100 (Testlauf 06.10.: 🎁 lag AUF „Muttertag“): Früher wurde auf 1660 gekappt – seit die Zeile dem Gesicht
-        # nach unten ausweichen kann, drückte das die Emojis auf den Text. Ist unten kein Platz, gilt die Ausweichliste.
-        if ey > 1760 or hits_face(ex - 90, ey - 90, ex + 90, ey + 90):  # Regel 86: über die Untertitel, sonst neben das Gesicht
-            fbx = face_box()
-            cand = [(540, caption_y() - int(CAPFS[0] * 0.55) - 105), (fbx[3] + 100, (fbx[0] + fbx[1]) / 2), (fbx[2] - 100, (fbx[0] + fbx[1]) / 2)]
-            ok = [(x, y) for x, y in cand if 90 <= x <= 990 and 330 <= y <= 1760 and abs(y - caption_y()) >= gap
-                  and not hits_face(x - 90, y - 90, x + 90, y + 90)]
-            if ok:
-                ex, ey = int(ok[0][0]), int(ok[0][1])
-            else:  # nirgends frei → lieber kein Emoji als eines über Gesicht oder Text
-                emo = []
-                STATS["emojis_weggelassen"] = True
+        # Regel 112: jedes Emoji bekommt seinen Platz aus der gemeinsamen Platzvergabe (nie auf Untertitel, Titel, Logo, Gesicht,
+        # nie unter den Knöpfen der Apps). Ist nirgends frei → lieber kein Emoji.
+        spots = {id(f): emoji_spot(f["t"], f["t"] + 1.7) for f in emo}
+        if any(v is None for v in spots.values()):
+            STATS["emojis_weggelassen"] = sum(v is None for v in spots.values())
+        emo = [f for f in emo if spots[id(f)]]
+        STATS["emojis"] = len(emo)
         slide = [("-{a}", ""), ("+{a}", ""), ("", "+{a}"), ("", "-{a}")]
         for k, f in enumerate(emo):
             t0 = f["t"]
+            ex, ey = spots[id(f)]
             inputs += ["-loop", "1", "-t", "1.7", "-i", os.path.join(EMOJI_DIR, f"{EMOJIS[f['emoji']]}.png")]
             fc.append(f"[{ni}:v]format=rgba,scale={EMOJI_PX}:{EMOJI_PX}:flags=lanczos,fade=t=in:st=0:d=0.25:alpha=1,"
                       f"fade=t=out:st=1.35:d=0.35:alpha=1,setpts=PTS+{t0:.3f}/TB[e{k}]")

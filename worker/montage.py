@@ -300,9 +300,16 @@ plans = gemini(
     "0) THEMEN ZUERST: Ordne jeden Clip einem Thema/Video zu (z. B. „Juniorbox-Zubereitung“ ≠ „bester Burger in Mannheim“ "
     "≠ „Angebote unter 10 €“ – andere Aussage, anderer Ort, andere Kleidung/Aufmachung = anderes Video). Eine Geschichte "
     "verwendet NUR Clips aus EINEM Thema (Feld „clips“). Clips eines anderen Themas nie anhängen.\n"
+    "ARBEITSWEISE (so schneidet der Inhaber, 06.10.): Erst JEDEN Clip ansehen. Dann alle Clips eines Themas in der Reihenfolge "
+    "in die Timeline legen, in der gedreht wurde bzw. wie es am meisten Sinn ergibt – die vielen kleinen Clips sind Puzzleteile "
+    "EINES Videos. Ausgangspunkt ist also ALLES; erst danach wird gestrichen, und zwar nur mit Grund: Versprecher, Fehlversuche, "
+    "doppelte Takes, Füllwörter, Leerlauf, Sätze an den Kameramann, Stellen, an denen die Kamera wegschwenkt, und was nicht zum "
+    "Thema passt. Was keinen dieser Gründe hat, bleibt. Aus einem langen Clip (z. B. die ganze Zubereitung am Stück) also nicht "
+    "nur ein paar Sätze herauspicken, sondern ihn durchgehend verwenden und nur das Schlechte herausnehmen.\n"
     "1) SPRECHTEILE = roter Faden: welche Sätze aus welchen Clips in welcher Reihenfolge (Satz-Nummern wie C3.2). Eine klare "
     "Geschichte: Aufhänger am Anfang, Hauptteil, Auflösung/Aufruf am Ende. Vorgespräche, Absprachen, Fehlversuche, doppelte "
-    "Takes (nur den besten/letzten), Verabschiedungen, Nebensächliches weglassen. Clips mit schlechter Qualität meiden. "
+    "Takes (nur den besten/letzten), lange Verabschiedungen, Nebensächliches weglassen (bei Umfragen/Gesprächen darf EIN kurzer "
+    "Abschied – „Dankeschön!“ – „Tschüss!“ – als Schlusspunkt bleiben). Clips mit schlechter Qualität meiden. "
     + ("Gehören die Clips zu VERSCHIEDENEN Themen/Videos, nimm nur die stärkste zusammenhängende Geschichte. " if A.clips <= 1 else
        f"Gehören die Clips zu VERSCHIEDENEN Themen/Videos (z. B. „neue Sorte“ und „Angebote unter 10 €“), baue je Thema eine "
        f"EIGENE Geschichte – höchstens {A.clips}, die stärkste zuerst, kein Satz in zwei Geschichten. Ist alles EIN Thema, nur "
@@ -364,6 +371,24 @@ def build(plan, odir):
         order = [(c, k) for c in talk for k in range(len(c["sents"]))]
     log(f"Plan: {(plan or {}).get('format')} – {len(order)} Sätze, {len((plan or {}).get('broll') or [])} B-Rolls, "
         f"{len((plan or {}).get('bilder') or [])} Bilder")
+    # Regel 103: prüfbar machen, ob aus den Puzzleteilen wirklich EIN ganzes Video wird – je Sprech-Clip des Themas: wie viele
+    # seiner Sätze sind im Plan? (KI-Noten sagen dazu nichts: am 06.10. bekam ein Video ohne Käse/Soße/Belegen Note 9.)
+    thema = set()
+    for x in (plan or {}).get("clips") or []:  # die KI nennt IDs („C4“); zur Sicherheit auch „Clip C4“ oder Objekte verstehen
+        m_id = re.search(r"C\d+", str(x.get("id") if isinstance(x, dict) else x) or "")
+        if m_id:
+            thema.add(m_id.group(0))
+    if not any(c["id"] in thema for c in talk):  # nichts erkannt → wenigstens die Clips messen, aus denen Sätze kommen
+        thema = {c["id"] for c, _ in order}
+        log("  Abdeckung: Themen-Zuordnung der KI nicht lesbar – gemessen werden nur die verwendeten Clips")
+    for c in talk:
+        if c["id"] not in thema or not c.get("sents"):
+            continue
+        n_used = len({k for cc, k in order if cc is c})
+        anteil = n_used / len(c["sents"])
+        log(f"  Abdeckung {c['id']} ({c['dur']:.0f} s): {n_used} von {len(c['sents'])} Sätzen ({anteil:.0%})"
+            + ("  ← WENIG: großer Teil dieses Clips fehlt im Video" if c["dur"] >= 20 and anteil < 0.5 else "")
+            + ("  ← Clip mit Sprache gar nicht verwendet" if n_used == 0 else ""))
 
     # ─────────────────────────────── 5. Sprech-Stellen zu EINER Datei zusammensetzen ───────────────────────────────
     stage("Setzt die Clips zusammen …")

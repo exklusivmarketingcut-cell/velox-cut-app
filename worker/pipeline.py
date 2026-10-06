@@ -412,9 +412,11 @@ STORY_RULES = (
     "raus: Vorgespräch, Absprachen („nehmt ihr dann den?“, „bist du so weit?“, „läuft?“), Fehlstarts. Bei „nochmal von vorne“, "
     "„noch mal“, „cut“ o. Ä. gilt nur der LETZTE Versuch. "
     "2) ENDE, sobald der Inhalt abgeschlossen ist: nach der Auflösung/dem Gewinn plus höchstens EINEM abschließenden Satz. "
-    "Danksagungen und Verabschiedungs-Pingpong („Danke fürs Mitmachen“ – „Gerne“ – „Tschüss“ – „Tschüss“) raus, außer sie sind "
-    "selbst die Pointe; auch „Tschüss“, „Ciao“, „Danke dir“, „Schönen Abend noch“ am Ende raus – das Video endet hart auf der "
-    "Auflösung oder dem Aufruf („kommt vorbei“). Alles danach sowieso raus (Umdrehen zum Kameramann, „okay super, passt?“, Nachgespräch). "
+    "Bei Gesprächen/Umfragen mit einem Gegenüber gehört danach ein KURZER ABSCHIED als Schlusspunkt dazu (Nutzer 06.10.: „bis "
+    "sie Tschüss sagen, ciao und danke – dann ist das Video vorbei“): ein einziger Wechsel wie „Dankeschön!“ – „Tschüss!“. "
+    "Langes Pingpong („Danke fürs Mitmachen“ – „Gerne“ – „Tschüss“ – „Tschüss“ – „Schönen Abend noch“) auf diesen einen Wechsel "
+    "kürzen; Nebensächliches zwischen Auflösung und Abschied (Bedienung erklären, Namen wiederholen, Smalltalk) weiter raus. "
+    "Monolog/Promo ohne Gegenüber: endet hart auf dem Aufruf („kommt vorbei“). Alles NACH dem Abschied sowieso raus (Umdrehen zum Kameramann, „okay super, passt?“, Nachgespräch). "
     "3) MITTENDRIN raus: abgebrochene oder verpatzte Anläufe, wenn der Satz danach nochmal (besser) gesagt wird – nur die letzte "
     "vollständige Fassung bleibt; Sätze an Kameramann/Team; Bemerkungen, die nicht zum Thema gehören oder ohne Vorwissen keinen Sinn ergeben. "
     "4) Test für jeden Satz: Würde ein Zuschauer ihn vermissen, oder wird ohne ihn etwas unverständlich? Wenn nein und er stört – raus. "
@@ -456,7 +458,7 @@ STORY_EXAMPLES = (
     "F) Mehrfach-Take: „Hallo. | Wir sind ja hier am Paradeplatz. | Was? | Wir sind ja gerade hier am Paradeplatz. | Kommst du aus "
     "Mannheim? | Ja.“ → bleibt: „Wir sind ja gerade hier am Paradeplatz. | Kommst du aus Mannheim? | Ja.“ "
     "G) Ende: „Tatsächlich kostet er 1,99 Euro. | Wir freuen uns, wenn du vorbeikommst. | Okay, komm ich vorbei. | Tschüss! | "
-    "Ciao!“ → Ende nach „Okay, komm ich vorbei.“ "
+    "Ciao!“ → bleibt bis „Tschüss! | Ciao!“ (kurzer Abschied = Schlusspunkt), danach nichts mehr. "
     "H) Regel-Erklärung: „Bewerte ihn von 1 bis 10. | Das ist gut, 1 oder 10? | 1 ist nicht so gut und 10 ist sehr gut. | Ganz "
     "gut, gell? | 8.“ → bleibt: „Bewerte ihn von 1 bis 10.“ | „8.“ ")
 
@@ -2227,8 +2229,14 @@ def hook_card(text, path):
     if emo:
         try:
             ef = ImageFont.truetype(APPLE_EMOJI, 160)
+            # Regel 102 (Nutzer 06.10.: „Emojis sind oben abgeschnitten“): Die Schrift setzt das Bild ~18 px über die Mitte –
+            # auf 176 px wurde es oben gekappt. Groß rendern, auf die sichtbare Grafik zuschneiden, mittig mit Rand einsetzen.
+            big = Image.new("RGBA", (320, 320), (0, 0, 0, 0))
+            ImageDraw.Draw(big).text((160, 160), emo, font=ef, embedded_color=True, anchor="mm")
+            big = big.crop(big.getchannel("A").point(lambda v: 255 if v > 8 else 0).getbbox())
+            big.thumbnail((160, 160), Image.LANCZOS)
             em_img = Image.new("RGBA", (176, 176), (0, 0, 0, 0))
-            ImageDraw.Draw(em_img).text((88, 88), emo, font=ef, embedded_color=True, anchor="mm")
+            em_img.paste(big, ((176 - big.width) // 2, (176 - big.height) // 2), big)
             em_img = em_img.resize((70, 70), Image.LANCZOS)
         except Exception:  # noqa: BLE001
             em_img = None

@@ -3039,6 +3039,23 @@ def caption_round(rev, words_out, secs):
     return words_out, fixed + [f"ergänzt: {x}" for x in added]
 
 
+def reapply_fixes(words_out, revs):
+    """Regel 104: Untertitel-Korrekturen, die die Abnahme schon gebracht hat, nach einem NEUEN Schnitt erneut einsetzen.
+    (Fehler bis 06.10.: Der Nachschnitt nach dem Sinn-Check brannte die frischen, unkorrigierten Untertitel ein – im Protokoll
+    stand „korrigiert“, im Video „Vollmilzschokolade“.) Die Zeiten der Vorschläge gelten für den alten Schnitt, deshalb wird
+    jede Stelle im neuen Text gesucht; ob eine Korrektur zulässig ist, entscheidet wieder apply_caption_fixes (Regeln 99/101)."""
+    out, done = list(words_out), []
+    for rev in revs:
+        for f in (rev or {}).get("untertitel_korrekturen") or []:
+            wrong = [norm(x) for x in str(f.get("falsch", "")).split() if norm(x)]
+            k = next((k for k in range(len(out) - len(wrong) + 1) if wrong and [norm(x[0]) for x in out[k:k + len(wrong)]] == wrong), None)
+            if k is None:
+                continue
+            out, d = apply_caption_fixes(out, [dict(f, sek=out[k][1])])
+            done += d
+    return out, done
+
+
 probs_of = lambda rev: [f"{p.get('sek', 0):.0f}s {p.get('art')}: {(p.get('was') or '')[:120]}" for p in (rev.get("probleme") or [])]
 
 N = len(MOMENTS)
@@ -3077,6 +3094,7 @@ for n, m in enumerate(MOMENTS, 1):
                 rev = gemini_review(f, c["words_out"], card_title) or rev
                 STATS["abnahme"]["note_nachschnitt"] = rev.get("note")
                 log(f"KI-Abnahme nach Nachschnitt: Note {rev.get('note')}/10")
+        revs_done = [rev]
         words_out, fixed = caption_round(rev, c["words_out"], c["secs"])
         if fixed:
             STATS["abnahme"]["korrigiert"] = fixed
@@ -3086,6 +3104,7 @@ for n, m in enumerate(MOMENTS, 1):
             if rev2:
                 STATS["abnahme"].update(note_nach=rev2.get("note"), probleme_nach=probs_of(rev2)[:8])
                 log(f"KI-Abnahme nach Korrektur: Note {rev2.get('note')}/10")
+                revs_done.append(rev2)
                 words_out, fixed2 = caption_round(rev2, words_out, c["secs"])
                 if fixed2:  # zweite (letzte) Korrektur-Runde – danach keine weitere Prüfung, damit es nicht endlos läuft
                     STATS["abnahme"]["korrigiert"] += fixed2
@@ -3114,7 +3133,11 @@ for n, m in enumerate(MOMENTS, 1):
                         os.remove(c["cut"])
                     c = c3
                     QUIZ.pop(n, None)
-                    f = burn(n, c["cut"], c["words_out"], card_title, c["ranges"], c["kept"])
+                    wo3, wieder = reapply_fixes(c["words_out"], revs_done if rev else [])  # Regel 104
+                    if wieder:
+                        log(f"Nachschnitt: {len(wieder)} Untertitel-Korrekturen der Abnahme erneut eingesetzt ({'; '.join(wieder[:4])})")
+                    STATS["sinn"]["korrekturen_erneut"] = wieder
+                    f = burn(n, c["cut"], wo3, card_title, c["ranges"], c["kept"])
                     sc2 = sense_check(f, c)
                     if sc2:
                         STATS["sinn"].update(ok_nach=sc2["ok"], note_nach=sc2.get("note"), probleme_nach=[p["was"][:100] for p in sc2["probleme"]])

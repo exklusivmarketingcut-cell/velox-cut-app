@@ -324,8 +324,10 @@ plans = gemini(
     "das Patty), dann lege das passende Material als Zwischenschnitt darüber; gibt es keins, lass nur DIESEN EINEN Satz weg. "
     "Der Arbeitsschritt selbst bleibt mit seinen übrigen Sätzen im Video – diese Regel streicht NIE einen ganzen Schritt der "
     "Zubereitung (Wenden, Käse, Brot, Soße, Belegen, Verpacken müssen alle vorkommen; Test 06.10.: 39 s ohne Käse, Soße und "
-    "Belegen war falsch). Keine angefangenen oder abgebrochenen Sätze – ganz oder gar nicht. Keine Einstellung, "
-    "die nur kurz aufblitzt (unter ~1,5 s) zwischen zwei anderen. Jede neue Einstellung beginnt mit der HANDLUNG (Hand greift "
+    "Belegen war falsch). Keine angefangenen oder abgebrochenen Sätze – ganz oder gar nicht. Kein SPRECH-Abschnitt, "
+    "der nur kurz aufblitzt (unter ~1,5 s) und sofort wieder weg ist – gemeint sind nicht die gewollten Zwischenschnitte und "
+    "Produktbilder aus Punkt 2 und 3, die bleiben ausdrücklich erwünscht (Test 06.10.: Cheesecake-Ordner kam ohne ein einziges "
+    "Produktbild und nur mit einem statt zwei Videos heraus). Jede neue Einstellung beginnt mit der HANDLUNG (Hand greift "
     "in die Gurken, Patty wird vom Grill gekratzt), nicht mit dem Weg der Kamera dorthin. "
     "Länge je nach Format "
     "(Umfrage mit einer Person 15–25 s, Vorstellung/Promo 20–40 s, Zubereitung/Anleitung 30–60 s, max. 60 s).\n"
@@ -492,7 +494,12 @@ def build(plan, odir):
     return {"src": src, "plan": plan_path, "stickers": stickers}
 
 
-stories = [g for g in ((plans or {}).get("geschichten") or []) if g.get("sprechteile")][:max(1, A.clips)]
+_alle = (plans or {}).get("geschichten") or []
+stories = [g for g in _alle if g.get("sprechteile")][:max(1, A.clips)]
+log(f"Geschichten von der KI: {len(_alle)} (höchstens {max(1, A.clips)} erlaubt) – "
+    + "; ".join(f"„{str(g.get('titel'))[:40]}“ {len(g.get('sprechteile') or [])} Sätze, {len(g.get('bilder') or [])} Bilder, "
+                f"{len(g.get('broll') or [])} B-Rolls" for g in _alle[:5]))
+_vorher = [(str(g.get("titel"))[:40], len(g["sprechteile"])) for g in stories]
 for g in stories:  # Regel 82: nur Clips aus dem Thema dieser Geschichte (Sätze/B-Roll aus fremden Clips fliegen raus)
     own = {str(c).strip() for c in g.get("clips") or []}
     if own:
@@ -506,6 +513,10 @@ used, results = set(), []
 for g in stories:  # kein Satz in zwei Videos
     g["sprechteile"] = [x for x in g["sprechteile"] if x.strip() not in used]
     used.update(x.strip() for x in g["sprechteile"])
+_nach = {id(g): sum(1 for x in g["sprechteile"] if ref(x)) for g in stories}
+for (titel, n0), g in zip(_vorher, stories):  # nachvollziehbar: was die Filter (Thema, doppelte Sätze, zu kurz) übrig lassen
+    if _nach[id(g)] < 2 or _nach[id(g)] < n0:
+        log(f"  „{titel}“: {n0} → {_nach[id(g)]} gültige Sätze nach den Filtern" + (" → VERWORFEN (unter 2 Sätze)" if _nach[id(g)] < 2 else ""))
 stories = [g for g in stories if sum(1 for x in g["sprechteile"] if ref(x)) >= 2] or stories[:1] or [None]
 for n, g in enumerate(stories):
     if len(stories) > 1:

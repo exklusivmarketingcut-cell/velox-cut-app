@@ -437,7 +437,11 @@ STORY_RULES = (
     "Antwort + Auflösung in höchstens ca. 3 Wortwechseln bzw. 8 Sekunden → bleibt. Ufert der Teil aus (mehr Wortwechsel, "
     "Rückfragen, Missverständnis, Korrekturen, Abschweifen zu anderen Produkten), diesen Teil GANZ weglassen – eine kurze, "
     "klare Geschichte ist besser als eine vollständige, verworrene. Ortsangabe/Aufruf am Ende („Weißt du, wo wir sind? – C1 8“, "
-    "„Kommt vorbei“) gehört zum Abschluss und bleibt.")
+    "„Kommt vorbei“) gehört zum Abschluss und bleibt. "
+    "8) KEINE HALBEN SACHEN (Nutzer 06.10.: „er fängt einen Satz an und dann wird er einfach weggeschnitten“): Ein Satz, der "
+    "angefangen, aber nicht zu Ende gesprochen wird, fliegt GANZ raus – nie den Anfang stehen lassen. Ebenso Halbsätze, die "
+    "etwas ankündigen, das danach nicht kommt oder im Bild nicht zu sehen ist („und wenn das Brot fertig ist …“, danach geht es "
+    "um Käse): ganz weglassen. Jeder Satz, der bleibt, muss für sich vollständig sein und zum nächsten passen.")
 STORY_EXAMPLES = (
     "Beispiele (| trennt Sätze): "
     "A) „Nehmt ihr dann den? | Ja. | Okay. | Hallo. | Hallo, ich hab gehört … | Nochmal von vorne. | Hallo! Wollt ihr einen "
@@ -833,7 +837,7 @@ _PANS = []
 
 def pans():
     """Regel 96 (Nutzer 05.10.: „die Kamera schwenkt rüber zu den Beilagen – das will keiner sehen, da schaltet man ab“):
-    Strecken finden, in denen die Kamera nur von A nach B schwenkt (≥ 1,5 s lang mehr als ~½ Bildbreite pro Sekunde).
+    Strecken finden, in denen die Kamera nur von A nach B schwenkt (≥ 0,8 s lang mehr als ~½ Bildbreite pro Sekunde).
     Einmal für das ganze Material messen (10 Bilder/s, klein)."""
     if _PANS:
         return _PANS[0]
@@ -857,7 +861,7 @@ def pans():
                     if v[j] >= 8:
                         last = j
                     j += 1
-                if (last + 1 - i) / R >= 1.5:
+                if (last + 1 - i) / R >= 0.8:
                     out.append((i / R, (last + 1) / R))
                 i = max(j, i + 1)
             else:
@@ -881,6 +885,10 @@ def keep_ranges(words, safe=False, extra_drop=frozenset()):
     pan_cuts = []
     for pa, pb in pans():  # auch im sicheren Modus
         inside = [w for w in words if pa <= w["s"] < pb]
+        if pb - pa < 1.5:  # Regel 97: kurzer Schwung (z. B. am Anfang einer Einstellung) – nur das Bild kürzen, wenn dabei
+            if not [w for w in inside if w["i"] not in drop]:  # niemand etwas sagt; Gesprochenes wird hier nicht geopfert
+                pan_cuts.append((pa + 0.05, pb - 0.05))
+            continue
         tail_s = pb
         nxt = next((w for w in words if w["s"] >= pb), None)
         for w in reversed(inside):
@@ -973,7 +981,7 @@ def keep_ranges(words, safe=False, extra_drop=frozenset()):
     out = [r for r in out if r[1] - r[0] > 0.08]
     if not safe:
         out = subtract(out, hidden_cuts(kept))
-    pan_cuts = [(a, b) for a, b in pan_cuts if b - a >= 0.8]
+    pan_cuts = [(a, b) for a, b in pan_cuts if b - a >= 0.6]
     if pan_cuts:
         out = [r for r in subtract(out, pan_cuts) if r[1] - r[0] > 0.08]
         STATS["schwenk_cut_s"] = round(sum(b - a for a, b in pan_cuts), 1)
@@ -2847,7 +2855,7 @@ def sense_check(path, c):
         "− = rausgeschnitten) und (2) was im FERTIGEN Video tatsächlich zu hören ist. Prüfe wie ein strenger Chef-Cutter: "
         "Ergibt das Video für einen Zuschauer ohne Vorwissen Sinn? Stimmt die Reihenfolge? Fehlt etwas Wichtiges (Antwort auf "
         "eine gestellte Frage, Auflösung, Bewertung, Preis, ein Schritt der Zubereitung), das im Rohmaterial vorhanden ist? Gibt "
-        "es Sprünge, abgebrochene Sätze, Versprecher, Füllwörter, doppelte Aussagen, Wortfetzen oder einen Schluss, der nicht "
+        "es Sprünge, abgebrochene Sätze, Satzanfänge, die mitten drin weggeschnitten werden, Ankündigungen ohne Fortsetzung („wenn das Brot fertig ist“ – und dann geht es um etwas anderes), Versprecher, Füllwörter, doppelte Aussagen, Wortfetzen oder einen Schluss, der nicht "
         "passt? Nenne nur echte Probleme mit Sekunde im fertigen Video. ok=true, wenn das Video so raus kann.",
         f"ROHMATERIAL:\n{roh}\n\nFERTIGES VIDEO (zu hören):\n{fertig}",
         {"type": "object", "properties": {"ok": {"type": "boolean"}, "note": {"type": "integer"},

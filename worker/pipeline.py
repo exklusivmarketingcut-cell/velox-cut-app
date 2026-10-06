@@ -1570,7 +1570,7 @@ def plan_layout(card=None, logo=False):
         cand = [top]
         if tbx:
             cand += [tbx[0] - ch - 20, tbx[1] + 21]
-        cand += [cy - half - 20 - ch, cy + half + 20]
+        cand += [cy - half - 20 - ch]  # direkt über den Untertiteln; darunter nie (dort stehen die Emojis)
         ok = [y for y in cand if free(y)]
         if ok:
             hy = int(ok[0]) - rand
@@ -2341,7 +2341,7 @@ LOGO_PX, LOGO_Y = 190, SAFE_T  # Kunden-Logo oben links (Breite, Oberkante) – 
 APPLE_EMOJI = "/System/Library/Fonts/Apple Color Emoji.ttc"
 
 
-def hook_card(text, path):
+def hook_card(text, path, flach=False):
     """Titel oben als saubere Karte mit runden Ecken, max. 2 ausgewogene Zeilen.
     Viral: weiß, weicher Schatten, größer, Emoji am Ende als echtes Apple-Emoji.
     Clean: dezent – dunkles, leicht durchsichtiges Glas, weiße Schrift, kleiner, ohne Emoji."""
@@ -2358,6 +2358,13 @@ def hook_card(text, path):
     font = ImageFont.truetype(os.path.join(FONTS, "Montserrat-Bold.otf"), 54 if calm else 64)
     maxw = 700 if calm else 730  # Karte samt Rand ≤ 820 px → bleibt im sichtbaren Bereich von Instagram (Regel 112)
     one = " ".join(words)
+    if flach:  # Regel 112: einzeilige, flachere Karte für den schmalen Streifen über dem Kopf – Schrift so weit nötig kleiner
+        for px in range(54 if calm else 64, 39, -2):
+            font = ImageFont.truetype(os.path.join(FONTS, "Montserrat-Bold.otf"), px)
+            if font.getlength(one) + (82 if emo else 0) <= maxw:
+                break
+        else:
+            return None
     if font.getlength(one) + (82 if emo else 0) <= maxw:
         lines = [one]
     else:  # zwei ausgewogene Zeilen („Pizza & Paint / am Muttertag“ statt „Pizza & Paint am / Muttertag“)
@@ -2664,8 +2671,14 @@ def burn(idx, cut, words_out, title, ranges=None, kept=None):
     if not PREM:  # Regel 112: erst die Plätze vergeben, dann zeichnen (Premium vergibt sie in premium_events mit seinem 3D-Titel)
         from PIL import Image as _Im
         plan_layout(_Im.open(card).size if card else None, bool(logo))
-        if card and not LAY["title"]:
-            card = None
+        if card and not LAY["title"]:  # zweizeilig kein Platz → einzeilig und flacher versuchen, erst dann weglassen
+            card = hook_card(title, os.path.join(A.out, f"titel-{idx}.png"), flach=True)
+            if card:
+                STATS.pop("titel_weggelassen", None)
+                plan_layout(_Im.open(card).size, bool(logo))
+                card = card if LAY["title"] else None
+                if card:
+                    log("Titel einzeilig gesetzt – so passt er über den Kopf (Regel 112)")
     pev = premium_events(pfx, words_out, title) if PREM else []
     if ranges and kept and idx not in QUIZ:
         QUIZ[idx] = gemini_quiz(kept, OUT_TIME)

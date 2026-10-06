@@ -389,7 +389,7 @@ def build(plan, odir):
         n_used = len({k for cc, k in order if cc is c})
         anteil = n_used / len(c["sents"])
         log(f"  Abdeckung {c['id']} ({c['dur']:.0f} s): {n_used} von {len(c['sents'])} Sätzen ({anteil:.0%})"
-            + ("  ← WENIG: großer Teil dieses Clips fehlt im Video" if c["dur"] >= 20 and anteil < 0.5 else "")
+            + ("  ← unter der Hälfte: prüfen, ob Arbeitsschritte fehlen (bei vielen Versprechern kann das richtig sein)" if c["dur"] >= 20 and anteil < 0.5 else "")
             + ("  ← Clip mit Sprache gar nicht verwendet" if n_used == 0 else ""))
 
     # ─────────────────────────────── 5. Sprech-Stellen zu EINER Datei zusammensetzen ───────────────────────────────

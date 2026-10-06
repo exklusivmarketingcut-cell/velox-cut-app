@@ -997,11 +997,18 @@ def keep_ranges(words, safe=False, extra_drop=frozenset()):
     # mit Schutzabstand zu den behaltenen Nachbarwörtern (Wiederholungen mitten im Satz bleiben davon unberührt).
     ks = sorted((w["s"], w["e"]) for w in kept)
     zw = []
+    # Nachtrag 06.10. abends (Inhaber: „bei Sekunde 10 hört man wieder das Ja“): Die Erkennung gab dem „Ja“ nur 0,04 s Länge –
+    # zu kurz für einen Schnitt, und der Abschnitt davor („So?“) wurde einzeln behandelt. Alle gestrichenen Wörter zwischen
+    # denselben zwei behaltenen Nachbarn sind EIN Stück: vom ersten bis zum letzten fällt alles weg, auch die Luft dazwischen.
+    grp = {}
     for a, b in dropped:
-        prev_e = max((e for s_, e in ks if e <= a + 0.1), default=0.0)
-        next_s = min((s_ for s_, e in ks if s_ >= b - 0.1), default=DUR)
         if any(a < (s_ + e) / 2 < b for s_, e in ks):
             continue
+        prev_e = max((e for s_, e in ks if e <= a + 0.1), default=0.0)
+        next_s = min((s_ for s_, e in ks if s_ >= b - 0.1), default=DUR)
+        g = grp.setdefault((prev_e, next_s), [a, b])
+        g[0], g[1] = min(g[0], a), max(g[1], b)
+    for (prev_e, next_s), (a, b) in grp.items():
         c0, c1 = max(a, prev_e + 0.10), min(b, next_s - 0.08)
         if c1 - c0 >= 0.15 and c1 - c0 >= 0.8 * (b - a):
             zw.append((c0, c1))
@@ -1528,7 +1535,7 @@ def _cut(a0, a1, b0, b1):
     return a0 < b1 and a1 > b0
 
 
-def plan_layout(card=None, logo=False):
+def plan_layout(card=None, logo=False, force=False):
     """Regel 112: EINE Platzvergabe für alles, was eingeblendet wird. Jedes Element bekommt seinen eigenen Platz:
     Logo oben links, Titel oben, Untertitel im unteren Bereich, Emoji direkt unter (sonst über) den Untertiteln.
     Nichts liegt übereinander, nichts über dem Gesicht, nichts unter den Knöpfen/Leisten von TikTok und Instagram.
@@ -1576,6 +1583,12 @@ def plan_layout(card=None, logo=False):
             hy = int(ok[0]) - rand
         elif fbx and cy < fbx[0] and top + ch + 15 + half <= fbx[0] - half - 15:
             hy, cy = top - rand, top + ch + 15 + half   # Untertitel stehen über dem Kopf: Titel ganz oben, Untertitel direkt darunter
+        elif force and not _cut(top, top + ch, cy - half - 15, cy + half + 15):
+            # Inhaber 06.10. abends: „Die Caption kannst du drin lassen.“ Der Titel entfällt nicht mehr – findet sich kein
+            # ganz freier Platz, steht er (einzeilig, flach, nur 3 s) ganz oben am Rand: dort trifft er höchstens Haare/Stirn.
+            hy = top - rand
+            STATS["titel_am_oberen_rand"] = True
+            log("Titel steht ganz oben am Rand – kein völlig freier Platz neben dem Gesicht")
         else:
             title = False
             STATS["titel_weggelassen"] = True
@@ -2672,10 +2685,11 @@ def burn(idx, cut, words_out, title, ranges=None, kept=None):
         from PIL import Image as _Im
         plan_layout(_Im.open(card).size if card else None, bool(logo))
         if card and not LAY["title"]:  # zweizeilig kein Platz → einzeilig und flacher versuchen, erst dann weglassen
-            card = hook_card(title, os.path.join(A.out, f"titel-{idx}.png"), flach=True)
+            card = hook_card(title, os.path.join(A.out, f"titel-{idx}.png"), flach=True) or \
+                hook_card(title, os.path.join(A.out, f"titel-{idx}.png"))  # zu lang für eine Zeile → zweizeilige Karte
             if card:
                 STATS.pop("titel_weggelassen", None)
-                plan_layout(_Im.open(card).size, bool(logo))
+                plan_layout(_Im.open(card).size, bool(logo), force=True)
                 card = card if LAY["title"] else None
                 if card:
                     log("Titel einzeilig gesetzt – so passt er über den Kopf (Regel 112)")

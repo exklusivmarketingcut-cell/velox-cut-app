@@ -3051,6 +3051,20 @@ def trim_joins(ranges, kept, joins):
     return out
 
 
+def split_joins(ranges, kept):
+    """Clip-Grenze mitten in einem Abschnitt → dort trennen (eigener Ausschnitt je Clip), danach Regel 109."""
+    if not (PLAN and PLAN.get("joins")):
+        return ranges
+    split = []
+    for a, b in ranges:
+        for j in sorted(PLAN["joins"]):
+            if a + 0.15 < j < b - 0.15:
+                split.append([a, j - 0.02])
+                a = j + 0.02
+        split.append([a, b])
+    return trim_joins(split, kept, PLAN["joins"])
+
+
 def make_cut(n, m, step):
     """Schnitt eines Moments bis zum fertigen Schnitt-Video (ohne Untertitel): Schnittliste, Rendern, Hörprobe
     (sicherer Neuschnitt bei angeschnittenen Wörtern), Fetzen am Anfang/Ende wegschneiden."""
@@ -3059,15 +3073,7 @@ def make_cut(n, m, step):
     if not ranges:
         return None
     choose_speed(kept)
-    if PLAN and PLAN.get("joins"):  # Clip-Grenze mitten in einem Abschnitt → dort trennen (eigener Ausschnitt je Clip)
-        split = []
-        for a, b in ranges:
-            for j in sorted(PLAN["joins"]):
-                if a + 0.15 < j < b - 0.15:
-                    split.append([a, j - 0.02])
-                    a = j + 0.02
-            split.append([a, b])
-        ranges = trim_joins(split, kept, PLAN["joins"])
+    ranges = split_joins(ranges, kept)
     ranges, kept = limit60(ranges, kept)
     ranges = tidy(ranges)
     if os.environ.get("VELOX_DEBUG"):  # Fehlersuche: Wörter (mit „raus“) und Schnittliste ablegen
@@ -3084,7 +3090,10 @@ def make_cut(n, m, step):
     if len(miss) > max(2, len(kept) * 0.03):  # Wörter angeschnitten → vorsichtiger neu schneiden
         log(f"Hörprobe: {len(miss)} Wörter unklar ({', '.join(miss[:6])}) – schneide im sicheren Modus neu")
         step(0.6, "Schneidet eine Stelle vorsichtiger nach …")
-        ranges, kept = limit60(*keep_ranges(words, safe=True, extra_drop=m.get("drop") or set()))
+        ranges, kept = keep_ranges(words, safe=True, extra_drop=m.get("drop") or set())
+        # Fehler bis 06.10.: im sicheren Modus fehlte die Trennung an den Clip-Grenzen (und damit Regel 109) – bei Malo's
+        # lief zweimal genau dieser Pfad, die Abschnitte gingen dann wieder über Clip-Wechsel hinweg.
+        ranges, kept = limit60(split_joins(ranges, kept), kept)
         ranges = tidy(ranges)
         cut, secs = render_cut(n, ranges)
         heard = hear(cut)

@@ -2994,6 +2994,59 @@ def limit60(ranges, kept):
 results = []
 
 
+def _ruhe(t, vor, maxd):
+    """Vom Zeitpunkt t aus (vor=True: rückwärts, sonst vorwärts) die nächste ruhige Stelle suchen: dem Pegel folgen, solange
+    er fällt; sobald er nach dem Tiefpunkt wieder um 5 dB steigt, beginnt ein ANDERES Geräusch – dort nicht hinüber.
+    Rückgabe: Zeit des Tiefpunkts (höchstens maxd entfernt)."""
+    i0 = min(len(LV) - 1, max(0, int(t / 0.05)))
+    best, bi = LV[i0], i0
+    for d in range(1, int(maxd / 0.05) + 1):
+        i = i0 - d if vor else i0 + d
+        if i < 0 or i >= len(LV):
+            break
+        if LV[i] < best:
+            best, bi = LV[i], i
+        elif LV[i] > best + 5 and d >= 2:
+            break
+    return bi * 0.05 + 0.025
+
+
+def trim_joins(ranges, kept, joins):
+    """Regel 109 (Inhaber 06.10.: vor „Ihr bekommt bei uns“ hört man ein „Ja“ vom Kameramann; bei der Junior Box setzt das
+    Bild erst ein, wenn er schon redet). An einer Clip-Grenze gehören Nachlauf des einen und Vorlauf des nächsten Clips nicht
+    zusammen. Der Abschnitt davor endet in der ersten Ruhe nach seinem letzten Wort (fremde Laute danach fallen weg), der
+    Abschnitt danach beginnt in der letzten Ruhe vor seinem ersten Wort (man sieht die Person ansetzen, hört aber nichts Fremdes)."""
+    out, n_cut = [], 0.0
+    # Sicherung: gekürzt wird nur an einer ECHTEN Ruhe-Stelle (mind. 12 dB unter Sprachlautstärke). Liegt zwischen dem Wort
+    # und dem Rand durchgehend Schall, bleibt alles stehen – es könnte ein Wortanfang sein, den die Erkennung verschluckt hat.
+    laut = sorted(LV)[int(len(LV) * 0.9)] if LV else 0.0
+    lv = lambda t: LV[min(len(LV) - 1, max(0, int(t / 0.05)))]
+    still = lambda t: lv(t) <= laut - 12
+    # Eng gefasst (Test am Malo's-Rohschnitt: ohne diese Grenzen fielen 14 s wortlose HANDLUNG weg): gekürzt wird nur ein
+    # KURZER Rand (≤ 0,8 s zwischen Wort und Clip-Grenze), in dem wirklich ein Geräusch liegt (≥ 8 dB über der Ruhe-Stelle).
+    # Lange wortlose Strecken sind Handlung oder Schwenk – dafür gelten die Regeln 96/97/107, nicht diese.
+    fremd = lambda t0, t1, tief: t1 - t0 > 0.04 and max(lv(t0 + k * 0.05) for k in range(int((t1 - t0) / 0.05) + 1)) >= lv(tief) + 8
+    for a, b in ranges:
+        a0, b0 = a, b
+        if LV and any(abs(b - (j - 0.02)) < 0.03 for j in joins):   # endet an einer Clip-Grenze
+            last = max((w["e"] for w in kept if a <= w["s"] < b), default=None)
+            if last is not None and 0.25 < b - last <= 0.8:
+                t = _ruhe(last, False, min(0.5, b - last))
+                if still(t) and fremd(t + 0.05, b, t):
+                    b = min(b, max(last + 0.08, t + 0.03))
+        if LV and any(abs(a - (j + 0.02)) < 0.03 for j in joins):   # beginnt an einer Clip-Grenze
+            first = min((w["s"] for w in kept if a - 0.05 <= w["s"] < b), default=None)
+            if first is not None and 0.2 < first - a <= 0.8:
+                t = _ruhe(first, True, min(0.45, first - a))
+                if still(t) and fremd(a, t - 0.05, t):
+                    a = max(a, min(first - 0.05, t - 0.03))
+        if b - a > 0.08:
+            out.append([a, b])
+            n_cut += (a - a0) + (b0 - b)
+    STATS["clipgrenzen_gekuerzt_s"] = round(n_cut, 2)
+    return out
+
+
 def make_cut(n, m, step):
     """Schnitt eines Moments bis zum fertigen Schnitt-Video (ohne Untertitel): Schnittliste, Rendern, Hörprobe
     (sicherer Neuschnitt bei angeschnittenen Wörtern), Fetzen am Anfang/Ende wegschneiden."""
@@ -3010,7 +3063,7 @@ def make_cut(n, m, step):
                     split.append([a, j - 0.02])
                     a = j + 0.02
             split.append([a, b])
-        ranges = split
+        ranges = trim_joins(split, kept, PLAN["joins"])
     ranges, kept = limit60(ranges, kept)
     ranges = tidy(ranges)
     if os.environ.get("VELOX_DEBUG"):  # Fehlersuche: Wörter (mit „raus“) und Schnittliste ablegen

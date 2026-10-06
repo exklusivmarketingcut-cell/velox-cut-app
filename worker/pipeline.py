@@ -2791,7 +2791,9 @@ def _schreibvariante(a, b):
         return False
     if min(len(a), len(b)) <= 3:  # bei Kurzwörtern macht ein einziger Buchstabe ein anderes Wort (ist/isst)
         return False
-    return difflib.SequenceMatcher(a=a, b=b).ratio() >= 0.5
+    # 0,72 statt 0,5: im Lauf vom 06.10. rutschte „geraten“ → „gebracht“ durch (Ähnlichkeit 0,67 – gleicher Wortrahmen, anderes
+    # Wort). Echte Schreibvarianten liegen höher: Baglet/Baguelette 0,75, Schmarm/Schmarrn 0,80, Bürger/Burger 0,83.
+    return difflib.SequenceMatcher(a=a, b=b).ratio() >= 0.72
 
 
 def apply_caption_fixes(words_out, fixes):

@@ -41,11 +41,12 @@ def call(system, parts, schema, deep=False, timeout=90, temperature=0.2, models=
     if not KEYS:
         return None
     order = models or (DEEP if deep else LIGHT)
-    for ki, key in enumerate(KEYS):
-        if (ki, "*") in DEAD:
-            continue
-        for model in order:
-            if (ki, model) in DEAD:
+    # Reihenfolge (Inhaber 07.10.: „erst kostenlos, und sobald das weg ist, auf den bezahlten wechseln“): je MODELL erst der
+    # Gratis-Schlüssel, dann sofort der bezahlte – so entscheidet immer das beste Modell. Vorher wurden mit dem Gratis-Schlüssel
+    # erst alle kleineren Modelle durchprobiert (schlechtere Entscheidungen, lange Wartezeiten), bevor der bezahlte dran war.
+    for model in order:
+        for ki, key in enumerate(KEYS):
+            if (ki, "*") in DEAD or (ki, model) in DEAD:
                 continue
             think = True
             for attempt in range(4):
@@ -87,6 +88,8 @@ def call(system, parts, schema, deep=False, timeout=90, temperature=0.2, models=
                         if "day" in msg.lower() or "perday" in msg.lower().replace("_", ""):
                             DEAD.add((ki, model))         # Tageskontingent aufgebraucht → nächstes Modell
                             break
+                        if ki + 1 < len(KEYS) and (ki + 1, "*") not in DEAD and (ki + 1, model) not in DEAD:
+                            break                         # Minutenlimit, aber es gibt noch einen Schlüssel → nicht warten, sofort dorthin
                         if attempt < 3:                   # Minutenlimit → kurz warten
                             time.sleep(8 * (attempt + 1))
                             continue
@@ -98,8 +101,6 @@ def call(system, parts, schema, deep=False, timeout=90, temperature=0.2, models=
                 except Exception as e:  # noqa: BLE001
                     _log(f"Gemini {model}: {str(e)[:120]}")
                     break
-            if (ki, "*") in DEAD:
-                break
     global EXHAUSTED
     if all((k, "*") in DEAD or (k, m) in DEAD for k in range(len(KEYS)) for m in order):
         EXHAUSTED = True

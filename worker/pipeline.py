@@ -742,6 +742,39 @@ def gemini_proofread(words):
 
 gemini_proofread(WORDS)
 
+# ── Nische des Kunden aus dem Rohmaterial (Inhaber 07.10.: „Der Kunde schreibt kein Skript und keinen Prompt. Die Software findet
+# seine Nische selbst heraus und schneidet passend dazu, in dem Stil, den er gewählt hat – so, als würde ich es dir schicken.“)
+# Eine kurze KI-Frage direkt nach dem Abhören: Branche, Zielgruppe, Tonfall, worum es geht. Die Antwort begleitet danach JEDE
+# Entscheidung (Satzauswahl, Titel, Akzente, Musik, Schlusskontrolle) als Kontext. Ohne KI-Antwort bleibt alles wie bisher.
+NISCHE, NISCHE_HINT = {}, ""
+
+
+def gemini_nische(words):
+    txt = " ".join(w["t"] for w in words)[:2500]
+    if len(txt) < 40:
+        return None
+    return gemini(
+        "Du bist Social-Media-Stratege. Lies das Transkript eines Rohvideos und bestimme knapp und konkret: branche (z. B. "
+        "„Gastronomie – Burger-Restaurant“, „Coaching – Social-Media-Agentur“, „Handwerk – Bauunternehmen“, „Privat – Urlaubsvlog“), "
+        "zielgruppe (wer soll das Video sehen), ton (z. B. locker-humorvoll, seriös-erklärend, energisch-verkaufend), "
+        "inhalt (ein Satz: worum geht es in diesem Video), ziel (was soll der Zuschauer danach tun oder denken). "
+        "Nur was aus dem Transkript hervorgeht – nichts erfinden." + (f" Namen/Marken des Kunden: {A.words[:200]}." if A.words else ""),
+        "Transkript:\n" + txt,
+        {"type": "object", "properties": {k: {"type": "string"} for k in ("branche", "zielgruppe", "ton", "inhalt", "ziel")},
+         "required": ["branche", "zielgruppe", "ton", "inhalt"]})
+
+
+_n = gemini_nische(WORDS)
+if _n and _n.get("branche"):
+    NISCHE.update({k: " ".join(str(v).split())[:160] for k, v in _n.items() if v})
+    NISCHE_HINT = (f" KONTEXT DIESES KUNDEN – Branche: {NISCHE.get('branche')}. Zielgruppe: {NISCHE.get('zielgruppe')}. "
+                   f"Tonfall: {NISCHE.get('ton')}. Worum es geht: {NISCHE.get('inhalt')}."
+                   + (f" Ziel des Videos: {NISCHE['ziel']}." if NISCHE.get("ziel") else "")
+                   + " Triff jede Entscheidung so, wie es für genau diese Branche und Zielgruppe auf TikTok/Reels am besten wirkt. ")
+    CUTTER = CUTTER + NISCHE_HINT
+    STATS["nische"] = dict(NISCHE)
+    log(f"Nische erkannt: {NISCHE.get('branche')} · {NISCHE.get('zielgruppe')} · {NISCHE.get('ton')}")
+
 SHORT = DUR <= 300  # Rohmaterial bis 5 Min. = eine Szene → ein Clip, der die ganze Geschichte erzählt (inkl. Auflösung)
 if PLAN:  # mehrere Clips: die Auswahl der Sätze hat montage.py schon getroffen → alles nehmen, nur noch sauber schneiden
     MOMENTS = [{"start": 0, "end": len(WORDS) - 1, "title": PLAN.get("titel") or "", "drop": set()}]
@@ -2240,7 +2273,7 @@ def pick_music(kept):
         return os.path.join(MUSIC_DIR, f"{A.music}.mp3")
     if not have:
         return None
-    res = gemini("Du bist Editor für Kurzvideos. Wähle die Hintergrundmusik, die am besten zu Inhalt und Stimmung passt. "
+    res = gemini("Du bist Editor für Kurzvideos." + NISCHE_HINT + " Wähle die Hintergrundmusik, die am besten zu Inhalt und Stimmung passt. "
                  "Stil des Schnitts: " + {"clean": "ruhig, sauber", "viral": "schnell, laut", "premium": "hochwertig, kinoreif"}[A.style] + ".",
                  "Musik:\n" + "\n".join(f"{n}: {d}" for n, d in have.items()) + "\n\nTranskript: " + " ".join(w["t"] for w in kept)[:3000],
                  {"type": "object", "properties": {"musik": {"type": "string", "enum": list(have)}}, "required": ["musik"]})
@@ -2351,7 +2384,7 @@ def gemini_effects(kept, times):
     Läuft VOR dem Rendern (Zeiten aus der Schnittliste), damit die Zoom-Punches genau auf diese Momente fallen."""
     OUT_TIME = times  # noqa: N806  (gleiche Zeitbasis wie später im fertigen Clip)
     res = gemini(
-        "Du bist Editor für virale Kurzvideos. Setze SPARSAM Akzente an die stärksten Momente des Transkripts (Pointen, Zahlen, "
+        "Du bist Editor für virale Kurzvideos." + NISCHE_HINT + " Setze SPARSAM Akzente an die stärksten Momente des Transkripts (Pointen, Zahlen, "
         "Preise, Bewertungen, überraschende Reaktionen, das Produkt). Höchstens ein Akzent pro 6 Sekunden, insgesamt 2–6. "
         "Je Akzent: Wortnummer (das Wort, bei dem er erscheint), „text“ = das Schlüsselwort bzw. die Zahl genau wie gesagt "
         "(1–3 Wörter, z. B. „Kaiserschmarrn“, „10 von 10“, „150 Millionen“, „12 Euro“), ein passendes Emoji aus dieser Liste: "

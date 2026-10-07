@@ -629,7 +629,9 @@ def retake_idx(words):
             if len(tb) >= 3 and b not in crew:
                 sm = difflib.SequenceMatcher(None, ta, tb, autojunk=False)
                 covered = sum(m.size for m in sm.get_matching_blocks())
-                abandoned = len(ta) < len(tb) and covered >= 0.8 * len(ta) and ta[:2] == tb[:2]  # „wie man in fünf.“ → „wie man in fünf Minuten …“
+                # „wie man in fünf.“ → „wie man in fünf Minuten …“; auch mit einem Vorwort davor: „Also willst du eine Mittagspause
+                # ohne Foodkoma?“ → „Willst du eine Mittagspause ohne Foodkoma, dann komm zu uns“ (Golden-Thai-Test 07.10.)
+                abandoned = len(ta) < len(tb) and covered >= 0.8 * len(ta) and (ta[:2] == tb[:2] or ta[1:3] == tb[:2] or ta[:2] == tb[1:3])
                 same = sm.ratio() >= 0.85  # fast wortgleich nochmal gesagt
                 if abandoned or same:
                     out.update(w["i"] for k in range(a, b) for w in sents[k])

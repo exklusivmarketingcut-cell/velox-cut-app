@@ -2330,7 +2330,16 @@ EMOJI_DIR = os.environ.get("VELOX_EMOJI", os.path.join(MASCHINE, "emoji"))
 EMOJIS = {"😋": "1f60b", "🔥": "1f525", "😍": "1f60d", "🤤": "1f924", "😂": "1f602", "🤯": "1f92f", "😮": "1f62e", "🤔": "1f914",
           "👀": "1f440", "💸": "1f4b8", "💰": "1f4b0", "🎉": "1f389", "🏆": "1f3c6", "💯": "1f4af", "👍": "1f44d", "👏": "1f44f",
           "❤️": "2764", "✅": "2705", "❌": "274c", "⭐": "2b50", "🍰": "1f370", "🍔": "1f354", "🍕": "1f355", "☕": "2615",
-          "🍫": "1f36b", "🍌": "1f34c", "🍓": "1f353", "🎁": "1f381", "📍": "1f4cd", "⏰": "23f0", "🚀": "1f680", "😎": "1f60e"}
+          "🍫": "1f36b", "🍌": "1f34c", "🍓": "1f353", "🎁": "1f381", "📍": "1f4cd", "⏰": "23f0", "🚀": "1f680", "😎": "1f60e",
+          # Inhaber 07.10.: „Bei ‚Verdauung komplett umkrempeln‘ kam eine Rakete – das passt nicht.“ Mehr Auswahl, damit
+          # die KI ein Emoji findet, das zur Aussage passt (alle aus der System-Schrift erzeugt, kein Download).
+          "🔄": "1f504", "💪": "1f4aa", "🥗": "1f957", "🥑": "1f951", "🌱": "1f331", "💡": "1f4a1", "⚠️": "26a0", "📈": "1f4c8",
+          "🧠": "1f9e0", "❓": "2753", "✨": "2728", "🙌": "1f64c", "😱": "1f631", "🤝": "1f91d", "📞": "1f4de", "🛒": "1f6d2",
+          "🏠": "1f3e0", "🚗": "1f697", "✂️": "2702", "🎬": "1f3ac", "📱": "1f4f1", "💧": "1f4a7", "🥤": "1f964", "🍜": "1f35c",
+          "🌶️": "1f336", "🧀": "1f9c0", "🥩": "1f969", "🍟": "1f35f", "🥒": "1f952", "🧅": "1f9c5", "🍞": "1f35e", "🥭": "1f96d",
+          "🍵": "1f375", "🧊": "1f9ca", "😴": "1f634", "🤢": "1f922", "💚": "1f49a", "📅": "1f4c5", "🎯": "1f3af", "🤫": "1f92b",
+          "👇": "1f447", "👉": "1f449", "🙏": "1f64f", "😅": "1f605", "🤩": "1f929", "💥": "1f4a5", "🧾": "1f9fe", "🏋️": "1f3cb",
+          "💤": "1f4a4", "🩺": "1fa7a"}
 SFX_NAMES = ("pop", "ding", "kaching", "whoosh", "click")
 RISER_S = 1.2  # Länge des Riser-Sounds (make_sfx.py)
 FX = {}  # Effekte je Clip (bleiben beim Neu-Einbrennen nach der Abnahme gleich)
@@ -2478,6 +2487,9 @@ def gemini_effects(kept, times):
         "Je Akzent: Wortnummer (das Wort, bei dem er erscheint), „text“ = das Schlüsselwort bzw. die Zahl genau wie gesagt "
         "(1–3 Wörter, z. B. „Kaiserschmarrn“, „10 von 10“, „150 Millionen“, „12 Euro“), ein passendes Emoji aus dieser Liste: "
         + " ".join(EMOJIS) +
+        " – das Emoji muss zur AUSSAGE an dieser Stelle passen (Verdauung/Umstellung → 🔄 oder 🩺, Tipp → 💡, Warnung → ⚠️, "
+        "Essen → das passende Lebensmittel); 🚀 und 🔥 nur, wenn wirklich Tempo/Begeisterung gemeint ist. Passt keines "
+        "eindeutig, das Feld emoji leer lassen (dann kommt nur der Sound)" +
         " und ein Sound aus: pop (Standard), ding (Bewertung/Pointe), kaching (Geld/Preis/Gewinn), whoosh (Überraschung), click "
         "(Aufzählung). Außerdem „zoom“: Wortnummern, bei denen ein Produkt, Gericht oder eine Sorte genannt bzw. gezeigt wird "
         "(z. B. „Classic“, „Topping nach Wahl“, „Smashburger“) – dort zoomt das Bild kurz rein (ohne Emoji/Sound), höchstens "

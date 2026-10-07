@@ -3040,6 +3040,14 @@ CUT_KINDS = ("schnitt", "anfang", "ende")
 def gemini_fix_story(m, kept, problems):
     """Die Abnahme hat Schnittfehler gefunden (abgehackt, mitten im Satz, unnötige Pause …): die KI korrigiert die
     Satzauswahl mit genau diesem Hinweis – wie ein Cutter, der die Anmerkung vom Chef umsetzt."""
+    # Test 07.10.: Der Nachschnitt strich den Schlusssatz („So sieht die Junior Box bei Malo's aus … Capri-Sonne“), weil die
+    # Kontrolle die AUSSPRACHE von Namen bemängelte. Aussprache, Dialekt und Grammatik des Sprechers sind kein Schnittfehler –
+    # solche Befunde führen nie zu einem Nachschnitt (die richtige Schreibweise steht ohnehin im Untertitel).
+    problems = [p for p in problems if not re.search(r"aussprach|ausgesprochen|dialekt|grammatik|akzent|betonung", f"{p.get('art')} {p.get('was')}".lower())]
+    if (PLAN or {}).get("zeigen"):  # stumme Bildfolge (Regel 114) ist gewollt – „lange Lücke/Pause ohne Sprache“ ist dort kein Fehler
+        problems = [p for p in problems if not re.search(r"lücke|pause|stille|ohne sprache|kein ton", f"{p.get('art')} {p.get('was')}".lower())]
+    if not problems:
+        return None
     lo = max(0, m["start"] - 80)
     hi = min(len(WORDS) - 1, m["end"] + 80)
     sents = sentences(WORDS[lo:hi + 1])
@@ -3056,6 +3064,7 @@ def gemini_fix_story(m, kept, problems):
         "Fehler behoben sind – sonst nichts ändern. Bemängelt die Abnahme einen Pannen-Satz, Halbsatz oder eine Zwischenbemerkung "
         "(„plötzlich heißt es ‚das Fleisch verbrannt‘“), dann diesen Satz ENTFERNEN – niemals durch mehr Drumherum "
         "„vervollständigen“ (Test 06.10.: der Nachschnitt nahm die ganze Pannen-Passage dazu, das Video wurde länger und schlechter). "
+        "Begrüßung und Schlusssatz/Verabschiedung bleiben immer im Video. Wie jemand einen Namen ausspricht, ist nie ein Grund, einen Satz zu streichen. "
         "+ = Satz ist im Video (mit Sekunde im fertigen Video), − = rausgeschnitten. "
         + ("WICHTIG – dies ist eine Zubereitung/Anleitung: Ein Arbeitsschritt (etwas wird draufgelegt, gewendet, mit Soße bestrichen, "
            "eingepackt …) wird NIE entfernt, auch wenn der Satz holprig, kurz oder undeutlich gesprochen ist – der Zuschauer muss "
@@ -3069,6 +3078,11 @@ def gemini_fix_story(m, kept, problems):
     keep = sorted({k for k in (res or {}).get("keep") or [] if isinstance(k, int) and 0 <= k < len(sents)})
     if not keep:
         return None
+    # Feste Sicherung (Test 07.10.: zweimal strich der Nachschnitt den Schlusssatz mit der Capri-Sonne): Der erste und der
+    # letzte Satz, die im Video sind, bleiben immer drin – Begrüßung und Schluss streicht keine Kontrolle.
+    drin = [k for k, st in enumerate(sents) if any(w["i"] in kept_i for w in st)]
+    if drin:
+        keep = sorted(set(keep) | {drin[0], drin[-1]})
     new = {"start": sents[keep[0]][0]["i"], "end": sents[keep[-1]][-1]["i"], "title": m.get("title", ""),
            "drop": {w["i"] for k in range(keep[0], keep[-1] + 1) if k not in keep for w in sents[k]}}
     if new["start"] == m["start"] and new["end"] == m["end"] and new["drop"] == (m.get("drop") or set()):

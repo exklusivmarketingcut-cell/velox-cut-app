@@ -546,9 +546,17 @@ def build(plan, odir):
     n_zeig = sum(1 for u in units if (bw.get(u["nr"]) or {}).get("sichtbar") and not (bw.get(u["nr"]) or {}).get("sprecher_im_bild"))
     if schnell and n_zeig >= 3:
         neu_u, frei_z, weg = [], {}, 0
+        # Bildfolge nur in den Clips, in denen wirklich gearbeitet wird (mind. 3 gezeigte Schritte). Ein einzelner Satz aus dem
+        # Off in einem anderen Clip („Und jetzt ist unser Junior Burger fertig“) bleibt gesprochen – so auch im Schnitt des Inhabers.
+        zahl = {}
+        for u in units:
+            d = bw.get(u["nr"]) or {}
+            if d.get("sichtbar") and not d.get("sprecher_im_bild"):
+                zahl[id(u["c"])] = zahl.get(id(u["c"]), 0) + 1
+        kueche = {k for k, v in zahl.items() if v >= 3}
         for u in units:
             d, c = bw.get(u["nr"]) or {}, u["c"]
-            if not d or d.get("sprecher_im_bild"):
+            if not d or d.get("sprecher_im_bild") or id(c) not in kueche:
                 neu_u.append(u)
                 continue
             if not d.get("sichtbar") or d.get("von") is None:

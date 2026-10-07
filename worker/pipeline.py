@@ -2357,7 +2357,12 @@ def gemini_effects(kept, times):
         " und ein Sound aus: pop (Standard), ding (Bewertung/Pointe), kaching (Geld/Preis/Gewinn), whoosh (Überraschung), click "
         "(Aufzählung). Außerdem „zoom“: Wortnummern, bei denen ein Produkt, Gericht oder eine Sorte genannt bzw. gezeigt wird "
         "(z. B. „Classic“, „Topping nach Wahl“, „Smashburger“) – dort zoomt das Bild kurz rein (ohne Emoji/Sound), höchstens "
-        "einer pro 3 Sekunden. Wörter als [Nummer|Sekunde]Wort.",
+        "einer pro 3 Sekunden. "
+        + ("PREMIUM: Hier bekommt JEDER genannte Preis/Betrag und JEDES aufgezählte Produkt, Angebot oder Stichwort einen eigenen "
+           "Akzent – genau bei dem Wort, bei dem es gesagt wird („für unter 10 Euro“ → text „10 €“, sfx kaching; „drei Slices“ → "
+           "text „3 Slices“; „Eislatte“ → text „Eislatte“). Bis zu 10 Akzente, mindestens 1,5 Sekunden Abstand; text in normaler "
+           "Schreibweise (nicht in Großbuchstaben), bei Preisen immer mit „€“. " if PREM else "")
+        + "Wörter als [Nummer|Sekunde]Wort.",
         " ".join(f"[{w['i']}|{OUT_TIME[w['i']]:.1f}s]{w['t']}" for w in kept if w["i"] in OUT_TIME),
         {"type": "object", "properties": {"fx": {"type": "array", "items": {"type": "object", "properties": {
             "i": {"type": "integer"}, "text": {"type": "string"}, "emoji": {"type": "string"}, "sfx": {"type": "string"}},
@@ -2368,12 +2373,12 @@ def gemini_effects(kept, times):
     fx, last = [], -99.0
     for f in sorted((res or {}).get("fx") or [], key=lambda f: OUT_TIME.get(f.get("i"), 1e9)):
         t0 = OUT_TIME.get(f.get("i"))
-        if t0 is None or t0 < 0.8 or t0 - last < 4.0:
+        if t0 is None or t0 < 0.8 or t0 - last < (1.5 if PREM else 4.0):
             continue
         fx.append({"i": f["i"], "t": t0, "text": " ".join(str(f.get("text") or "").split()[:4])[:40], "emoji": f["emoji"] if f["emoji"] in EMOJIS else None,
                    "sfx": f["sfx"] if f["sfx"] in SFX_NAMES else "pop"})
         last = t0
-    return fx[:6]
+    return fx[:10 if PREM else 6]
 
 
 def viral_sounds(ranges, fx):
@@ -2540,6 +2545,39 @@ def fit_fs(txt, width=900, fs_max=150, k=None):
 
 
 HIDE = []  # Zeitfenster, in denen eine Premium-Grafik steht (dort keine normalen Untertitel)
+CARDS = []       # Premium: Stichwort-Karten dieses Clips (Zeit, Text, Symbol, Platz) – premium_events plant, burn zeichnet
+CARD_PITCH = 146  # Höhe einer Karte samt Abstand
+GRUEN = "&H0064E15A"  # Zähler am Ziel
+
+
+def card_png(text, emoji, out):
+    """Premium-Karte: helle, abgerundete Karte mit weichem Schatten, Symbolfeld in der Akzentfarbe, fetter Schrift.
+    Rückgabe (Datei, Rand) – der Rand ist der durchsichtige Schatten-Saum rundum."""
+    from PIL import Image, ImageDraw, ImageFilter, ImageFont
+    sc, h, p = 2, 130, 40
+    font = ImageFont.truetype(os.path.join(FONTS, "Montserrat-Bold.otf"), 54 * sc)
+    w = int(min(660, max(340, font.getlength(text) / sc + h + 54)))
+    while font.getlength(text) / sc + h + 54 > 660 and font.size > 30 * sc:   # langer Text → Schrift etwas kleiner
+        font = ImageFont.truetype(os.path.join(FONTS, "Montserrat-Bold.otf"), font.size - 2 * sc)
+    W, H, P = w * sc, h * sc, p * sc
+    im = Image.new("RGBA", (W + 2 * P, H + 2 * P), (0, 0, 0, 0))
+    sh = Image.new("RGBA", im.size, (0, 0, 0, 0))
+    ImageDraw.Draw(sh).rounded_rectangle((P, P + 14 * sc, P + W, P + H + 14 * sc), radius=30 * sc, fill=(0, 0, 0, 125))
+    im = Image.alpha_composite(im, sh.filter(ImageFilter.GaussianBlur(18 * sc)))
+    d = ImageDraw.Draw(im)
+    d.rounded_rectangle((P, P, P + W, P + H), radius=36 * sc, fill=(250, 250, 252, 240), outline=(255, 255, 255, 255), width=2 * sc)
+    acc = tuple(int(A.color.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4))
+    d.rounded_rectangle((P + 16 * sc, P + 16 * sc, P + (h - 16) * sc, P + (h - 16) * sc), radius=24 * sc, fill=acc + (255,))
+    ico = os.path.join(EMOJI_DIR, f"{EMOJIS.get(emoji, '')}.png")
+    if emoji and os.path.exists(ico):
+        e = Image.open(ico).convert("RGBA")
+        e.thumbnail((72 * sc, 72 * sc), Image.LANCZOS)
+        im.alpha_composite(e, (P + (h * sc - e.width) // 2, P + (h * sc - e.height) // 2))
+    else:
+        d.ellipse((P + 40 * sc, P + 40 * sc, P + (h - 40) * sc, P + (h - 40) * sc), fill=(18, 18, 22, 255))
+    d.text((P + (h + 10) * sc, P + H // 2), text, font=font, fill=(18, 18, 22, 255), anchor="lm")
+    im.resize((im.width // sc, im.height // sc), Image.LANCZOS).save(out)
+    return out, p
 NUM = re.compile(r"(\d{1,3}(?:[.\s]\d{3})+|\d+(?:,\d+)?)")
 
 
@@ -2549,7 +2587,7 @@ def premium_events(fx, words_out, title):
     – an den stärksten Momenten ein großes Schlüsselwort mit 3D-Tiefe („Kinetic Typography“, 1,1 s), darüber klein die
       Wörter davor (z. B. „für diesen“ / SCHMARRN);
     – Zahlen (Preise, Bewertungen, Mengen) zählen hoch („Zähler“, 0,75 s) und bleiben kurz stehen."""
-    ev = []
+    ev, karten = [], []
     HIDE.clear()
     clean_title = re.sub(r"[^\w\s&?!.,:'’\-€%/+]", "", title or "").strip().upper()  # „/“ bleibt: „10/10“
     lines, fs_t = [], 0
@@ -2559,8 +2597,13 @@ def premium_events(fx, words_out, title):
         if len(clean_title) > 16 and len(ws) > 1:
             best = min(range(1, len(ws)), key=lambda k: max(len(" ".join(ws[:k])), len(" ".join(ws[k:]))))
             lines = [" ".join(ws[:best]), " ".join(ws[best:])]
-        fs_t = min(fit_fs(max(lines, key=len), 800, 140), 140)
+        fs_t = min(fit_fs(max(lines, key=len), 680, 140), 140)
     plan_layout((820, int(len(lines) * fs_t * 1.08) + 30) if lines else None, False)
+    if lines and not LAY["title"]:  # der Titel entfällt nie (Inhaber 06.10.) – notfalls einzeilig ganz oben am Rand
+        lines = [clean_title]
+        fs_t = min(fit_fs(clean_title, 640, 110), 110)   # mit Buchstabenabstand bleibt die Zeile so im sichtbaren Rahmen
+        STATS.pop("titel_weggelassen", None)
+        plan_layout((820, int(fs_t * 1.08) + 30), False, force=True)
     cy = caption_y()
     py = cy - 390 if cy > 900 else cy + 390
     if FACES_OUT:  # Grafik nie über ein Gesicht: unter das Kinn, sonst über den Kopf, sonst Standard
@@ -2593,27 +2636,42 @@ def premium_events(fx, words_out, title):
                 if 1900 <= val <= 2100 and not dec:
                     sv = str(int(round(v)))
                 a, b = t0 + k * 0.034, (t0 + (k + 1) * 0.034) if k < n else t0 + 1.5
-                ev += text3d(f"{pre} {sv} {post}".strip(), 540, py, a, b, fs, color=ACC, anim=(k == 0),
-                             fade=(60 if k == 0 else 0, 180 if k == n else 0))
-            HIDE.append((t0 - 0.05, t0 + 1.5))
-        else:  # Schlüsselwort (lang → zwei ausgewogene Zeilen, nie abgeschnitten)
-            ws = txt.split()
-            rows = [txt]
-            if len(txt) > 14 and len(ws) > 1:
-                cut_k = min(range(1, len(ws)), key=lambda k: max(len(" ".join(ws[:k])), len(" ".join(ws[k:]))))
-                rows = [" ".join(ws[:cut_k]), " ".join(ws[cut_k:])]
-            fs = min(fit_fs(r, 740, 150) for r in rows)
-            for ri, row in enumerate(rows):
-                ev += text3d(row, 540, py + int((ri - (len(rows) - 1) / 2) * fs * 1.02), t0 + ri * 0.06, t0 + 1.25, fs, color=ACC)
-            HIDE.append((t0 - 0.05, t0 + 1.25))
-            if len(rows) > 1:
-                fs = int(fs * 1.02 * (len(rows) - 1) / 2 + fs)  # Abstand für die kleine Zeile darüber
-            before = [w[0] for w in words_out if t0 - 1.3 <= w[1] < t0 - 0.02][-2:]
-            before = [b for b in before if norm(b) not in {norm(x) for x in txt.split()}]
-            if before:
-                small = " ".join(before).rstrip(",.;:").replace("{", "(")
-                ev.append(f"Dialogue: 4,{ass_time(t0 - 0.05)},{ass_time(t0 + 1.15)},PopSmall,,0,0,0,,"
-                          f"{{\\an5\\pos(540,{py - int(fs * 0.72)})\\fad(80,160)\\blur0.5}}{small}")
+                if k < n:
+                    ev += text3d(f"{pre} {sv} {post}".strip(), 540, py, a, a + 0.034, fs, color=WHITE, anim=(k == 0), fade=(60 if k == 0 else 0, 0))
+                else:  # Inhaber 07.10.: am Ziel wird die Zahl GRÜN und poppt (dazu Kaching + Zoom) und bleibt kurz stehen
+                    ev += text3d(f"{pre} {sv} {post}".strip(), 540, py, a, t0 + 2.0, fs, color=GRUEN, anim=True, fade=(0, 200))
+            HIDE.append((t0 - 0.05, t0 + 2.0))
+            f["sfx"] = "kaching" if re.search(r"€|euro|eur\b", txt, re.I) else f.get("sfx")
+        else:  # Stichwort/Produkt → Karte mit Symbol, erscheint beim gesprochenen Wort (Stil-Muster vom Inhaber bestätigt 07.10.)
+            karten.append({"t": t0, "text": " ".join((f.get("text") or "").split())[:26], "emoji": f.get("emoji")})
+    # Karten, die kurz nacheinander fallen (Aufzählung), stapeln sich und bleiben gemeinsam stehen
+    CARDS.clear()
+    gruppen = []
+    for k in karten:
+        if gruppen and k["t"] - gruppen[-1][-1]["t"] <= 3.2 and len(gruppen[-1]) < 4:
+            gruppen[-1].append(k)
+        else:
+            gruppen.append([k])
+    half = CAPFS[0] * 0.6
+    for g in gruppen:
+        ta, tb = g[0]["t"], g[-1]["t"] + 2.2
+        h = len(g) * CARD_PITCH
+        frei = lambda y0: SAFE_T <= y0 and y0 + h <= SAFE_B and not hits_face(210, y0, 870, y0 + h, ta, tb) \
+            and not (LAY.get("trect") and ta < 3.4 and _cut(y0, y0 + h, LAY["trect"][1] - 10, LAY["trect"][3] + 10))
+        oben, unten = cy - half - 26 - h, cy + half + 26
+        if frei(unten) and not any(a_ < tb and b_ > ta for a_, b_ in HIDE):
+            y0 = unten                                   # unter den Untertiteln – beides bleibt lesbar
+        elif frei(oben):
+            y0 = oben
+        else:                                            # kein eigener Platz → an die Stelle der Untertitel (die pausieren so lange)
+            y0 = min(max(cy - h / 2, SAFE_T), SAFE_B - h)
+            if hits_face(210, y0, 870, y0 + h, ta, tb):
+                g, h = g[:1], CARD_PITCH                 # zu wenig Platz für den Stapel → nur die erste Karte
+                y0 = cy - h / 2
+                tb = g[0]["t"] + 2.2
+            HIDE.append((ta - 0.05, tb))
+        for r, k in enumerate(g):
+            CARDS.append({**k, "y": int(y0 + r * CARD_PITCH), "bis": tb})
     return ev
 
 
@@ -2900,6 +2958,19 @@ def burn(idx, cut, words_out, title, ranges=None, kept=None):
             vin, ni = f"vo{k}", ni + 1
     else:
         snd = []
+    if PREM and CARDS:  # Premium-Karten: gleiten beim gesprochenen Wort von unten herein, Stapel blendet gemeinsam aus
+        for k, c in enumerate(CARDS):
+            try:
+                png, pad = card_png(c["text"], c.get("emoji"), os.path.join(A.out, f"karte-{idx}-{k}.png"))
+            except Exception as e:  # noqa: BLE001
+                log(f"Karte „{c['text']}“ ausgelassen ({e})")
+                continue
+            d = max(1.0, c["bis"] - c["t"])
+            inputs += ["-loop", "1", "-t", f"{d + 0.3:.2f}", "-i", png]
+            fc.append(f"[{ni}:v]format=rgba,fade=t=in:st=0:d=0.2:alpha=1,fade=t=out:st={d:.2f}:d=0.28:alpha=1,setpts=PTS+{c['t']:.3f}/TB[ka{k}]")
+            fc.append(f"[{vin}][ka{k}]overlay=x=(W-w)/2:y='{c['y'] - pad}+46*pow(1-clip((t-{c['t']:.3f})/0.28,0,1),3)':eof_action=pass[kv{k}]")
+            vin, ni = f"kv{k}", ni + 1
+        STATS["premium_karten"] = [(round(c["t"], 1), c["text"]) for c in CARDS]
     snd += [(t, "ding", 0.3) for t in (QUIZ.get(idx) or {}).get("hits", [])]  # Quiz: Ding bei jeder richtigen Antwort
     snd += plan_snd
     snd = [x for x in snd if os.path.exists(os.path.join(SFX_DIR, f"{x[1]}.wav"))]

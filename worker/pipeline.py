@@ -1872,7 +1872,20 @@ def build_ass(words_out, path, hook=None, extra=(), hide=()):
                     tag += f"\\move({x0:.1f},{y},{xs[j]:.1f},{y},0,110)\\fscx86\\fscy86\\t(0,110,\\fscx100\\fscy100)"
                 else:
                     tag += f"\\pos({xs[j]:.1f},{y})" + ("\\fad(70,0)" if appear else "")
-                if j == k:
+                if j == k and PREM:
+                    # Premium-Untertitel (Inhaber 07.10.: „Premium muss sich deutlich abheben – auch wie die Untertitel
+                    # eingeblendet werden“): Das gerade gesprochene Wort bekommt eine Marke in der Akzentfarbe, die kurz
+                    # aufpoppt; das Wort selbst steht dunkel darauf. Clean/Viral färben nur das Wort.
+                    bw_ = cap_w(t, fs) + fs * 0.22
+                    bh_ = fs * CS["k"] / (CS.get("sx", 100) / 100) * 1.42
+                    r_ = min(bh_ * 0.28, 22)
+                    form = (f"m {r_:.0f} 0 l {bw_ - r_:.0f} 0 b {bw_:.0f} 0 {bw_:.0f} 0 {bw_:.0f} {r_:.0f} l {bw_:.0f} {bh_ - r_:.0f} "
+                            f"b {bw_:.0f} {bh_:.0f} {bw_:.0f} {bh_:.0f} {bw_ - r_:.0f} {bh_:.0f} l {r_:.0f} {bh_:.0f} "
+                            f"b 0 {bh_:.0f} 0 {bh_:.0f} 0 {bh_ - r_:.0f} l 0 {r_:.0f} b 0 0 0 0 {r_:.0f} 0")
+                    ev.append(f"Dialogue: 0,{ass_time(s)},{ass_time(e_show)},Cap,,0,0,0,,{{\\an5\\pos({xs[j]:.1f},{y})\\bord0\\shad3\\1c{ACC}"
+                              f"\\fscx80\\fscy80\\t(0,90,\\fscx100\\fscy100)\\p1}}{form}{{\\p0}}")
+                    tag += "\\1c&H00161412&\\bord0\\shad0"
+                elif j == k:
                     tag += "\\1c" + ACC
                     if pop:  # nur dieses Wort wächst minimal – um seine eigene Mitte, die Nachbarn bleiben stehen
                         tag += "\\t(0,90,\\fscx109\\fscy109)\\t(90,170,\\fscx105\\fscy105)" if not appear else \

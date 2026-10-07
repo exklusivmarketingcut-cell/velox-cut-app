@@ -2436,6 +2436,7 @@ def est_times(ranges, words):
     return out
 
 
+PREMX = {}  # Premium-Zusätze aus gemini_effects: genannter Ort, Handlungsaufruf (für Orts-Marke und Schlusskarte)
 ZOOM_WORDS = set()  # Wortnummern mit Produkt/Gericht → kurzer Zoom-Punch (gemini_effects füllt, zoom_punches nutzt)
 
 
@@ -2456,14 +2457,22 @@ def gemini_effects(kept, times):
         + ("PREMIUM: Hier bekommt JEDER genannte Preis/Betrag und JEDES aufgezählte Produkt, Angebot oder Stichwort einen eigenen "
            "Akzent – genau bei dem Wort, bei dem es gesagt wird („für unter 10 Euro“ → text „10 €“, sfx kaching; „drei Slices“ → "
            "text „3 Slices“; „Eislatte“ → text „Eislatte“). Bis zu 10 Akzente, mindestens 1,5 Sekunden Abstand; text in normaler "
-           "Schreibweise (nicht in Großbuchstaben), bei Preisen immer mit „€“. " if PREM else "")
+           "Schreibweise (nicht in Großbuchstaben), bei Preisen immer mit „€“. Zusätzlich: ort = wird ein Ort genannt (Stadt, "
+           "Stadtteil, Straße, Platz), dann dessen Wortnummer und Name (z. B. „Mannheim“); aufruf = der Handlungsaufruf dieses "
+           "Videos in höchstens 4 Wörtern, passend zu Branche und Inhalt (z. B. „Jetzt vorbeikommen“, „Folgen & kommentieren“, "
+           "„Termin sichern“) – leer lassen, wenn das Video zu nichts aufruft. " if PREM else "")
         + "Wörter als [Nummer|Sekunde]Wort.",
         " ".join(f"[{w['i']}|{OUT_TIME[w['i']]:.1f}s]{w['t']}" for w in kept if w["i"] in OUT_TIME),
         {"type": "object", "properties": {"fx": {"type": "array", "items": {"type": "object", "properties": {
             "i": {"type": "integer"}, "text": {"type": "string"}, "emoji": {"type": "string"}, "sfx": {"type": "string"}},
             "required": ["i", "text", "emoji", "sfx"]}},
-            "zoom": {"type": "array", "items": {"type": "integer"}}},
+            "zoom": {"type": "array", "items": {"type": "integer"}},
+            "ort": {"type": "object", "properties": {"i": {"type": "integer"}, "text": {"type": "string"}}},
+            "aufruf": {"type": "string"}},
          "required": ["fx"]})
+    if PREM and res:
+        PREMX.clear()
+        PREMX.update(ort=res.get("ort") or None, aufruf=" ".join(str(res.get("aufruf") or "").split()[:4])[:30])
     ZOOM_WORDS.update(int(i) for i in (res or {}).get("zoom") or [] if isinstance(i, int))  # Regel 84: Zoom aufs Produkt
     fx, last = [], -99.0
     for f in sorted((res or {}).get("fx") or [], key=lambda f: OUT_TIME.get(f.get("i"), 1e9)):
@@ -2652,7 +2661,7 @@ CARD_ICON = [(r"erdbeer|strawberry|beere", "🍓"), (r"cheesecake|kuchen|torte|c
 GRUEN = "&H0064E15A"  # Zähler am Ziel
 
 
-def card_png(text, emoji, out):
+def card_png(text, emoji, out, nr=None, art=None):
     """Premium-Karte: helle, abgerundete Karte mit weichem Schatten, Symbolfeld in der Akzentfarbe, fetter Schrift.
     Rückgabe (Datei, Rand) – der Rand ist der durchsichtige Schatten-Saum rundum."""
     from PIL import Image, ImageDraw, ImageFilter, ImageFont
@@ -2667,17 +2676,27 @@ def card_png(text, emoji, out):
     ImageDraw.Draw(sh).rounded_rectangle((P, P + 14 * sc, P + W, P + H + 14 * sc), radius=30 * sc, fill=(0, 0, 0, 125))
     im = Image.alpha_composite(im, sh.filter(ImageFilter.GaussianBlur(18 * sc)))
     d = ImageDraw.Draw(im)
-    d.rounded_rectangle((P, P, P + W, P + H), radius=36 * sc, fill=(250, 250, 252, 240), outline=(255, 255, 255, 255), width=2 * sc)
     acc = tuple(int(A.color.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4))
+    dunkel = art == "schluss"   # Schlusskarte: dunkel mit Rand in der Akzentfarbe, weiße Schrift, Pfeil
+    d.rounded_rectangle((P, P, P + W, P + H), radius=36 * sc, fill=(16, 16, 20, 240) if dunkel else (250, 250, 252, 240),
+                        outline=acc + (255,) if dunkel else (255, 255, 255, 255), width=(4 if dunkel else 2) * sc)
     d.rounded_rectangle((P + 16 * sc, P + 16 * sc, P + (h - 16) * sc, P + (h - 16) * sc), radius=24 * sc, fill=acc + (255,))
     ico = os.path.join(EMOJI_DIR, f"{EMOJIS.get(emoji, '')}.png")
     if emoji and os.path.exists(ico):
         e = Image.open(ico).convert("RGBA")
         e.thumbnail((72 * sc, 72 * sc), Image.LANCZOS)
         im.alpha_composite(e, (P + (h * sc - e.width) // 2, P + (h * sc - e.height) // 2))
+    elif dunkel:  # Pfeil nach rechts
+        cx_, cy_ = P + h * sc // 2, P + H // 2
+        d.polygon([(cx_ - 20 * sc, cy_ - 24 * sc), (cx_ + 22 * sc, cy_), (cx_ - 20 * sc, cy_ + 24 * sc)], fill=(16, 16, 20, 255))
     else:
         d.ellipse((P + 40 * sc, P + 40 * sc, P + (h - 40) * sc, P + (h - 40) * sc), fill=(18, 18, 22, 255))
-    d.text((P + (h + 10) * sc, P + H // 2), text, font=font, fill=(18, 18, 22, 255), anchor="lm")
+    d.text((P + (h + 10) * sc, P + H // 2), text, font=font, fill=(255, 255, 255, 255) if dunkel else (18, 18, 22, 255), anchor="lm")
+    if nr:  # Nummer der Aufzählung: kleiner dunkler Kreis an der linken oberen Ecke
+        r_ = 26 * sc
+        d.ellipse((P - 8 * sc, P - 8 * sc, P - 8 * sc + 2 * r_, P - 8 * sc + 2 * r_), fill=(16, 16, 20, 255), outline=(255, 255, 255, 255), width=2 * sc)
+        d.text((P - 8 * sc + r_, P - 8 * sc + r_), str(nr), font=ImageFont.truetype(os.path.join(FONTS, "Montserrat-Bold.otf"), 30 * sc),
+               fill=(255, 255, 255, 255), anchor="mm")
     im.resize((im.width // sc, im.height // sc), Image.LANCZOS).save(out)
     return out, p
 NUM = re.compile(r"(\d{1,3}(?:[.\s]\d{3})+|\d+(?:,\d+)?)")
@@ -2766,25 +2785,50 @@ def premium_events(fx, words_out, title, voll=True):
         else:
             gruppen.append([k])
     half = CAPFS[0] * 0.6
-    for g in gruppen:
-        ta, tb = g[0]["t"], g[-1]["t"] + 2.2
-        h = len(g) * CARD_PITCH
+
+    def platz(n, ta, tb):
+        """Oberkante für n Karten im Zeitraum ta–tb: unter den Untertiteln, sonst darüber, sonst an ihrer Stelle (dann
+        pausieren sie). Rückgabe (y, Anzahl, die wirklich passt)."""
+        h = n * CARD_PITCH
         frei = lambda y0: SAFE_T <= y0 and y0 + h <= SAFE_B and not hits_face(210, y0, 870, y0 + h, ta, tb) \
             and not (LAY.get("trect") and ta < 3.4 and _cut(y0, y0 + h, LAY["trect"][1] - 10, LAY["trect"][3] + 10))
         oben, unten = cy - half - 26 - h, cy + half + 26
         if frei(unten) and not any(a_ < tb and b_ > ta for a_, b_ in HIDE):
-            y0 = unten                                   # unter den Untertiteln – beides bleibt lesbar
-        elif frei(oben):
-            y0 = oben
-        else:                                            # kein eigener Platz → an die Stelle der Untertitel (die pausieren so lange)
-            y0 = min(max(cy - h / 2, SAFE_T), SAFE_B - h)
-            if hits_face(210, y0, 870, y0 + h, ta, tb):
-                g, h = g[:1], CARD_PITCH                 # zu wenig Platz für den Stapel → nur die erste Karte
-                y0 = cy - h / 2
-                tb = g[0]["t"] + 2.2
-            HIDE.append((ta - 0.05, tb))
+            return unten, n
+        if frei(oben):
+            return oben, n
+        y0 = min(max(cy - h / 2, SAFE_T), SAFE_B - h)
+        if hits_face(210, y0, 870, y0 + h, ta, tb):
+            n, y0 = 1, cy - CARD_PITCH / 2               # zu wenig Platz für den Stapel → nur eine Karte
+        HIDE.append((ta - 0.05, tb if n > 1 else ta + 2.2))
+        return y0, n
+
+    for g in gruppen:
+        ta, tb = g[0]["t"], g[-1]["t"] + 2.2
+        y0, n = platz(len(g), ta, tb)
+        if n < len(g):
+            g, tb = g[:1], g[0]["t"] + 2.2
         for r, k in enumerate(g):
-            CARDS.append({**k, "y": int(y0 + r * CARD_PITCH), "bis": tb})
+            # Inhaber 07.10.: nummerierte Schritte – in einer Aufzählung trägt jede Karte ihre Nummer („1“, „2“, „3“)
+            CARDS.append({**k, "y": int(y0 + r * CARD_PITCH), "bis": tb, "nr": r + 1 if len(g) > 1 else None})
+    if voll:
+        ende = words_out[-1][2] if words_out else 0.0
+        # Orts-Marke (Inhaber 07.10.): fällt ein Ort, erscheint oben eine Karte mit Stecknadel – wenn dort frei ist
+        ort = PREMX.get("ort") or {}
+        t_o = OUT_TIME.get(ort.get("i")) if isinstance(ort.get("i"), int) else None
+        o_txt = " ".join(str(ort.get("text") or "").split())[:24]
+        if t_o is not None and o_txt and 0.5 < t_o < ende - 1.5:
+            y_o = SAFE_T + 6 if not (LAY.get("trect") and t_o < 3.4) else int(LAY["trect"][3]) + 16
+            if not hits_face(210, y_o, 870, y_o + CARD_PITCH, t_o, t_o + 2.4) and not _cut(y_o, y_o + CARD_PITCH, cy - half - 10, cy + half + 10) \
+                    and not any(_cut(y_o, y_o + CARD_PITCH, c["y"], c["y"] + CARD_PITCH) and c["t"] < t_o + 2.4 and c["bis"] > t_o for c in CARDS):
+                CARDS.append({"t": t_o, "text": o_txt, "emoji": "📍", "y": y_o, "bis": t_o + 2.4, "art": "ort"})
+        # Schlusskarte (Inhaber 07.10.): in den letzten Sekunden der Handlungsaufruf als eigene, dunkle Karte
+        ruf = PREMX.get("aufruf") or ""
+        if ruf and ende >= 8.0:
+            ta = max(ende - 1.9, max([c["bis"] + 0.1 for c in CARDS] + [0.0]))
+            if ende - ta >= 1.1:
+                y0, _n = platz(1, ta, ende + 0.4)
+                CARDS.append({"t": ta, "text": ruf, "emoji": None, "y": int(y0), "bis": ende + 0.4, "art": "schluss"})
     return ev
 
 
@@ -3089,7 +3133,7 @@ def burn(idx, cut, words_out, title, ranges=None, kept=None):
     if PREM and CARDS:  # Premium-Karten: gleiten beim gesprochenen Wort von unten herein, Stapel blendet gemeinsam aus
         for k, c in enumerate(CARDS):
             try:
-                png, pad = card_png(c["text"], c.get("emoji"), os.path.join(A.out, f"karte-{idx}-{k}.png"))
+                png, pad = card_png(c["text"], c.get("emoji"), os.path.join(A.out, f"karte-{idx}-{k}.png"), nr=c.get("nr"), art=c.get("art"))
             except Exception as e:  # noqa: BLE001
                 log(f"Karte „{c['text']}“ ausgelassen ({e})")
                 continue
@@ -3100,7 +3144,31 @@ def burn(idx, cut, words_out, title, ranges=None, kept=None):
                       f"fade=t=out:st={d:.2f}:d=0.28:alpha=1,setpts=PTS+{c['t']:.3f}/TB[ka{k}]")
             fc.append(f"[{vin}][ka{k}]overlay=x=(W-w)/2:y='{c['y'] - pad}+46*pow(1-clip((t-{c['t']:.3f})/0.28,0,1),3)':eof_action=pass[kv{k}]")
             vin, ni = f"kv{k}", ni + 1
-        STATS["premium_karten"] = [(round(c["t"], 1), c["text"]) for c in CARDS]
+        STATS["premium_karten"] = [(round(c["t"], 1), c["text"], c.get("art") or (f"Nr. {c['nr']}" if c.get("nr") else "")) for c in CARDS]
+    if PREM and ranges and len(ranges) >= 3:
+        # Übergänge mit Abwechslung (Inhaber 07.10.: „springende Zooms, Lichtwisch und harte Schnitte – wechsel ab“): Die
+        # Zoom-Stufen wechseln schon an jedem Schnitt; an jedem dritten Schnitt zieht zusätzlich ein weicher Lichtstreifen
+        # durchs Bild (0,26 s, mit Whoosh), die übrigen bleiben harte Schnitte.
+        try:
+            from PIL import Image as _LI, ImageDraw as _LD, ImageFilter as _LF
+            lw = os.path.join(A.out, f"lichtwisch-{idx}.png")
+            im = _LI.new("RGBA", (1080, 1920), (0, 0, 0, 0))
+            _LD.Draw(im).polygon([(330, 0), (760, 0), (520, 1920), (90, 1920)], fill=(255, 250, 235, 105))
+            im.filter(_LF.GaussianBlur(70)).save(lw)
+            tc, n_lw = 0.0, 0
+            for k, (rs, re_) in enumerate(ranges[:-1]):
+                tc += olen(rs, re_)
+                if k % 3 != 1 or n_lw >= 6 or tc < 3.5:
+                    continue
+                inputs += ["-loop", "1", "-t", "0.30", "-i", lw]
+                fc.append(f"[{ni}:v]format=rgba,setpts=PTS+{tc - 0.10:.3f}/TB[lw{k}]")
+                fc.append(f"[{vin}][lw{k}]overlay=x='-W+2*W*(t-{tc - 0.10:.3f})/0.26':y=0:eof_action=pass[lv{k}]")
+                vin, ni = f"lv{k}", ni + 1
+                snd.append((max(0.0, tc - 0.08), "whoosh", 0.16))
+                n_lw += 1
+            STATS["lichtwisch"] = n_lw
+        except Exception as e:  # noqa: BLE001
+            log(f"Lichtwisch ausgelassen ({e})")
     snd += [(t, "ding", 0.3) for t in (QUIZ.get(idx) or {}).get("hits", [])]  # Quiz: Ding bei jeder richtigen Antwort
     snd += plan_snd
     snd = [x for x in snd if os.path.exists(os.path.join(SFX_DIR, f"{x[1]}.wav"))]

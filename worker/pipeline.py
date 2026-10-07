@@ -3716,11 +3716,11 @@ def sprachkanten(ranges, kept):
             t = max(a, ws[-1]["e"] - 0.1)
             while t < b and lv(t) >= thr:
                 t += 0.05
-            if b - (t + 0.15) > 0.1:
-                gek += b - (t + 0.15)
-                b = t + 0.15
+            if b - (t + 0.10) > 0.06:
+                gek += b - (t + 0.10)
+                b = t + 0.10
         if ws and (prev_b is None or a - prev_b >= 0.3):
-            lim = min(ws[0]["e"] - 0.25, a + 1.5)
+            lim = min(ws[0]["e"] - 0.12, a + 1.5)
             t = a
             while t < lim and lv(t) < thr and lv(t + 0.05) < thr:
                 t += 0.05

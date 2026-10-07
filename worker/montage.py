@@ -410,6 +410,38 @@ def bild_zum_wort(kand):
     return {int(d["nr"]): d for d in (res or {}).get("stellen") or [] if isinstance(d.get("nr"), (int, float))}
 
 
+def alle_schritte(c):
+    """Inhaber 07.10.: „Bei einer Zubereitung muss man den KOMPLETTEN Prozess sehen – es fehlten wieder Zwiebeln und Salatblatt.“
+    Die Sätze allein reichen dafür nicht (nicht jeder Handgriff wird angesagt, manche Ansage ist genuschelt). Die KI sieht
+    deshalb den ganzen Arbeits-Clip in Bildern mit Zeitangabe und listet JEDEN Arbeitsschritt mit der Sekunde, in der man
+    ihn am besten sieht. Rückgabe [(sekunde, was)] in zeitlicher Reihenfolge, [] wenn die KI nichts liefert."""
+    step = max(1.5, c["dur"] / 90)
+    pat = os.path.join(A.out, f"as_{c['id']}_%03d.jpg")
+    try:
+        run(["ffmpeg", "-v", "error", "-y", "-i", c["file"], "-vf", f"fps=1/{step:.3f},scale=256:-2", "-q:v", "7", pat])
+    except RuntimeError:
+        return []
+    imgs = sorted(f for f in os.listdir(A.out) if f.startswith(f"as_{c['id']}_"))
+    parts = [{"text": f"Clip {c['id']} ({c['dur']:.0f} s). Bilder mit Zeitangabe:"}]
+    for j, f in enumerate(imgs):
+        p = os.path.join(A.out, f)
+        parts.append({"text": f"Sekunde {(j + 0.5) * step:.1f}:"})
+        parts.append({"inline_data": {"mime_type": "image/jpeg", "data": base64.b64encode(open(p, "rb").read()).decode()}})
+        os.remove(p)
+    res = gemini("Du bist Cutter für Kurzvideos. Die Bilder zeigen eine Zubereitung/einen Arbeitsablauf von Anfang bis Ende. "
+                 "Liste ALLE Arbeitsschritte in zeitlicher Reihenfolge – der Zuschauer soll den kompletten Prozess sehen: jede Zutat, "
+                 "die dazukommt (Fleisch auf die Platte, Käse, Soße, Gurken, Zwiebeln, Salat, Deckel …), jedes Wenden, Drücken, "
+                 "Würzen, Zusammensetzen, Einpacken und das fertige Ergebnis. Je Schritt: sek = die Sekunde, in der man die Handlung "
+                 "am deutlichsten sieht (die Zutat landet gerade), was = höchstens 5 Wörter. NICHT auflisten: Warten, Leerlauf, "
+                 "Kameraschwenks, Hingreifen in Behälter, Missgeschicke (etwas fällt herunter, wird weggeworfen), denselben Schritt doppelt.",
+                 parts, {"type": "object", "properties": {"schritte": {"type": "array", "items": {"type": "object", "properties": {
+                     "sek": {"type": "number"}, "was": {"type": "string"}}, "required": ["sek", "was"]}}}, "required": ["schritte"]},
+                 timeout=240, deep=True)
+    out = sorted((float(d["sek"]), str(d.get("was") or "")) for d in (res or {}).get("schritte") or []
+                 if isinstance(d.get("sek"), (int, float)) and 0 <= d["sek"] <= c["dur"])
+    return out
+
+
 def build(plan, odir):
     """Eine Geschichte → montage.mp4 + plan.json in <odir>."""
     os.makedirs(odir, exist_ok=True)
@@ -427,6 +459,16 @@ def build(plan, odir):
                 voll += [(c, j) for j in range(voll[-1][1] + 1, k)]
             if (c, k) not in [(a_, b_) for a_, b_ in voll if a_ is c]:
                 voll.append((c, k))
+        # Kompletter Prozess (Inhaber 07.10.: „man muss den ganzen Prozess sehen, von Anfang bis Ende“): Ein Arbeits-Clip, aus dem
+        # mindestens 3 Sätze gewählt sind, kommt mit ALLEN seinen Sätzen ins Video – auch denen vor dem ersten und nach dem
+        # letzten gewählten. Pannen streicht der Schritt „Bild folgt dem Wort“, Fehlstarts/Füllwörter die Pipeline.
+        for c in {id(c): c for c, _ in voll}.values():
+            ks = [k for cc, k in voll if cc is c]
+            if len(ks) >= 3 and len(ks) < len(c["sents"]):
+                i0 = next(i for i, (cc, _) in enumerate(voll) if cc is c)
+                dazu += len(c["sents"]) - len(ks)
+                voll = [x for x in voll if x[0] is not c]
+                voll[i0:i0] = [(c, k) for k in range(len(c["sents"]))]
         # Inhaber 07.10. („die Reihenfolge stimmt nicht – erst alles ansehen, in die richtige Reihenfolge stellen, DANN schneiden“):
         # Eine Zubereitung läuft in Dreh-Reihenfolge. Begrüßung (erster Block) und Schluss (letzter Block) bleiben, wo die KI
         # sie hingestellt hat – alles dazwischen wird nach Clip (Aufnahme-Reihenfolge) und Satz sortiert.
@@ -555,7 +597,17 @@ def build(plan, odir):
     # dort. Sätze mit Sprecher im Bild bleiben gesprochen. Ohne Auskunft der KI bleibt der Satz, wie er ist.
     schnell = bool(re.search(r"zubereit|anleitung|tutorial|rezept|so wird|so entsteht|behind", str((plan or {}).get("format") or "").lower()))
     n_zeig = sum(1 for u in units if (bw.get(u["nr"]) or {}).get("sichtbar") and not (bw.get(u["nr"]) or {}).get("sprecher_im_bild"))
-    if schnell and n_zeig >= 3:
+    # Test 07.10. (ein einzelner langer Küchen-Clip): Dort gibt es keine Begrüßung/keinen Schluss vor der Kamera – als reine
+    # Bildfolge bliebe kein einziger gesprochener Satz. Dann bleibt die Erzählung, und das Bild wird Satz für Satz an die
+    # Handlung geschoben (Regel 111). Die schnelle Bildfolge gibt es nur, wenn drumherum jemand vor der Kamera spricht.
+    n_kamera = sum(1 for u in units if (bw.get(u["nr"]) or {}).get("sprecher_im_bild"))
+    # Entscheidung des Inhabers 07.10.: Ein Ordner mit vielen kleinen Clips wird geschnitten WIE EIN LANGES VIDEO – seine Stimme
+    # bleibt, das Bild folgt dem Wort (Regel 111), der komplette Prozess ist zu sehen („bei einem langen Video klappt das schon
+    # ganz gut“). Die stumme schnelle Bildfolge (Regel 114) ist deshalb nicht mehr der Normalfall; sie bleibt als Schalter
+    # VELOX_BILDFOLGE=1 erhalten.
+    if schnell and n_zeig >= 3 and not (n_kamera >= 2 and os.environ.get("VELOX_BILDFOLGE")):
+        log("Zubereitung: Erzählung bleibt, das Bild folgt dem Wort (wie bei einem langen Video)")
+    if schnell and n_zeig >= 3 and n_kamera >= 2 and os.environ.get("VELOX_BILDFOLGE"):
         neu_u, frei_z, weg = [], {}, 0
         # Bildfolge nur in den Clips, in denen wirklich gearbeitet wird (mind. 3 gezeigte Schritte). Ein einzelner Satz aus dem
         # Off in einem anderen Clip („Und jetzt ist unser Junior Burger fertig“) bleibt gesprochen – so auch im Schnitt des Inhabers.
@@ -583,6 +635,39 @@ def build(plan, odir):
             frei_z[id(c)] = b
             neu_u.append({**u, "zeig": (a, b), "s0": a, "s1": b})
             log(f"  Zeige-Stück {sent_of[id(u['ws'][0])]} „{u['satz'][:40]}“ → {a:.1f}–{b:.1f} s ({str(d.get('was') or '')[:50]})")
+        # Kompletter Prozess (Inhaber 07.10.): je Arbeits-Clip alle sichtbaren Schritte von der KI holen und Lücken füllen
+        for c in [c for c in clips if id(c) in kueche]:
+            try:
+                alle = alle_schritte(c)
+            except Exception as e:  # noqa: BLE001
+                alle = []
+                log(f"  Alle Schritte {c['id']}: KI-Schritt ausgefallen ({e})")
+            if len(alle) < 3:
+                continue
+            da = [u for u in neu_u if u.get("zeig") and u["c"] is c]
+            pos = next((i for i, u in enumerate(neu_u) if u.get("zeig") and u["c"] is c), None)
+            if pos is None or not allw[id(c)]:
+                continue
+            stuecke = [u["zeig"] for u in da]
+            neu_n = 0
+            for sek, was in alle:
+                if any(a - 2.0 <= sek <= b + 2.0 for a, b in stuecke):
+                    continue          # diesen Schritt zeigt schon ein (genauer getroffenes) Stück aus den Sätzen
+                a = max(0.0, sek - 0.5)
+                stuecke.append((a, min(c["dur"] - 0.05, a + 1.3)))
+                neu_n += 1
+                log(f"  Zusätzlicher Schritt {c['id']} {a:.1f} s: {was[:50]}")
+            stuecke = sorted(x for x in stuecke if x[1] - x[0] >= 0.7)
+            sauber = []
+            for a, b in stuecke:              # nie dasselbe Bild zweimal
+                a = max(a, sauber[-1][1]) if sauber else a
+                if b - a >= 0.7:
+                    sauber.append((a, b))
+            w0 = allw[id(c)][0]
+            neue = [{"c": c, "ws": [w0], "s0": a, "s1": b, "zeig": (a, b), "innen": False, "satz": "", "nr": -1} for a, b in sauber]
+            neu_u = [u for u in neu_u[:pos] if not (u.get("zeig") and u["c"] is c)] + neue + \
+                    [u for u in neu_u[pos:] if not (u.get("zeig") and u["c"] is c)]
+            log(f"Kompletter Prozess {c['id']}: {len(sauber)} Schritte in der Bildfolge ({neu_n} davon zusätzlich aus dem Bild erkannt)")
         log(f"Zubereitung als schnelle Bildfolge: {sum(1 for u in neu_u if u.get('zeig'))} Arbeitsschritte gezeigt, "
             f"{weg} Erklär-Sätze ohne eigene Handlung entfallen, {sum(1 for u in neu_u if not u.get('zeig'))} Sätze gesprochen")
         units = neu_u
@@ -698,6 +783,11 @@ def build(plan, odir):
         if not m or at is None:
             continue
         c = m["c"]
+        if schnell and at > t - 8.0:
+            # Inhaber 07.10.: Im Schlusssatz sprang das Bild zwischen Sprecher und „Junior Box auf dem Tisch“ hin und her.
+            # Über Begrüßung/Schluss mit Sprecher im Bild liegt kein Zwischenbild – entweder er oder das Produkt, kein Wechsel.
+            log(f"  Zwischenbild über dem Schlusssatz weggelassen ({c['id']})")
+            continue
         if schnell and c.get("talk"):
             # Inhaber 07.10.: Nach dem fertigen Burger kam als Zwischenbild noch einmal „Soße aufs Brötchen“, nach dem Einpacken
             # „Pommes in die Schachtel“ – Arbeitsschritte außerhalb der Reihenfolge. In einer Zubereitung kommen Zwischenbilder

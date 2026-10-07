@@ -1471,6 +1471,11 @@ CAP = {
     "hormozi": dict(font="Montserrat Thin Black", size=160, bold=0, ital=0, bord=13, shad=6, back=BLACK, n=3, chars=11, case="upper", pop=True, blur=0, file="Montserrat-normal-900.ttf", k=0.637),
     "neon":    dict(font="Bebas Neue", size=230, bold=0, ital=0, bord=5, shad=0, back=BLACK, n=3, chars=14, case="upper", pop=False, blur=2, glow=True, file="BebasNeue-normal-400.ttf", k=0.763),
     "comic":   dict(font="Bangers", size=220, bold=0, ital=0, bord=12, shad=8, back=BLACK, n=2, chars=10, case="upper", pop=True, blur=0, file="Bangers-normal-400.ttf", k=0.568),
+    # Inhaber 07.10.: „zu wenige Untertitel zur Auswahl“ – vier weitere Stile aus den vorhandenen Schriften
+    "bold":    dict(font="Poppins ExtraBold", size=150, bold=0, ital=0, bord=10, shad=0, back=BLACK, n=3, chars=13, case="upper", pop=True, blur=0, file="Poppins-normal-800.ttf", k=0.568),
+    "box":     dict(font="Montserrat", size=120, bold=1, ital=0, bord=14, shad=0, back=BLACK, n=3, chars=14, case=None, pop=False, blur=0, box=True, file="Montserrat-Bold.otf", k=0.647),
+    "impact":  dict(font="Bebas Neue", size=220, bold=0, ital=0, bord=10, shad=7, back=BLACK, n=3, chars=14, case="upper", pop=True, blur=0, file="BebasNeue-normal-400.ttf", k=0.769),
+    "mini":    dict(font="Montserrat", size=100, bold=1, ital=0, bord=7, shad=0, back=BLACK, n=5, chars=20, case=None, pop=False, blur=0, file="Montserrat-Bold.otf", k=0.647),
     "serif":   dict(font="Playfair Display", size=158, bold=1, ital=1, bord=0, shad=5, back="&H80000000", n=4, chars=16, case=None, pop=False, blur=0, file="PlayfairDisplay-italic-700.ttf", k=0.707),
 }
 CS = CAP.get(A.caption, CAP["rise"])
@@ -1705,7 +1710,7 @@ def build_ass(words_out, path, hook=None, extra=(), hide=()):
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
         "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
         f"Style: Cap,{CS['font']},{fs0},{WHITE},{ACC},{ACC if CS.get('glow') else BLACK},{CS['back']},{CS['bold']},{CS['ital']},0,0,"
-        f"100,100,1,0,1,{CS['bord']},{CS['shad']},5,0,0,0,1",
+        f"100,100,1,0,{3 if CS.get('box') else 1},{CS['bord']},{CS['shad']},5,0,0,0,1",
         f"Style: Hook,Montserrat Thin Black,82,{BLACK},{ACC},{WHITE},&H00000000,0,0,0,0,100,100,0,0,3,20,0,8,90,90,200,1",
         f"Style: Pop,Montserrat Thin Black,150,{WHITE},{ACC},{BLACK},&H00000000,0,0,0,0,100,100,1,0,1,0,0,5,40,40,0,1",
         f"Style: PopSmall,Montserrat,58,{WHITE},{ACC},{BLACK},&H00000000,1,0,0,0,100,100,1,0,1,0,0,5,40,40,0,1",

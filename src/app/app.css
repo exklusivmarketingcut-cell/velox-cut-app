@@ -177,6 +177,10 @@ label.f { display: grid; gap: 6px; font-size: 14px; font-weight: 600; color: #c9
 .capbtn small { display: block; margin-top: 4px; font: 500 11px system-ui; color: var(--mut); text-transform: none; letter-spacing: 0; -webkit-text-stroke: 0; text-shadow: none; filter: none; }
 .capbtn.cs-rise, .capbtn.cs-serif, .capbtn.cs-clean { font-size: 17px; } .capbtn.cs-hormozi { font-size: 16px; -webkit-text-stroke: 4px #000; }
 .capbtn.cs-neon, .capbtn.cs-comic { font-size: 22px; } .capbtn.cs-comic { -webkit-text-stroke: 4px #000; }
+.capbtn.cs-bold { font: 800 16px/1.1 'Poppins', sans-serif; text-transform: uppercase; -webkit-text-stroke: 4px #000; paint-order: stroke fill; }
+.capbtn.cs-box { font: 700 15px/1.1 'Montserrat', sans-serif; background: #000; }
+.capbtn.cs-impact { font: 400 23px/1 'Bebas Neue', sans-serif; letter-spacing: .03em; text-transform: uppercase; -webkit-text-stroke: 4px #000; paint-order: stroke fill; filter: drop-shadow(0 2px 0 #000); }
+.capbtn.cs-mini { font: 700 13px/1.2 'Montserrat', sans-serif; -webkit-text-stroke: 3px #000; paint-order: stroke fill; }
 .prev-mobile { display: none; }
 @media (max-width: 760px) {
   .prev-mobile { display: grid; justify-items: center; padding: 6px 0; }

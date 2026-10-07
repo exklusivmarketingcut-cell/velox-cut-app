@@ -15,9 +15,11 @@ type Job = {
 
 const CAPTIONS = [
   ['rise', 'Rise'], ['hormozi', 'Pop'], ['clean', 'Karaoke'], ['neon', 'Neon'], ['comic', 'Comic'], ['serif', 'Serif'],
+  ['bold', 'Bold'], ['box', 'Kasten'], ['impact', 'Impact'], ['mini', 'Mini'],
 ] as const;
 const CAPTION_HINT: Record<string, string> = {
   rise: 'weich, modern', hormozi: 'groß, knallig', clean: 'Wort für Wort', neon: 'leuchtend', comic: 'verspielt', serif: 'elegant',
+  bold: 'fett, klar', box: 'mit Hintergrund', impact: 'kantig, stark', mini: 'klein, dezent',
 };
 const COLORS = ['#F6E27F', '#FF3D7F', '#4F9EFF', '#3DFF9A', '#FF7A3D', '#FFFFFF'];
 /** Restzeit grob aus bisherigem Tempo schätzen (erst ab 15 %, vorher „wird berechnet“) */
@@ -81,6 +83,8 @@ export default function Studio({ credits, initialJobs }: { credits: number; init
   const [drive, setDrive] = useState('');
   const [style, setStyle] = useState<StyleId>('clean');
   const [caption, setCaption] = useState('rise');
+  // Anzahl Clips gibt es nur bei einem YouTube-Link (Inhaber 07.10.) – alles andere wird zu genau einem Video
+  const istYoutube = tab === 'drive' && /^https:\/\/((www\.|m\.)?youtube\.com|youtu\.be)\//.test(drive.trim());
   const [color, setColor] = useState(COLORS[0]);
   const [clips, setClips] = useState(1);
   const [useLogo, setUseLogo] = useState(false);
@@ -114,7 +118,7 @@ export default function Studio({ credits, initialJobs }: { credits: number; init
   const router = useRouter();
   const failedSeen = useRef(new Set(initialJobs.filter((j) => j.status === 'failed').map((j) => j.id)));
 
-  const cost = jobCost(style, clips);
+  const cost = jobCost(style, istYoutube ? clips : 1);
   const reload = useCallback(async () => {
     const r = await fetch('/api/jobs', { cache: 'no-store' });
     if (!r.ok) return;
@@ -223,7 +227,7 @@ export default function Studio({ credits, initialJobs }: { credits: number; init
       } else sourceName = /youtu\.?be/.test(drive) ? 'YouTube-Video' : /\/folders\//.test(drive) ? 'Google-Drive-Ordner' : 'Google Drive';
       const r = await fetch('/api/jobs', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sourceKind: sourcePaths ? 'folder' : tab, sourcePath, sourcePaths, driveUrl: tab === 'drive' ? drive.trim() : undefined, sourceName, style, captionStyle: caption, captionColor: color, clips, useLogo, music }),
+        body: JSON.stringify({ sourceKind: sourcePaths ? 'folder' : tab, sourcePath, sourcePaths, driveUrl: tab === 'drive' ? drive.trim() : undefined, sourceName, style, captionStyle: caption, captionColor: color, clips: istYoutube ? clips : 1, useLogo, music }),
       });
       const d = await r.json();
       if (!r.ok) {
@@ -330,13 +334,15 @@ export default function Studio({ credits, initialJobs }: { credits: number; init
           </div>
         </div>
         <div className="row" style={{ alignItems: 'end' }}>
-          <label className="f" style={{ width: 130 }}>
-            Anzahl Clips
-            <select className="inp" value={clips} onChange={(e) => setClips(+e.target.value)}>
-              {Array.from({ length: MAX_CLIPS_PER_JOB }, (_, i) => <option key={i} value={i + 1}>{i + 1}</option>)}
-            </select>
-          </label>
-          <p className="note" style={{ flex: 1, margin: 0 }}>Kurze Videos (unter 2½ Min.) werden zu einem fertigen Clip geschnitten. Ein Ordner wird zu einem Video – lade pro Ordner nur das Rohmaterial für ein Video hoch. Zu viel gebuchte Credits bekommst du automatisch zurück.</p>
+          {istYoutube ? (
+            <label className="f" style={{ width: 130 }}>
+              Anzahl Clips
+              <select className="inp" value={clips} onChange={(e) => setClips(+e.target.value)}>
+                {Array.from({ length: MAX_CLIPS_PER_JOB }, (_, i) => <option key={i} value={i + 1}>{i + 1}</option>)}
+              </select>
+            </label>
+          ) : null}
+          <p className="note" style={{ flex: 1, margin: 0 }}>{istYoutube ? 'Aus dem YouTube-Video schneiden wir so viele Clips, wie du wählst – die besten Momente zuerst. ' : 'Aus deinem Upload wird ein fertiges Video. Ein Ordner wird zu einem Video – lade pro Ordner nur das Rohmaterial für ein Video hoch. '}Zu viel gebuchte Credits bekommst du automatisch zurück.</p>
         </div>
         <p className="f" style={{ marginBottom: -6 }}>Akzentfarbe</p>
         <div className="row" aria-label="Akzentfarbe">

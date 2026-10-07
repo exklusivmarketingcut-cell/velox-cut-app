@@ -2033,8 +2033,13 @@ def render_cut(idx, ranges):
     # Bewusst mild – stärkere Filter/Kompression klangen blechern und verschlechterten die Erkennung.
     # Rückmeldung 05.10.: leise Antworten („2 Euro“) gingen unter → Lautstärke-Angleich kräftiger (bis ×12, kürzere Fenster).
     tempo = f"atempo={SPEED[0]:.3f}," if SPEED[0] != 1.0 else ""  # schneller, Tonhöhe bleibt
-    fc.append(f"[{prev}]{tempo}highpass=f=80:p=2,afftdn=nr=10:nf=-42:tn=1,equalizer=f=220:t=q:w=1.2:g=-1.5,"
-              f"equalizer=f=3000:t=q:w=1.2:g=2,dynaudnorm=f=150:g=15:p=0.9:m=12,loudnorm=I=-14:TP=-1.5:LRA=7,"
+    # Inhaber 07.10.: „Der Ton klingt wie unter Wasser – er soll clean bleiben, aber nicht gefaked.“ Ursache war die
+    # Entrauschung (afftdn, nahm 7 dB Grundrauschen samt einem Teil der Stimme weg) und der kräftige Lautstärke-Angleich
+    # (bis ×12, pumpte zwischen den Wörtern). Im Hörvergleich wählte er „eine Mischung aus neu und Original“: KEINE
+    # Entrauschung mehr, nur Brummen unter 80 Hz raus, die Stimme ganz leicht betont, leise Stellen sanft und langsam angehoben
+    # (höchstens ×2,5), dann auf Sendelautstärke.
+    fc.append(f"[{prev}]{tempo}highpass=f=80:p=2,equalizer=f=220:t=q:w=1.2:g=-0.8,"
+              f"equalizer=f=3000:t=q:w=1.2:g=0.8,dynaudnorm=f=500:g=31:p=0.9:m=2.5,loudnorm=I=-14:TP=-1.5:LRA=11,"
               f"afade=t=in:d=0.03,afade=t=out:st={max(0.0, total - 0.18):.3f}:d=0.18,aresample=48000[ac]")
     fc.append(f"[0:v]setsar=1,{GRADE},format=yuv420p[vc]")
     script = os.path.join(A.out, f"cut-{idx}.filter")

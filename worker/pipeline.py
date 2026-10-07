@@ -3702,7 +3702,7 @@ def sprachkanten(ranges, kept):
         # gesprochen erst ab 12,5 s). Über den Wortanfang gezählt, galt es als letztes Wort des Abschnitts DAVOR – und dessen
         # Nachlauf mit „so“ und Kopfdrehen blieb stehen (Premium-Test 07.10.).
         ws = [w for w in kept if a - 0.05 <= (w["s"] + w["e"]) / 2 < b]
-        prev_b = ranges[k - 1][1] if k else None
+        prev_b = out[-1][1] if out else None   # das (evtl. schon gekürzte) Ende des Abschnitts davor
         next_a = ranges[k + 1][0] if k + 1 < len(ranges) else None
         if ws and (next_a is None or next_a - b >= 0.3) and lv(b) >= thr:
             lim = min(b + 0.35, (next_a - 0.05) if next_a is not None else DUR)
@@ -3712,7 +3712,7 @@ def sprachkanten(ranges, kept):
             if t < lim:                      # die Stimme endet wirklich innerhalb der Frist → bis dorthin stehen lassen
                 verl += t + 0.04 - b
                 b = t + 0.04
-        if ws and next_a is not None and next_a - b >= 0.3 and not _handlung_bleibt:
+        if ws and next_a is not None and not _handlung_bleibt:  # auch wenn der nächste Abschnitt direkt anschließt (Clip-Wechsel)
             # Inhaber 07.10. (Premium): Nach „… Toppings nach Wahl“ sagt er noch „so“ und dreht den Kopf – „da muss direkt
             # der Cut kommen“. Vor einem Schnitt endet der Abschnitt deshalb dort, wo die Stimme des letzten behaltenen Wortes
             # verklingt (+0,15 s) – was danach kommt (Laut, Blick, Leerlauf), gehört nicht mehr dazu.

@@ -427,6 +427,17 @@ def build(plan, odir):
                 voll += [(c, j) for j in range(voll[-1][1] + 1, k)]
             if (c, k) not in [(a_, b_) for a_, b_ in voll if a_ is c]:
                 voll.append((c, k))
+        # Inhaber 07.10. („die Reihenfolge stimmt nicht – erst alles ansehen, in die richtige Reihenfolge stellen, DANN schneiden“):
+        # Eine Zubereitung läuft in Dreh-Reihenfolge. Begrüßung (erster Block) und Schluss (letzter Block) bleiben, wo die KI
+        # sie hingestellt hat – alles dazwischen wird nach Clip (Aufnahme-Reihenfolge) und Satz sortiert.
+        nr = {id(c): i for i, c in enumerate(clips)}
+        if len({id(c) for c, _ in voll}) >= 3:
+            a_end = next((i for i, (c, _) in enumerate(voll) if c is not voll[0][0]), len(voll))
+            b_start = len(voll) - next((i for i, (c, _) in enumerate(reversed(voll)) if c is not voll[-1][0]), len(voll))
+            mitte = sorted(voll[a_end:b_start], key=lambda x: (nr[id(x[0])], x[1]))
+            if mitte != voll[a_end:b_start]:
+                log("Zubereitung: Sätze in Dreh-Reihenfolge gebracht")
+            voll = voll[:a_end] + mitte + voll[b_start:]
         if dazu:
             log(f"Zubereitung: {dazu} ausgelassene Sätze zwischen den gewählten wieder aufgenommen (kein Arbeitsschritt fehlt)")
         order = voll
@@ -687,6 +698,12 @@ def build(plan, odir):
         if not m or at is None:
             continue
         c = m["c"]
+        if schnell and c.get("talk"):
+            # Inhaber 07.10.: Nach dem fertigen Burger kam als Zwischenbild noch einmal „Soße aufs Brötchen“, nach dem Einpacken
+            # „Pommes in die Schachtel“ – Arbeitsschritte außerhalb der Reihenfolge. In einer Zubereitung kommen Zwischenbilder
+            # deshalb nur aus reinen Bild-Clips (fertiges Menü, Laden), nie aus Clips, in denen gearbeitet oder gesprochen wird.
+            log(f"  Zwischenbild aus {c['id']} weggelassen (Arbeitsschritt außerhalb der Reihenfolge)")
+            continue
         d = min(2.5, max(1.0, float(b.get("dauer_s") or 1.8)), m["b"] - m["a"])
         a = m["a"] + max(0.0, (m["b"] - m["a"] - d) / 2)  # ruhige Mitte der Stelle
         e = a + d

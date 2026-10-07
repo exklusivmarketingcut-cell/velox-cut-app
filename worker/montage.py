@@ -394,19 +394,21 @@ def bild_zum_wort(kand):
     res = gemini("Du bist Cutter für Kurzvideos. Ein Sprecher sagt an, was er tut („jetzt kommen zwei Gurken drauf“) – die Handlung "
                  "passiert im Rohmaterial oft erst ein paar Sekunden NACH dem Satz. Für jede Stelle bekommst du den Satz und Bilder "
                  "mit Zeitangabe vom Satzanfang bis einige Sekunden danach (er redet dort evtl. schon weiter – das ist egal). Bestimme je Stelle: "
+                 "fehlstart = der Satz ist kein fertiger Satz fürs Video: abgebrochener Anlauf („Also, warte, weil ich will sagen …“), "
+                 "Regie/Absprache mit dem Team („Sag mal …“, „Wie heißt das?“, „drei, zwei, eins“), Gestammel. "
                  "panne = der Satz spricht über ein Missgeschick, einen Fehler oder Unsicherheit beim Dreh („das Fleisch verbrannt“, "
                  "„wir holen es jetzt erst runter, das ist vielleicht …“, „warte, nochmal“) – kein Arbeitsschritt, gehört nie ins Video. "
                  "sprecher_im_bild = sieht man WÄHREND des Satzes das Gesicht des Sprechers (er spricht in die Kamera)? "
                  "sichtbar = ist die angesagte Handlung bzw. das genannte Ding in den Bildern eindeutig zu sehen? "
                  "von = Sekunde, in der die angesagte Handlung wirklich beginnt (NICHT das Hingreifen in einen Behälter, nicht der "
                  "Kameraschwenk dorthin – der Moment, in dem das Angesagte passiert: die Gurken landen auf dem Burger). "
-                 "bis = Sekunde, in der die Handlung fertig ist. was = was man dort sieht (höchstens 6 Wörter). "
+                 "bis = Sekunde, in der die Handlung fertig ist (immer angeben; ist nichts zu sehen, von = bis = 0). was = was man dort sieht (höchstens 6 Wörter). "
                  "Nur angeben, was du wirklich siehst; im Zweifel sichtbar=false. Sagt der Satz keine Handlung an "
                  "(Begrüßung, Meinung, Preis), dann sichtbar=false.",
                  parts, {"type": "object", "properties": {"stellen": {"type": "array", "items": {"type": "object", "properties": {
-                     "nr": {"type": "integer"}, "panne": {"type": "boolean"}, "sprecher_im_bild": {"type": "boolean"}, "sichtbar": {"type": "boolean"},
+                     "nr": {"type": "integer"}, "panne": {"type": "boolean"}, "fehlstart": {"type": "boolean"}, "sprecher_im_bild": {"type": "boolean"}, "sichtbar": {"type": "boolean"},
                      "von": {"type": "number"}, "bis": {"type": "number"}, "was": {"type": "string"}},
-                     "required": ["nr", "sprecher_im_bild", "sichtbar"]}}}, "required": ["stellen"]}, timeout=180)
+                     "required": ["nr", "panne", "fehlstart", "sprecher_im_bild", "sichtbar", "von", "bis"]}}}, "required": ["stellen"]}, timeout=180)
     return {int(d["nr"]): d for d in (res or {}).get("stellen") or [] if isinstance(d.get("nr"), (int, float))}
 
 
@@ -584,8 +586,24 @@ def build(plan, odir):
         except Exception as e:  # noqa: BLE001
             log(f"Bild folgt dem Wort: KI-Schritt ausgefallen ({e}) – Bild bleibt, wie gedreht")
     # Regel 106: Pannen-Sätze („das Fleisch verbrannt“) kommen nie ins Video – die KI markiert sie hier gleich mit
+    # Feste Sicherung zusätzlich zur KI (Testreihe 07.10.: „wir holen es jetzt erst runter, das ist vielleicht …“ blieb drin, weil
+    # die KI nur den Satz davor als Panne markiert hatte): eindeutige Pannen-Wörter, und der Satz direkt NACH einer Panne im
+    # selben Clip, wenn er sie weiter bespricht.
+    fehl_re = re.compile(r"^\W*(also,? )?warte\b|wie hei(ß|ss)t das|^\W*sag mal\b|drei, zwei, eins|ich will sagen|^\W*also,? als er\W*$", re.I)
     for u in units:
         d = bw.get(u["nr"]) or {}
+        if (d.get("fehlstart") or fehl_re.search(u["satz"])) and not re.search(r"warten (kurz|bis)", u["satz"], re.I):
+            u["raus"] = True
+            log(f"  Fehlstart gestrichen: {sent_of[id(u['ws'][0])]} „{u['satz'][:60]}“")
+    pan_re = re.compile(r"verbrannt|angebrannt|ist falsch|falsch gemacht|oh no|schiefgegangen|\bah, ah\b", re.I)
+    nach_re = re.compile(r"vielleicht|holen es|erst runter|nochmal neu|von vorne", re.I)
+    vor = None
+    for u in units:
+        d = bw.setdefault(u["nr"], {}) if (pan_re.search(u["satz"]) or (vor is not None and vor["c"] is u["c"] and vor.get("_p") and nach_re.search(u["satz"]))) else (bw.get(u["nr"]) or {})
+        if pan_re.search(u["satz"]) or (vor is not None and vor["c"] is u["c"] and vor.get("_p") and nach_re.search(u["satz"])):
+            d["panne"] = True
+        u["_p"] = bool(d.get("panne"))
+        vor = u
         if d.get("panne"):
             u["raus"] = True
             log(f"  Panne gestrichen: {sent_of[id(u['ws'][0])]} „{u['satz'][:60]}“")
@@ -681,34 +699,53 @@ def build(plan, odir):
         # Grenze: das Bild darf nie in einen späteren Abschnitt desselben Clips laufen, der lippensynchron bleiben muss
         grenze = min([x["s0"] for x in units[k + 1:] if x["c"] is c and ((bw.get(x["nr"]) or {}).get("sprecher_im_bild") or not bw.get(x["nr"]))]
                      + [c["dur"] - 0.05])
-        v0 = u["s0"]
+        # Fehlersuche 07.10. (Inhaber: „Wort und Bild passen nicht, es muss 1:1 sein; nach der Ansage sieht man die Handlung
+        # nicht, sofort Cut“). Drei Denkfehler der alten Fassung: (1) Sätze OHNE eigene Handlung bekamen das Bild „danach“ und
+        # verbrauchten so die Handlung des nächsten Satzes – alles verrutschte um bis zu 10 s. (2) Fehlte die Angabe „bis“,
+        # wurde die Handlung nach dem Satz nie weitergezeigt. (3) Fehlstarts bekamen Handlungsbilder. Jetzt:
+        #   – Satz MIT sichtbarer Handlung: Bild beginnt kurz vor der Handlung, und sie läuft danach stumm weiter, bis sie fertig ist.
+        #   – Satz OHNE eigene Handlung: Bild bleibt an seiner eigenen Stelle (nur wenn die schon gezeigt wurde, läuft es weiter).
+        v0, hat = u["s0"], False
         if not fest:
-            if d.get("sichtbar") and d.get("von") is not None:
-                v0 = max(u["s0"], min(float(d["von"]), u["tb"]) - 0.4)
-            v0 = max(v0, frei.get(id(c), 0.0))           # nie Bilder zeigen, die schon zu sehen waren
-            v0 = max(u["s0"], min(v0, grenze - L))
+            f0 = frei.get(id(c), 0.0)
+            if d.get("sichtbar") and float(d.get("bis") or 0) > 0:
+                von = min(max(float(d.get("von") or 0), 0.0), c["dur"] - 0.5)
+                bis = max(float(d["bis"]), von + 1.0)
+                v0, hat = max(0.0, von - 0.4), True
+                if v0 < f0:                               # ein Teil davon war schon zu sehen (zwei Sätze, dieselbe Handlung)
+                    v0, hat = f0, f0 < bis - 0.6          # nie dasselbe Bild zweimal, nie zurückspringen → dort weiter
+            elif u["s0"] < f0:
+                v0 = f0                                   # eigene Stelle schon gezeigt → Bild läuft einfach weiter
+            v0 = max(0.0, min(v0, grenze - L))
         shift = v0 - u["s0"]
-        if shift < 0.5:
+        if abs(shift) < 0.5:
             shift, v0 = 0.0, u["s0"]
         u["shift"] = shift
         ende = v0 + L
-        if not fest and d.get("sichtbar") and d.get("bis") is not None:  # Handlung dauert länger als der Satz → weiter zeigen
+        if hat:  # die Handlung zu Ende zeigen (stumm, mit Musik) – höchstens 3 s über den Satz hinaus, nie in die nächste Handlung
             nxt = next((x for x in units[k + 1:] if x["c"] is c), None)
             nd = (bw.get(nxt["nr"]) or {}) if nxt else {}
-            halt = min(float(d["bis"]) + 0.3, ende + 2.5, grenze,
-                       (float(nd["von"]) - 0.4) if nd.get("sichtbar") and nd.get("von") is not None else 1e9)
-            if halt - ende >= 0.5:
+            halt = min(bis + 0.4, ende + 3.0, grenze,
+                       (float(nd["von"]) - 0.4) if nd.get("sichtbar") and float(nd.get("bis") or 0) > 0 and float(nd["von"]) - 0.4 > ende else 1e9)
+            if ende - v0 < 1.6:                           # sehr kurzer Satz: die Handlung mindestens 1,6 s sehen
+                halt = max(halt, min(v0 + 1.6, grenze))
+            if halt - ende >= 0.4:
                 u["extra"] = (ende, halt)
                 ende = halt
+        if not fest and not hat:  # Satz ohne eigene Handlung darf die Handlung des NÄCHSTEN Satzes nicht verbrauchen
+            nv = next(((bw.get(x["nr"]) or {}) for x in units[k + 1:] if x["c"] is c and (bw.get(x["nr"]) or {}).get("sichtbar")
+                       and float((bw.get(x["nr"]) or {}).get("bis") or 0) > 0), None)
+            if nv and v0 < float(nv["von"]) - 0.4 < ende:
+                ende = float(nv["von"]) - 0.4
         frei[id(c)] = max(frei.get(id(c), 0.0), ende)
         if fest and d:
             log(f"  Bild↔Wort {kurz}: Sprecher im Bild – bleibt lippensynchron")
         elif d and not d.get("sichtbar") and shift:
-            log(f"  Bild↔Wort {kurz}: keine eigene Handlung – Bild läuft weiter ({shift:.1f} s nach vorn)")
+            log(f"  Bild↔Wort {kurz}: keine eigene Handlung – eigene Stelle schon gezeigt, Bild läuft weiter ({shift:+.1f} s)")
         elif d and d.get("sichtbar"):
             n_shift += shift > 0
             log(f"  Bild↔Wort {kurz}: Handlung {float(d.get('von') or 0):.1f}–{float(d.get('bis') or 0):.1f} s ({str(d.get('was') or '')[:44]}) → "
-                + (f"Bild {shift:.1f} s vorgezogen" if shift else "passt schon")
+                + (f"Bild um {shift:+.1f} s verschoben" if shift else "passt schon")
                 + (f", danach {u['extra'][1] - u['extra'][0]:.1f} s Handlung weiter" if u.get("extra") else ""))
     if kand:
         log(f"Bild folgt dem Wort: {len(kand)} Sätze geprüft, {n_shift} mal das Bild vorgezogen")
@@ -762,11 +799,13 @@ def build(plan, odir):
         if n and not (p.get("zeig") and subs[n - 1].get("zeig")):
             joins.append(round(t, 3))  # hier stoßen zwei Clips aneinander → in der Pipeline immer ein Schnitt
         t += s1 - s0
-        if p.get("extra"):  # die Handlung läuft nach dem Satz noch weiter → mit eigenem Bild und Ton anhängen
-            ea, eb = p["extra"]
+        if p.get("extra"):  # die Handlung läuft nach dem Satz noch weiter → stumm anhängen (im Original redet er dort oft schon
+            ea, eb = p["extra"]  # weiter); die Pipeline lässt diese Strecke stehen und legt Musik darunter (plan „zeigen“)
             out2 = os.path.join(odir, f"teil_{n:02d}_h.mp4")
-            run(["ffmpeg", "-v", "error", "-y", "-ss", f"{ea:.3f}", "-to", f"{eb:.3f}", "-i", c["file"], "-vf", vf] + enc + [out2])
+            run(["ffmpeg", "-v", "error", "-y", "-ss", f"{ea:.3f}", "-to", f"{eb:.3f}", "-i", c["file"], "-f", "lavfi", "-t", f"{eb - ea:.3f}",
+                 "-i", "anullsrc=r=48000:cl=stereo", "-map", "0:v:0", "-map", "1:a:0", "-vf", vf, "-t", f"{eb - ea:.3f}"] + enc + [out2])
             files_c.append(out2)
+            zeigen.append([round(t, 3), round(t + eb - ea, 3)])
             t += eb - ea  # bewusst KEINE Clip-Grenze in „joins“: Bild läuft nahtlos weiter, die Pipeline soll hier nicht trennen
     lst = os.path.join(odir, "teile.txt")
     open(lst, "w").write("".join(f"file '{f}'\n" for f in files_c))

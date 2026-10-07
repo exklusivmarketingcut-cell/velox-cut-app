@@ -350,3 +350,12 @@ Protokoll aller Schnitte: `schnitt-maschine/logs/jobs.jsonl` (neben dem Ordner `
     die Mindest-Schnittlänge war oder mit den Nachbarn wieder verbunden wurde. Jetzt wird es mit Schutzabstand zu den
     Nachbarwörtern entfernt. Dazu: Zahlwort = Ziffer in der Hörprobe („fünf“ = „5“), sonst löst das ohne Grund den sicheren
     Neuschnitt aus.
+
+114. **Zubereitung im Ordner = wie ein langes Video** (Inhaber 07.10.). Seine Stimme bleibt, das Bild folgt dem Wort, der
+    komplette Prozess ist zu sehen, Clips in Dreh-Reihenfolge. Zwischenbilder nie aus Arbeits-Clips, keins über dem Schlusssatz.
+    Die stumme schnelle Bildfolge gibt es nur noch per Schalter `VELOX_BILDFOLGE=1`.
+115. **Bild und Wort 1:1** (Inhaber 07.10.: „es passt gar nicht … nach der Ansage sieht man die Handlung nicht, sofort Cut“).
+    Ein Satz MIT sichtbarer Handlung bekommt das Bild ab kurz vor der Handlung, und die Handlung läuft danach stumm (mit
+    Musik) zu Ende – mindestens 1,6 s zu sehen, höchstens 3 s über den Satz hinaus. Ein Satz OHNE eigene Handlung bleibt an
+    seiner Stelle bzw. läuft weiter, verbraucht aber nie die Handlung des nächsten Satzes. Nie dasselbe Bild zweimal, nie
+    zurückspringen. Fehlstarts und Regie-Sätze („Also, warte …“, „Wie heißt das?“) fliegen vor dem Zusammensetzen raus.

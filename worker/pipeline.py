@@ -631,6 +631,38 @@ def retake_idx(words):
                     break
             if b not in crew and len(tb) > 3:
                 break  # dazwischen echter Inhalt → keine Wiederholung (z. B. gleiche Frage an eine andere Person)
+    # Test 07.10. (Golden Thai, 4-Minuten-Monolog mit vielen Anläufen; Ergebnis bekam von der eigenen Kontrolle Note 1/10): Die
+    # Regel oben sieht nur 3 Sätze / 15 s weit. Liest jemand ein Skript und sagt jeden Satz mehrmals – mit Flüchen und
+    # Absprachen dazwischen –, liegen die Anläufe weit auseinander. Erkennbar daran, dass mindestens ein Drittel der Sätze
+    # später fast wortgleich wiederkommt (bei einer Umfrage wiederholt sich nur die Frage). Dann gilt fürs GANZE Video:
+    # von jedem Satz bleibt nur die letzte VOLLSTÄNDIGE Fassung; frühere und abgebrochene Anläufe fallen weg.
+    lang = [k for k in range(len(sents)) if len(toks[k]) >= 4 and k not in crew]
+
+    def gleich(x, y):
+        sm = difflib.SequenceMatcher(None, toks[x], toks[y], autojunk=False)
+        cov = sum(m.size for m in sm.get_matching_blocks())
+        return sm.ratio() >= 0.72 or (cov >= 0.8 * min(len(toks[x]), len(toks[y])) and toks[x][:2] == toks[y][:2])
+
+    spaeter = {a_: [b_ for b_ in lang if b_ > a_ and gleich(a_, b_)] for a_ in lang}
+    # Skript-Modus, wenn mindestens DREI VERSCHIEDENE Sätze später wiederkommen (Umfrage: nur die eine Frage wiederholt sich)
+    koepfe = [a_ for a_ in lang if spaeter[a_] and not any(a_ in spaeter[v] for v in lang if v < a_)]
+    if len(koepfe) >= 3:
+        def enthalten(x, y):  # Bruchstück („… die deine Verdauung in 24 Stunden komplett umkrempeln kann“) steckt im späteren ganzen Satz
+            return len(toks[x]) < len(toks[y]) and sum(1 for t_ in toks[x] if t_ in toks[y]) >= 0.85 * len(toks[x])  # Wortfolge darf abweichen
+        for a_ in lang:
+            spaeter[a_] = sorted(set(spaeter[a_]) | {b_ for b_ in lang if b_ > a_ and enthalten(a_, b_)})
+        n_weg = 0
+        for a_ in lang:
+            if not spaeter[a_]:
+                continue
+            gruppe = [a_] + spaeter[a_]
+            voll = max(len(toks[k]) for k in gruppe)
+            beste = [k for k in gruppe if len(toks[k]) >= 0.7 * voll][-1]   # die LETZTE Fassung, sofern sie nicht nur ein Bruchstück ist
+            if a_ != beste:
+                out.update(w["i"] for w in sents[a_])
+                n_weg += 1
+            keep.update(w["i"] for w in sents[beste])
+        STATS["skript_anlaeufe_entfernt"] = n_weg
     # Neustart innerhalb eines Satzes: „ich war gestern in der ich war gestern in der Stadt“ → erster Anlauf raus
     tk, j = [norm(w["t"]) for w in words], 0
     while j < len(words):

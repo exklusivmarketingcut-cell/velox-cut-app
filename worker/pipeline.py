@@ -2864,8 +2864,23 @@ def burn(idx, cut, words_out, title, ranges=None, kept=None):
                 continue
             used.append(t0)
             inputs += ["-i", b["file"]]
-            fc.append(f"[{ni}:v]trim=0:{d:.3f},setpts=PTS-STARTPTS+{t0:.3f}/TB[br{k}]")
-            fc.append(f"[{base}][br{k}]overlay=0:0:eof_action=pass[bv{k}]")
+            # Inhaber 07.10.: „Man muss den Unterschied zwischen den Stilen spüren – wie etwas ins Bild kommt, wie die B-Rolls
+            # reinkommen.“ Jeder Stil hat seine eigene Art, ein Zwischenbild zu bringen (alle drei einzeln mit ffmpeg geprüft):
+            #   Clean   – blendet weich ein und aus (ruhig)
+            #   Viral   – schiebt schnell von rechts herein (dazu Whoosh)
+            #   Premium – zoomt sich weich auf die volle Größe ein (Kino-Gefühl)
+            if PREM:
+                fc.append(f"[{ni}:v]trim=0:{d:.3f},setpts=PTS-STARTPTS,scale=w='2*trunc(540*(1+0.10*pow(1-min(t/0.4,1),2)))':h=-2:eval=frame,"
+                          f"format=rgba,fade=t=in:st=0:d=0.12:alpha=1,setpts=PTS+{t0:.3f}/TB[br{k}]")
+                fc.append(f"[{base}][br{k}]overlay=x='(W-w)/2':y='(H-h)/2':eof_action=pass[bv{k}]")
+            elif LOUD:
+                fc.append(f"[{ni}:v]trim=0:{d:.3f},setpts=PTS-STARTPTS+{t0:.3f}/TB[br{k}]")
+                fc.append(f"[{base}][br{k}]overlay=x='W*pow(1-clip((t-{t0:.3f})/0.16,0,1),3)':y=0:eof_action=pass[bv{k}]")
+                plan_snd.append((max(0.0, t0 - 0.05), "whoosh", 0.2))
+            else:
+                fc.append(f"[{ni}:v]trim=0:{d:.3f},setpts=PTS-STARTPTS,format=rgba,fade=t=in:st=0:d=0.15:alpha=1,"
+                          f"fade=t=out:st={max(0.2, d - 0.15):.3f}:d=0.15:alpha=1,setpts=PTS+{t0:.3f}/TB[br{k}]")
+                fc.append(f"[{base}][br{k}]overlay=0:0:eof_action=pass[bv{k}]")
             base, ni = f"bv{k}", ni + 1
         STATS["broll"] = [round(u, 1) for u in used]
     fc.append(f"[{base}]{vf}[vb]")
@@ -2972,7 +2987,9 @@ def burn(idx, cut, words_out, title, ranges=None, kept=None):
                 continue
             d = max(1.0, c["bis"] - c["t"])
             inputs += ["-loop", "1", "-t", f"{d + 0.3:.2f}", "-i", png]
-            fc.append(f"[{ni}:v]format=rgba,fade=t=in:st=0:d=0.2:alpha=1,fade=t=out:st={d:.2f}:d=0.28:alpha=1,setpts=PTS+{c['t']:.3f}/TB[ka{k}]")
+            dreh = -0.10 if k % 2 == 0 else 0.10  # Karten drehen sich abwechselnd von links/rechts leicht herein
+            fc.append(f"[{ni}:v]format=rgba,rotate='{dreh}*pow(1-clip(t/0.32,0,1),2)':c=none:ow=iw:oh=ih,fade=t=in:st=0:d=0.2:alpha=1,"
+                      f"fade=t=out:st={d:.2f}:d=0.28:alpha=1,setpts=PTS+{c['t']:.3f}/TB[ka{k}]")
             fc.append(f"[{vin}][ka{k}]overlay=x=(W-w)/2:y='{c['y'] - pad}+46*pow(1-clip((t-{c['t']:.3f})/0.28,0,1),3)':eof_action=pass[kv{k}]")
             vin, ni = f"kv{k}", ni + 1
         STATS["premium_karten"] = [(round(c["t"], 1), c["text"]) for c in CARDS]

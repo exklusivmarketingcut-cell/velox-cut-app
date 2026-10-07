@@ -2610,13 +2610,10 @@ def premium_events(fx, words_out, title, voll=True):
         STATS.pop("titel_weggelassen", None)
         plan_layout((820, int(fs_t * 1.08) + 30), False, force=True)
     cy = caption_y()
-    py = cy - 390 if cy > 900 else cy + 390
-    if FACES_OUT:  # Grafik nie über ein Gesicht: unter das Kinn, sonst über den Kopf, sonst Standard
-        ft, fb = face_box()[:2]
-        if fb + 200 < cy - 130:
-            py = int(min(cy - 200, fb + 150))
-        elif ft - 200 > 560:
-            py = int(ft - 150)
+    # Rauchtest 07.10.: Der Zähler „3 CHEESECAKES“ stand mitten auf dem Gesicht (die alte Stelle „390 px über den Untertiteln“
+    # prüfte das Gesicht nur grob). Der Zähler steht jetzt GENAU an der Stelle der Untertitel – die ist immer gesichtsfrei und im
+    # freien Rahmen, und die Untertitel pausieren ohnehin, solange er läuft.
+    py = cy
     if lines and LAY["title"]:
         for li, line in enumerate(lines):
             ev += text3d(line, 540, LAY["hy"] + 15 + int(fs_t * 0.54) + li * int(fs_t * 1.08), 0.05 + li * 0.08, 3.0, fs_t,
@@ -2626,13 +2623,15 @@ def premium_events(fx, words_out, title, voll=True):
         if not txt or t0 < 3.2:  # nicht mit dem Titel überlappen
             continue
         m = NUM.search(txt)
+        if m and not voll and not re.search(r"€|euro|eur\b", txt, re.I):
+            continue  # Viral: Zähler nur für Preise (wie im Website-Beispiel) – „3 Cheesecakes“ bleibt normaler Untertitel
         if m:  # Zähler
             raw = m.group(1)
             val = float(raw.replace(".", "").replace(" ", "").replace(",", "."))
             dec = "," in raw
             start = val - 15 if 1900 <= val <= 2100 and not dec else 0.0
             pre, post = txt[:m.start()].strip(), txt[m.end():].strip()
-            fs = fit_fs(f"{pre} {raw} {post}".strip(), 740, 230)
+            fs = fit_fs(f"{pre} {raw} {post}".strip(), 660, 170)
             n = 22
             for k in range(n + 1):
                 p = k / n

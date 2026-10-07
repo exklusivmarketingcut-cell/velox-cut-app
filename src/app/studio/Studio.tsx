@@ -83,6 +83,7 @@ export default function Studio({ credits, initialJobs }: { credits: number; init
   const [drive, setDrive] = useState('');
   const [style, setStyle] = useState<StyleId>('clean');
   const [caption, setCaption] = useState('rise');
+  const [alleStile, setAlleStile] = useState(false); // Untertitel: erst eine Auswahl, „⋯“ zeigt alle
   // Anzahl Clips gibt es nur bei einem YouTube-Link (Inhaber 07.10.) – alles andere wird zu genau einem Video
   const istYoutube = tab === 'drive' && /^https:\/\/((www\.|m\.)?youtube\.com|youtu\.be)\//.test(drive.trim());
   const [color, setColor] = useState(COLORS[0]);
@@ -132,6 +133,13 @@ export default function Studio({ credits, initialJobs }: { credits: number; init
     if (fresh.length) router.refresh();
   }, [router]);
   const active = jobs.some((j) => j.status === 'queued' || j.status === 'processing');
+  // Fertiges Video aus der Liste löschen (mit Rückfrage – die Clip-Dateien werden mit gelöscht)
+  const removeJob = async (id: string) => {
+    if (!window.confirm('Dieses Video endgültig löschen? Lade es vorher herunter, wenn du es noch brauchst.')) return;
+    const r = await fetch(`/api/jobs/${id}`, { method: 'DELETE' });
+    if (r.ok) { setJobs((list) => list.filter((x) => x.id !== id)); if (open === id) setOpen(null); }
+    else setErr((await r.json().catch(() => ({}))).error || 'Löschen hat nicht geklappt.');
+  };
   useEffect(() => {
     if (!active) return;
     const t = setInterval(reload, 5000);
@@ -325,12 +333,16 @@ export default function Studio({ credits, initialJobs }: { credits: number; init
         <div>
           <p className="f" style={{ marginBottom: 6 }}>Untertitel</p>
           <div className="capgrid" role="radiogroup" aria-label="Untertitel-Stil">
-            {CAPTIONS.map(([v, n]) => (
+            {CAPTIONS.filter(([v], i) => alleStile || i < 5 || v === caption).map(([v, n]) => (
               <button key={v} type="button" role="radio" aria-checked={caption === v} className={`capbtn cs-${v}${caption === v ? ' on' : ''}`} onClick={() => setCaption(v)}>
                 {n}
                 <small>{CAPTION_HINT[v]}</small>
               </button>
             ))}
+            <button type="button" className="capbtn" aria-expanded={alleStile} onClick={() => setAlleStile((x) => !x)} title={alleStile ? 'Weniger anzeigen' : 'Alle Untertitel-Stile anzeigen'}>
+              {alleStile ? '−' : '⋯'}
+              <small>{alleStile ? 'weniger' : `alle ${CAPTIONS.length} Stile`}</small>
+            </button>
           </div>
         </div>
         <div className="row" style={{ alignItems: 'end' }}>
@@ -413,7 +425,12 @@ export default function Studio({ credits, initialJobs }: { credits: number; init
                 <div className="t">{j.source_name || 'Video'}</div>
                 <div className="m">{STYLES[j.style]?.name} · {j.clips} Clip{j.clips > 1 ? 's' : ''} · {new Date(j.created_at).toLocaleString('de-DE', { dateStyle: 'short', timeStyle: 'short' })}</div>
               </div>
-              <span className={`badge ${j.status}`}>{STATUS[j.status]}</span>
+              <span className="row" style={{ gap: 8, alignItems: 'center' }}>
+                <span className={`badge ${j.status}`}>{STATUS[j.status]}</span>
+                {j.status === 'done' || j.status === 'failed' ? (
+                  <button type="button" className="job-x" aria-label="Video aus der Liste löschen" title="Löschen" onClick={() => removeJob(j.id)}>×</button>
+                ) : null}
+              </span>
               {j.status === 'processing' ? (
                 <div className="job-live">
                   <div className="bar"><i style={{ width: `${Math.max(5, j.progress)}%` }} /></div>

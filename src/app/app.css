@@ -75,6 +75,8 @@ label.f { display: grid; gap: 6px; font-size: 14px; font-weight: 600; color: #c9
 .jobs { display: grid; gap: 12px; }
 .job { display: grid; grid-template-columns: 1fr auto; gap: 8px 16px; align-items: center; padding: 16px 18px; border-radius: 16px; border: 1px solid var(--line); background: #0d0f15; }
 .job .t { font-weight: 700; overflow-wrap: anywhere; }
+.job-x { width: 28px; height: 28px; border-radius: 50%; border: 1px solid var(--line2); background: transparent; color: var(--mut); font-size: 18px; line-height: 1; cursor: pointer; }
+.job-x:hover { color: #fff; border-color: #ff5b6e; background: rgba(255,91,110,.12); }
 .job .m { font-size: 13px; color: var(--mut); }
 .badge { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; }
 .badge.queued { background: rgba(255,255,255,.08); color: #c9cbd6; }

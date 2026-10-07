@@ -2294,6 +2294,34 @@ def align(ranges, kept, heard):
         if words_out[k][1] < words_out[k - 1][1] + 0.04:
             tx, s0, e0 = words_out[k]
             words_out[k] = (tx, words_out[k - 1][1] + 0.04, max(e0, words_out[k - 1][1] + 0.12))
+    # Golden-Thai-Test 07.10.: „Während alle“ wurde gesprochen, stand aber nicht im Untertitel – die Erkennung hatte die zwei
+    # Wörter einem früheren, gestrichenen Anlauf zugeschlagen. Hört die Hörprobe am ANFANG eines Abschnitts Wörter, die keinem
+    # behaltenen Wort zugeordnet sind, und stehen genau diese Wörter kurz davor im Original (als gestrichen), dann gehören sie
+    # zum Satz und bekommen ihren Untertitel. Nur diese eng belegte Ergänzung – frei „dazugehörte“ Wörter bleiben tabu (Regel 101).
+    try:
+        used, kept_i, dazu = set(match.values()), {w["i"] for w in kept}, 0
+        for s_, e_, o_ in offs:
+            fk = next((i for i, w in enumerate(kept) if s_ - 0.05 <= w["s"] < e_ and i in match), None)
+            if fk is None:
+                continue
+            hb, cand = match[fk], []
+            j = hb - 1
+            while j >= 0 and j not in used and heard[j]["s"] >= o_ - 0.05 and heard[hb]["s"] - heard[j]["s"] < 1.5:
+                cand.insert(0, j)
+                j -= 1
+            if not cand:
+                continue
+            nah = {norm(w["t"]): w["t"] for w in WORDS if s_ - 8.0 <= w["s"] < s_ + 0.3 and w["i"] not in kept_i and norm(w["t"])}
+            if not all(norm(heard[j]["t"]) in nah for j in cand):
+                continue
+            at = next((k for k, wo in enumerate(words_out) if wo[1] >= heard[hb]["s"] - 0.02), len(words_out))
+            neu = [(nah[norm(heard[j]["t"])].rstrip(".,!?…"), heard[j]["s"], max(heard[j]["e"], heard[j]["s"] + 0.08)) for j in cand]
+            words_out[at:at] = neu
+            dazu += len(neu)
+        if dazu:
+            STATS["untertitel_aus_hoerprobe"] = dazu
+    except Exception as e:  # noqa: BLE001
+        log(f"Untertitel-Ergänzung aus der Hörprobe übersprungen ({e})")
     return words_out, miss
 
 

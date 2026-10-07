@@ -1630,14 +1630,12 @@ def plan_layout(card=None, logo=False, force=False):
 
 
 def emoji_spot(t0, t1):
-    """Platz für ein Emoji (Mitte x, y) oder None: unter den Untertiteln, sonst darüber, sonst neben dem Gesicht –
+    """Platz für ein Emoji (Mitte x, y) oder None: unter den Untertiteln, sonst darüber (auch leicht versetzt) –
     nie auf Untertitel, Titel (solange er steht), Logo oder Gesicht und immer im freien Rahmen der Apps."""
     cy, gap, r = caption_y(), emoji_gap(), EMOJI_PX // 2 + 10
     fbx = face_box(t0, t1)
-    cand = [(540, cy + gap), (540, cy - gap)]
-    if fbx:
-        my = (fbx[0] + fbx[1]) / 2
-        cand += [(fbx[3] + r + 20, my), (fbx[2] - r - 20, my)]
+    # Inhaber 07.10.: „Emojis nicht links und rechts vom Gesicht, sondern beim Untertitel – drunter, drüber, drumherum.“
+    cand = [(540, cy + gap), (540, cy - gap), (330, cy + gap), (750, cy + gap), (330, cy - gap), (750, cy - gap)]
     for x, y in cand:
         xr = SAFE_BTN_X if y + r > SAFE_BTN_Y else SAFE_R
         if x - r < SAFE_L or x + r > xr or y - r < LAY["top"] or y + r > SAFE_B or abs(y - cy) < gap:
@@ -1656,7 +1654,7 @@ def emoji_spot(t0, t1):
 def caption_y():
     """Mitte der Untertitel-Zeile – kommt aus der gemeinsamen Platzvergabe (plan_layout, Regel 112)."""
     if "cy" not in LAY:
-        plan_layout(None, bool(A.logo and os.path.exists(A.logo)))
+        plan_layout(None, False)
     return LAY["cy"]
 
 
@@ -2376,7 +2374,7 @@ def viral_sounds(ranges, fx):
 
 EMOJI_PX = 140   # Emoji-Größe im fertigen Bild (Quelle 160 px → wird nur verkleinert, bleibt scharf)
 HOOK_Y = SAFE_T  # Oberkante der Titel-Karte (unter der Statusleiste/TikTok-Suche)
-LOGO_PX, LOGO_Y = 116, SAFE_T  # Kunden-Logo oben links (Breite, Oberkante) – unter den Leisten der Apps (Regel 112)
+LOGO_PX, LOGO_Y = 150, SAFE_T  # Kunden-Logo oben links (Breite, Oberkante) – unter den Leisten der Apps (Regel 112)
 
 
 def logo_png(src, out):
@@ -2541,7 +2539,7 @@ def premium_events(fx, words_out, title):
             best = min(range(1, len(ws)), key=lambda k: max(len(" ".join(ws[:k])), len(" ".join(ws[k:]))))
             lines = [" ".join(ws[:best]), " ".join(ws[best:])]
         fs_t = min(fit_fs(max(lines, key=len), 800, 140), 140)
-    plan_layout((820, int(len(lines) * fs_t * 1.08) + 30) if lines else None, bool(A.logo and os.path.exists(A.logo)))
+    plan_layout((820, int(len(lines) * fs_t * 1.08) + 30) if lines else None, False)
     cy = caption_y()
     py = cy - 390 if cy > 900 else cy + 390
     if FACES_OUT:  # Grafik nie über ein Gesicht: unter das Kinn, sonst über den Kopf, sonst Standard
@@ -2740,20 +2738,20 @@ def burn(idx, cut, words_out, title, ranges=None, kept=None):
     LAY.clear()
     if not PREM:  # Regel 112: erst die Plätze vergeben, dann zeichnen (Premium vergibt sie in premium_events mit seinem 3D-Titel)
         from PIL import Image as _Im
-        plan_layout(_Im.open(card).size if card else None, bool(logo))
+        plan_layout(_Im.open(card).size if card else None, False)
         _fb = face_box()
         if card and LAY["title"] and _fb and LAY["cy"] < _fb[0] + 0.14 * (_fb[1] - _fb[0]) and _Im.open(card).size[1] > 150:
             # Untertitel stehen über dem Kopf (nahes Gesicht): zweizeiliger Titel würde sie in die Stirn drücken → flache Karte
             flach = hook_card(title, os.path.join(A.out, f"titel-{idx}.png"), flach=True)
             card = flach or hook_card(title, os.path.join(A.out, f"titel-{idx}.png"))
-            plan_layout(_Im.open(card).size, bool(logo), force=True)
+            plan_layout(_Im.open(card).size, False, force=True)
             card = card if LAY["title"] else None
         if card and not LAY["title"]:  # zweizeilig kein Platz → einzeilig und flacher versuchen, erst dann weglassen
             card = hook_card(title, os.path.join(A.out, f"titel-{idx}.png"), flach=True) or \
                 hook_card(title, os.path.join(A.out, f"titel-{idx}.png"))  # zu lang für eine Zeile → zweizeilige Karte
             if card:
                 STATS.pop("titel_weggelassen", None)
-                plan_layout(_Im.open(card).size, bool(logo), force=True)
+                plan_layout(_Im.open(card).size, False, force=True)
                 card = card if LAY["title"] else None
                 if card:
                     log("Titel einzeilig gesetzt – so passt er über den Kopf (Regel 112)")
@@ -2789,20 +2787,49 @@ def burn(idx, cut, words_out, title, ranges=None, kept=None):
     fc.append(f"[{base}]{vf}[vb]")
     vin = "vb"
     hy, lx = LAY["hy"], LAY["lx"]
-    if logo and not LAY["logo"]:
-        logo = None
     if card:  # Titel oben: Viral gleitet sanft von oben rein, Clean blendet nur ruhig ein; bleibt 3 s
         inputs += ["-loop", "1", "-t", "3.3", "-i", card]
         fc.append(f"[{ni}:v]format=rgba,fade=t=in:st=0:d=0.3:alpha=1,fade=t=out:st=2.9:d=0.4:alpha=1[hc]")
         ypos = f"'{hy}-36*pow(1-clip(t/0.35,0,1),3)'" if LOUD else str(hy)
         fc.append(f"[{vin}][hc]overlay=x=(W-w)/2:y={ypos}:eof_action=pass[vh]")
         vin, ni = "vh", ni + 1
-    if logo:  # Kunden-Logo oben links (wie in den Malo's-Videos des Nutzers): blendet weich ein und bleibt
+    if logo:
+        # Inhaber 07.10.: Das Logo steht NICHT mehr dauerhaft oben links. Es wird eingeblendet, wenn der Name fällt („Golden
+        # Thai“, „Novus Media“ – der erste Eintrag unter „Namen & Marken“), 2,6 s lang, höchstens dreimal. Fällt der Name nie,
+        # erscheint es einmal zum Schluss. Platz: freie obere Ecke – nie auf Gesicht, Titel oder Untertiteln, sonst entfällt es.
+        marke = [norm(x) for x in (A.words.split(",")[0] if A.words else "").split() if norm(x)]
+        zeiten = []
+        if marke:
+            ws = [(norm(w[0]), w[1]) for w in words_out]
+            for i in range(len(ws) - len(marke) + 1):
+                if all(difflib.SequenceMatcher(a=ws[i + j][0], b=marke[j]).ratio() >= 0.8 for j in range(len(marke))):
+                    if not zeiten or ws[i][1] - zeiten[-1] >= 6.0:
+                        zeiten.append(ws[i][1])
+        zeiten = [max(0.0, t - 0.15) for t in zeiten[:3] if t < total - 1.2] or [max(0.0, total - 2.8)]
         logo, lpad = logo_png(logo, os.path.join(A.out, f"logo-{idx}.png"))
-        inputs += ["-loop", "1", "-i", logo]
-        fc.append(f"[{ni}:v]format=rgba,scale={LOGO_PX + 2 * lpad}:-1:flags=lanczos,fade=t=in:st=0.1:d=0.35:alpha=1[lg]")
-        fc.append(f"[{vin}][lg]overlay=x={lx - lpad}:y={LOGO_Y - lpad}:shortest=1[vl]")
-        vin, ni = "vl", ni + 1
+        half_c, gezeigt = CAPFS[0] * 0.6 + 10, []
+        for k, t0 in enumerate(zeiten):
+            tr = LAY.get("trect") if t0 < 3.4 else None
+            ecken = [(SAFE_L, SAFE_T), (SAFE_R - LOGO_PX, SAFE_T)]
+            if tr:
+                ecken = [(SAFE_L, int(tr[3]) + 14), (SAFE_R - LOGO_PX, int(tr[3]) + 14)] + ecken
+            frei = [(x, y) for x, y in ecken
+                    if not hits_face(x, y, x + LOGO_PX, y + LOGO_PX, t0, t0 + 2.6)
+                    and not _cut(y, y + LOGO_PX, LAY["cy"] - half_c, LAY["cy"] + half_c)
+                    and not (tr and _cut(x, x + LOGO_PX, tr[0], tr[2]) and _cut(y, y + LOGO_PX, tr[1] - 10, tr[3] + 10))
+                    and y + LOGO_PX <= SAFE_B]
+            if not frei:
+                continue
+            x, y = frei[0]
+            inputs += ["-loop", "1", "-t", "2.6", "-i", logo]
+            fc.append(f"[{ni}:v]format=rgba,scale={LOGO_PX + 2 * lpad}:-1:flags=lanczos,fade=t=in:st=0:d=0.3:alpha=1,"
+                      f"fade=t=out:st=2.2:d=0.4:alpha=1,setpts=PTS+{t0:.3f}/TB[lg{k}]")
+            fc.append(f"[{vin}][lg{k}]overlay=x={x - lpad}:y={y - lpad}:eof_action=pass[vl{k}]")
+            vin, ni = f"vl{k}", ni + 1
+            gezeigt.append(round(t0, 1))
+        STATS["logo_zeiten"] = gezeigt
+        log(f"Logo eingeblendet bei {gezeigt} s" + ("" if marke else " (kein Markenname hinterlegt → nur zum Schluss)") if gezeigt
+            else "Logo weggelassen – beim Markennamen war keine Ecke frei")
     if PLAN and PLAN.get("bilder"):  # Produktbilder als Sticker: gleiten von unten rein, bleiben 1,8 s, Pop-Sound
         # NIE vor das Gesicht (Regel 83): freien Bereich neben/über/unter dem Kopf suchen, Sticker passend verkleinern
         from PIL import Image as _Img

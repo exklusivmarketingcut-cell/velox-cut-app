@@ -3,7 +3,7 @@
 
 export type PlanId = 'free' | 'starter' | 'pro' | 'business';
 export type Interval = 'monthly' | 'yearly';
-export type StyleId = 'clean' | 'viral';
+export type StyleId = 'clean' | 'viral' | 'premium';
 export type PackId = 'p100' | 'p300' | 'p600';
 
 export const PLANS: Record<PlanId, { name: string; credits: number; monthly: number; yearly: number }> = {
@@ -23,7 +23,11 @@ export const PACKS: Record<PackId, { credits: number; price: number }> = {
 export const STYLES: Record<StyleId, { name: string; credits: number; desc: string }> = {
   clean: { name: 'Clean', credits: 10, desc: 'Sauberer Schnitt, Untertitel, leichte Zooms' },
   viral: { name: 'Viral', credits: 20, desc: 'Zoom-Punches, Sounds, Emojis, Hook-Titel' },
+  premium: { name: 'Premium', credits: 40, desc: '3D-Titel, Motion Graphics, Karten & Zähler, Kino-Look' },
 };
+
+/** Premium im Studio wählbar? Erst auf true stellen, wenn supabase/einmal-ausfuehren-0009.sql gelaufen ist (sonst lehnt die Datenbank den Auftrag ab). */
+export const PREMIUM_AKTIV = false;
 
 export const EXTRA_MINUTE_CREDITS = 5;
 /** Einmaliger Bonus nach dem Hinterlegen der Karte (10 Free-Credits + 10 = ein Viral-Video zum Testen) */

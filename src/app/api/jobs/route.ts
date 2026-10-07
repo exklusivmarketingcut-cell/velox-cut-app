@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { createAdmin, createClient, getUser } from '@/lib/supabase/server';
-import { jobCost, MAX_CLIPS_PER_JOB, PLANS, type PlanId } from '@/lib/pricing';
+import { jobCost, MAX_CLIPS_PER_JOB, PLANS, PREMIUM_AKTIV, type PlanId } from '@/lib/pricing';
 
 const DRIVE = /^https:\/\/((drive|docs)\.google\.com|(www\.|m\.)?youtube\.com|youtu\.be)\//; // Google Drive oder YouTube
 const Body = z.object({
@@ -10,7 +10,7 @@ const Body = z.object({
   sourcePaths: z.array(z.string().max(400)).max(300).optional(), // Ordner: alle Videos + Bilder
   driveUrl: z.string().max(600).optional(),
   sourceName: z.string().max(200).optional(),
-  style: z.enum(['clean', 'viral']),
+  style: z.enum(['clean', 'viral', 'premium']),
   captionStyle: z.enum(['rise', 'hormozi', 'clean', 'neon', 'comic', 'serif', 'bold', 'box', 'impact', 'mini', 'wide']),
   captionColor: z.string().regex(/^#[0-9a-fA-F]{6}$/),
   clips: z.number().int().min(1).max(MAX_CLIPS_PER_JOB),
@@ -35,6 +35,7 @@ export async function POST(request: Request) {
   const parsed = Body.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return NextResponse.json({ error: 'Angaben unvollständig.' }, { status: 400 });
   const b = parsed.data;
+  if (b.style === 'premium' && !PREMIUM_AKTIV) return NextResponse.json({ error: 'Premium kommt bald.' }, { status: 400 });
   if (b.sourceKind === 'upload' && !b.sourcePath?.startsWith(`${user.id}/`)) return NextResponse.json({ error: 'Datei fehlt.' }, { status: 400 });
   if (b.sourceKind === 'drive' && !DRIVE.test(b.driveUrl ?? '')) return NextResponse.json({ error: 'Bitte einen Google-Drive- oder YouTube-Link einfügen.' }, { status: 400 });
   if (b.sourceKind === 'folder' && (!b.sourcePaths?.length || b.sourcePaths.some((x) => !x.startsWith(`${user.id}/`))))

@@ -4,7 +4,7 @@ import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import CaptionPreview from './CaptionPreview';
 import Results from './Results';
-import { jobCost, MAX_CLIPS_PER_JOB, MAX_UPLOAD_BYTES, STYLES, type StyleId } from '@/lib/pricing';
+import { jobCost, MAX_CLIPS_PER_JOB, MAX_UPLOAD_BYTES, STYLES, type StyleId, PREMIUM_AKTIV } from '@/lib/pricing';
 
 type Job = {
   id: string; status: 'queued' | 'processing' | 'done' | 'failed'; style: StyleId; clips: number; source_name: string | null;
@@ -319,7 +319,7 @@ export default function Studio({ credits, initialJobs }: { credits: number; init
         <div>
           <p className="f" style={{ marginBottom: 6 }}>Schnitt-Stil</p>
           <div className="seg">
-            {(Object.keys(STYLES) as StyleId[]).map((s) => (
+            {(Object.keys(STYLES) as StyleId[]).filter((s) => s !== 'premium' || PREMIUM_AKTIV).map((s) => (
               <label key={s}>
                 <input type="radio" name="style" checked={style === s} onChange={() => setStyle(s)} />
                 <b>{STYLES[s].name}{s === 'viral' ? ' 🔥' : ''}</b>

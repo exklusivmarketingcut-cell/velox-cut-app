@@ -372,7 +372,7 @@ export default function Studio({ credits, initialJobs }: { credits: number; init
           <p className="f" style={{ marginBottom: -4 }}>Extras <span className="muted" style={{ fontWeight: 400 }}>(freiwillig)</span></p>
           <label className="check">
             <input type="checkbox" checked={useLogo} onChange={(e) => setUseLogo(e.target.checked)} />
-            <span>Mein Logo einbauen – oben links, schützt dein Video vor Kopieren</span>
+            <span>Mein Logo einbauen – es wird eingeblendet, wenn dein Name im Video fällt (sonst kurz zum Schluss)</span>
           </label>
           {useLogo ? (
             <div className="row" style={{ alignItems: 'center', gap: 12, paddingLeft: 28 }}>
@@ -395,7 +395,7 @@ export default function Studio({ credits, initialJobs }: { credits: number; init
             Namen &amp; Marken in deinen Videos <span className="muted" style={{ fontWeight: 400 }}>(für richtige Untertitel)</span>
             <input className="inp" value={brand} maxLength={300} onChange={(e) => setBrand(e.target.value)} onBlur={saveBrand}
               placeholder="z. B. Malo's, Corndogs, Smashburger, Mannheim" />
-            <span className="note">Wird in deinem Konto gespeichert und gilt für alle Videos.</span>
+            <span className="note">Wird in deinem Konto gespeichert und gilt für alle Videos. Der <b>erste</b> Name ist dein Firmenname – fällt er im Video, blenden wir dein Logo ein.</span>
           </label>
           <p className="note" style={{ margin: 0 }}>Außerdem schlagen wir dir zu jedem fertigen Video 3 aktuelle Trend-Songs vor, die du beim Posten direkt in TikTok hinzufügen kannst.</p>
         </div>

@@ -2484,7 +2484,7 @@ def gemini_effects(kept, times):
         "einer pro 3 Sekunden. "
         + ("PREMIUM: Hier bekommt JEDER genannte Preis/Betrag und JEDES aufgezählte Produkt, Angebot oder Stichwort einen eigenen "
            "Akzent – genau bei dem Wort, bei dem es gesagt wird („für unter 10 Euro“ → text „10 €“, sfx kaching; „drei Slices“ → "
-           "text „3 Slices“; „Eislatte“ → text „Eislatte“). Bis zu 10 Akzente, mindestens 1,5 Sekunden Abstand; text in normaler "
+           "text „3 Slices“ – bei Mengen die Zahl IMMER mit auf die Karte; „Eislatte“ → text „Eislatte“; nimm das genaue Produkt („Strawberry Matcha“), nicht den Oberbegriff („Getränk“). Bis zu 10 Akzente, mindestens 1,5 Sekunden Abstand; text in normaler "
            "Schreibweise (nicht in Großbuchstaben), bei Preisen immer mit „€“. Zusätzlich: ort = wird ein Ort genannt (Stadt, "
            "Stadtteil, Straße, Platz), dann dessen Wortnummer und Name (z. B. „Mannheim“); aufruf = der Handlungsaufruf dieses "
            "Videos in höchstens 4 Wörtern, passend zu Branche und Inhalt (z. B. „Jetzt vorbeikommen“, „Folgen & kommentieren“, "
@@ -2677,6 +2677,7 @@ def fit_fs(txt, width=900, fs_max=150, k=None):
 
 
 HIDE = []  # Zeitfenster, in denen eine Premium-Grafik steht (dort keine normalen Untertitel)
+CUT_TIMES = []   # Schnitt-Zeitpunkte im fertigen Clip (burn füllt) – Karten enden am Schnitt
 CARDS = []       # Premium: Stichwort-Karten dieses Clips (Zeit, Text, Symbol, Platz) – premium_events plant, burn zeichnet
 CARD_PITCH = 146  # Höhe einer Karte samt Abstand
 # Inhaber 07.10.: „Bei Strawberry Matcha sollte eine Erdbeere im Feld sein.“ Liefert die KI kein Symbol, wählt die Karte
@@ -2802,13 +2803,20 @@ def premium_events(fx, words_out, title, voll=True):
             f["sfx"] = "kaching" if re.search(r"€|euro|eur\b", txt, re.I) else f.get("sfx")
         elif voll:  # Stichwort/Produkt → Karte mit Symbol, erscheint beim gesprochenen Wort (Stil-Muster vom Inhaber bestätigt 07.10.)
             ktxt = " ".join((f.get("text") or "").split())[:26]
+            if not re.search(r"\d", ktxt):  # Inhaber 07.10.: sagt er „drei Cheesecakes“, steht „3 Cheesecakes“ auf der Karte
+                zw = dict(ein="1", eine="1", einen="1", zwei="2", drei="3", vier="4", fünf="5", sechs="6", sieben="7", acht="8", neun="9", zehn="10")
+                davor = [w[0] for w in words_out if t0 - 1.6 <= w[1] <= t0 + 0.05][-3:]
+                zahl = next((zw.get(norm(x), norm(x)) for x in reversed(davor) if norm(x).isdigit() or norm(x) in ("zwei", "drei", "vier", "fünf", "sechs", "sieben", "acht", "neun", "zehn")), None)
+                if zahl:
+                    ktxt = f"{zahl} {ktxt}"[:26]
             ico = f.get("emoji") or next((e for pat, e in CARD_ICON if re.search(pat, ktxt, re.I)), None)
             karten.append({"t": t0, "text": ktxt, "emoji": ico})
     # Karten, die kurz nacheinander fallen (Aufzählung), stapeln sich und bleiben gemeinsam stehen
     CARDS.clear()
     gruppen = []
     for k in karten:
-        if gruppen and k["t"] - gruppen[-1][-1]["t"] <= 3.2 and len(gruppen[-1]) < 4:
+        schnitt = any(gruppen and gruppen[-1][-1]["t"] < c_ <= k["t"] for c_ in CUT_TIMES)
+        if gruppen and k["t"] - gruppen[-1][-1]["t"] <= 3.2 and len(gruppen[-1]) < 4 and not schnitt:
             gruppen[-1].append(k)
         else:
             gruppen.append([k])
@@ -2833,6 +2841,11 @@ def premium_events(fx, words_out, title, voll=True):
 
     for g in gruppen:
         ta, tb = g[0]["t"], g[-1]["t"] + 2.2
+        # Inhaber 07.10.: „Nach dem Cut bleibt ‚Toppings‘ noch stehen, obwohl er schon den Cancake hebt – das muss weg.“
+        # Eine Karte gehört zu ihrer Einstellung: Am nächsten Schnitt ist sie verschwunden (mind. 0,9 s war sie zu sehen).
+        nc = next((c_ for c_ in CUT_TIMES if c_ >= g[-1]["t"] + 0.9), None)
+        if nc is not None and nc < tb + 0.28:
+            tb = nc - 0.30
         y0, n = platz(len(g), ta, tb)
         if n < len(g):
             g, tb = g[:1], g[0]["t"] + 2.2
@@ -3019,6 +3032,11 @@ def burn(idx, cut, words_out, title, ranges=None, kept=None):
                 card = card if LAY["title"] else None
                 if card:
                     log("Titel einzeilig gesetzt – so passt er über den Kopf (Regel 112)")
+    CUT_TIMES.clear()
+    _t = 0.0
+    for _rs, _re in (ranges or [])[:-1]:
+        _t += olen(_rs, _re)
+        CUT_TIMES.append(round(_t, 3))
     pev = premium_events(pfx, words_out, title, voll=PREM) if LOUD else []
     if ranges and kept and idx not in QUIZ:
         QUIZ[idx] = gemini_quiz(kept, OUT_TIME)
@@ -3675,6 +3693,9 @@ def sprachkanten(ranges, kept):
     # lag das Atmen sonst schon über der Schwelle.
     thr = ruhe + 0.45 * (laut - ruhe)
     lv = lambda t: LV[min(len(LV) - 1, max(0, int(t / 0.05)))]
+    # In einer Zubereitung passiert die Handlung NACH der Ansage (Regel 107) – dort bleibt der Nachlauf stehen
+    _handlung_bleibt = bool(re.search(r"zubereit|anleitung|tutorial|rezept|behind|so wird|so entsteht",
+                                      str((PLAN or {}).get("format") or (STATS.get("story_format") or {}).get("format") or "").lower()))
     out, verl, gek = [], 0.0, 0.0
     for k, (a, b) in enumerate(ranges):
         ws = [w for w in kept if a - 0.05 <= w["s"] < b]
@@ -3688,6 +3709,16 @@ def sprachkanten(ranges, kept):
             if t < lim:                      # die Stimme endet wirklich innerhalb der Frist → bis dorthin stehen lassen
                 verl += t + 0.04 - b
                 b = t + 0.04
+        if ws and next_a is not None and next_a - b >= 0.3 and not _handlung_bleibt:
+            # Inhaber 07.10. (Premium): Nach „… Toppings nach Wahl“ sagt er noch „so“ und dreht den Kopf – „da muss direkt
+            # der Cut kommen“. Vor einem Schnitt endet der Abschnitt deshalb dort, wo die Stimme des letzten behaltenen Wortes
+            # verklingt (+0,15 s) – was danach kommt (Laut, Blick, Leerlauf), gehört nicht mehr dazu.
+            t = max(a, ws[-1]["e"] - 0.1)
+            while t < b and lv(t) >= thr:
+                t += 0.05
+            if b - (t + 0.15) > 0.1:
+                gek += b - (t + 0.15)
+                b = t + 0.15
         if ws and (prev_b is None or a - prev_b >= 0.3):
             lim = min(ws[0]["e"] - 0.25, a + 1.5)
             t = a

@@ -1492,6 +1492,8 @@ CAP = {
     "box":     dict(font="Montserrat", size=120, bold=1, ital=0, bord=14, shad=0, back=BLACK, n=3, chars=14, case=None, pop=False, blur=0, box=True, file="Montserrat-Bold.otf", k=0.647),
     "impact":  dict(font="Bebas Neue", size=220, bold=0, ital=0, bord=10, shad=7, back=BLACK, n=3, chars=14, case="upper", pop=True, blur=0, file="BebasNeue-normal-400.ttf", k=0.769),
     "mini":    dict(font="Montserrat", size=100, bold=1, ital=0, bord=7, shad=0, back=BLACK, n=5, chars=20, case=None, pop=False, blur=0, file="Montserrat-Bold.otf", k=0.647),
+    # „Wide“: breite, edle Großbuchstaben wie im Premium-Beispiel der Website (aus Montserrat Black, in die Breite gezogen)
+    "wide":    dict(font="Montserrat Thin Black", size=100, bold=0, ital=0, bord=3, shad=5, back="&H80000000", n=2, chars=12, case="upper", pop=False, blur=0, sx=128, file="Montserrat-normal-900.ttf", k=0.815),
     "serif":   dict(font="Playfair Display", size=158, bold=1, ital=1, bord=0, shad=5, back="&H80000000", n=4, chars=16, case=None, pop=False, blur=0, file="PlayfairDisplay-italic-700.ttf", k=0.707),
 }
 CS = CAP.get(A.caption, CAP["rise"])
@@ -1729,7 +1731,7 @@ def build_ass(words_out, path, hook=None, extra=(), hide=()):
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
         "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
         f"Style: Cap,{CS['font']},{fs0},{WHITE},{ACC},{ACC if CS.get('glow') else BLACK},{CS['back']},{CS['bold']},{CS['ital']},0,0,"
-        f"100,100,1,0,{3 if CS.get('box') else 1},{CS['bord']},{CS['shad']},5,0,0,0,1",
+        f"{CS.get('sx', 100)},100,1,0,{3 if CS.get('box') else 1},{CS['bord']},{CS['shad']},5,0,0,0,1",
         f"Style: Hook,Montserrat Thin Black,82,{BLACK},{ACC},{WHITE},&H00000000,0,0,0,0,100,100,0,0,3,20,0,8,90,90,200,1",
         f"Style: Pop,Montserrat Thin Black,150,{WHITE},{ACC},{BLACK},&H00000000,0,0,0,0,100,100,1,0,1,0,0,5,40,40,0,1",
         f"Style: PopSmall,Montserrat,58,{WHITE},{ACC},{BLACK},&H00000000,1,0,0,0,100,100,1,0,1,0,0,5,40,40,0,1",
@@ -2581,7 +2583,7 @@ def card_png(text, emoji, out):
 NUM = re.compile(r"(\d{1,3}(?:[.\s]\d{3})+|\d+(?:,\d+)?)")
 
 
-def premium_events(fx, words_out, title):
+def premium_events(fx, words_out, title, voll=True):
     """Motion Graphics für Premium:
     – 3D-Titel oben (0–3 s), zwei ausgewogene Zeilen, poppt auf;
     – an den stärksten Momenten ein großes Schlüsselwort mit 3D-Tiefe („Kinetic Typography“, 1,1 s), darüber klein die
@@ -2589,7 +2591,9 @@ def premium_events(fx, words_out, title):
     – Zahlen (Preise, Bewertungen, Mengen) zählen hoch („Zähler“, 0,75 s) und bleiben kurz stehen."""
     ev, karten = [], []
     HIDE.clear()
-    clean_title = re.sub(r"[^\w\s&?!.,:'’\-€%/+]", "", title or "").strip().upper()  # „/“ bleibt: „10/10“
+    # voll=False (Viral): nur die Preis-/Zahlen-Zähler. Abgleich mit der Website 07.10.: Das Viral-Beispiel dort zeigt einen
+    # grünen Preis, der hochzählt – die Software hatte das bisher nur in Premium. Was die Website zeigt, liefert der Stil auch.
+    clean_title = re.sub(r"[^\w\s&?!.,:'’\-€%/+]", "", title or "").strip().upper() if voll else ""  # „/“ bleibt: „10/10“
     lines, fs_t = [], 0
     if clean_title:
         ws = clean_title.split()
@@ -2598,7 +2602,8 @@ def premium_events(fx, words_out, title):
             best = min(range(1, len(ws)), key=lambda k: max(len(" ".join(ws[:k])), len(" ".join(ws[k:]))))
             lines = [" ".join(ws[:best]), " ".join(ws[best:])]
         fs_t = min(fit_fs(max(lines, key=len), 680, 140), 140)
-    plan_layout((820, int(len(lines) * fs_t * 1.08) + 30) if lines else None, False)
+    if voll:
+        plan_layout((820, int(len(lines) * fs_t * 1.08) + 30) if lines else None, False)
     if lines and not LAY["title"]:  # der Titel entfällt nie (Inhaber 06.10.) – notfalls einzeilig ganz oben am Rand
         lines = [clean_title]
         fs_t = min(fit_fs(clean_title, 640, 110), 110)   # mit Buchstabenabstand bleibt die Zeile so im sichtbaren Rahmen
@@ -2642,7 +2647,7 @@ def premium_events(fx, words_out, title):
                     ev += text3d(f"{pre} {sv} {post}".strip(), 540, py, a, t0 + 2.0, fs, color=GRUEN, anim=True, fade=(0, 200))
             HIDE.append((t0 - 0.05, t0 + 2.0))
             f["sfx"] = "kaching" if re.search(r"€|euro|eur\b", txt, re.I) else f.get("sfx")
-        else:  # Stichwort/Produkt → Karte mit Symbol, erscheint beim gesprochenen Wort (Stil-Muster vom Inhaber bestätigt 07.10.)
+        elif voll:  # Stichwort/Produkt → Karte mit Symbol, erscheint beim gesprochenen Wort (Stil-Muster vom Inhaber bestätigt 07.10.)
             karten.append({"t": t0, "text": " ".join((f.get("text") or "").split())[:26], "emoji": f.get("emoji")})
     # Karten, die kurz nacheinander fallen (Aufzählung), stapeln sich und bleiben gemeinsam stehen
     CARDS.clear()
@@ -2808,9 +2813,9 @@ def burn(idx, cut, words_out, title, ranges=None, kept=None):
     """2. Durchgang: Untertitel (und bei Viral den Hook-Titel) einbrennen, web-sicheres MP4."""
     out = os.path.join(A.out, f"clip-{idx}.mp4")
     ass = os.path.join(A.out, f"clip-{idx}.ass")
-    if PREM and ranges and kept and idx not in FX:
+    if LOUD and ranges and kept and idx not in FX:
         FX[idx] = gemini_effects(kept, OUT_TIME)
-    pfx = [{**f, "t": OUT_TIME[f["i"]]} for f in FX.get(idx, []) if f["i"] in OUT_TIME] if PREM else []
+    pfx = [{**f, "t": OUT_TIME[f["i"]]} for f in FX.get(idx, []) if f["i"] in OUT_TIME] if LOUD else []
     caption_groups(words_out)  # legt die Schriftgröße fest – Grafiken/Emojis richten sich nach der Untertitel-Zeile
     logo = A.logo if A.logo and os.path.exists(A.logo) else None
     card = hook_card(title, os.path.join(A.out, f"titel-{idx}.png")) if title and not PREM else None
@@ -2834,13 +2839,13 @@ def burn(idx, cut, words_out, title, ranges=None, kept=None):
                 card = card if LAY["title"] else None
                 if card:
                     log("Titel einzeilig gesetzt – so passt er über den Kopf (Regel 112)")
-    pev = premium_events(pfx, words_out, title) if PREM else []
+    pev = premium_events(pfx, words_out, title, voll=PREM) if LOUD else []
     if ranges and kept and idx not in QUIZ:
         QUIZ[idx] = gemini_quiz(kept, OUT_TIME)
         STATS["quiz"] = QUIZ[idx]
     if QUIZ.get(idx):  # Straßen-Quiz: Punktestand wie in den Malo's-Videos des Nutzers
         pev += quiz_events(QUIZ[idx], sum(olen(s, e) for s, e in ranges))
-    build_ass(words_out, ass, extra=pev, hide=list(HIDE) if PREM else ())
+    build_ass(words_out, ass, extra=pev, hide=list(HIDE) if LOUD else ())
     STATS["caption_words"] = len(words_out)
     esc = lambda p: p.replace("\\", "/").replace(":", "\\:").replace("'", "\\'")
     vf = f"ass='{esc(ass)}':fontsdir='{esc(FONTS)}'"

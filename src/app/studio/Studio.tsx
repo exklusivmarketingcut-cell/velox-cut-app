@@ -15,11 +15,11 @@ type Job = {
 
 const CAPTIONS = [
   ['rise', 'Rise'], ['hormozi', 'Pop'], ['clean', 'Karaoke'], ['neon', 'Neon'], ['comic', 'Comic'], ['serif', 'Serif'],
-  ['bold', 'Bold'], ['box', 'Kasten'], ['impact', 'Impact'], ['mini', 'Mini'],
+  ['wide', 'Wide'], ['bold', 'Bold'], ['box', 'Kasten'], ['impact', 'Impact'], ['mini', 'Mini'],
 ] as const;
 const CAPTION_HINT: Record<string, string> = {
   rise: 'weich, modern', hormozi: 'groß, knallig', clean: 'Wort für Wort', neon: 'leuchtend', comic: 'verspielt', serif: 'elegant',
-  bold: 'fett, klar', box: 'mit Hintergrund', impact: 'kantig, stark', mini: 'klein, dezent',
+  wide: 'breit, edel', bold: 'fett, klar', box: 'mit Hintergrund', impact: 'kantig, stark', mini: 'klein, dezent',
 };
 const COLORS = ['#F6E27F', '#FF3D7F', '#4F9EFF', '#3DFF9A', '#FF7A3D', '#FFFFFF'];
 /** Restzeit grob aus bisherigem Tempo schätzen (erst ab 15 %, vorher „wird berechnet“) */

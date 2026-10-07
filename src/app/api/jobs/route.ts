@@ -11,7 +11,7 @@ const Body = z.object({
   driveUrl: z.string().max(600).optional(),
   sourceName: z.string().max(200).optional(),
   style: z.enum(['clean', 'viral']),
-  captionStyle: z.enum(['rise', 'hormozi', 'clean', 'neon', 'comic', 'serif', 'bold', 'box', 'impact', 'mini']),
+  captionStyle: z.enum(['rise', 'hormozi', 'clean', 'neon', 'comic', 'serif', 'bold', 'box', 'impact', 'mini', 'wide']),
   captionColor: z.string().regex(/^#[0-9a-fA-F]{6}$/),
   clips: z.number().int().min(1).max(MAX_CLIPS_PER_JOB),
   useLogo: z.boolean().optional(),

@@ -1571,7 +1571,7 @@ def plan_layout(card=None, logo=False, force=False):
             logo = False
             STATS["logo_weggelassen"] = True
             log("Logo weggelassen – oben ist in beiden Ecken das Gesicht (Regel 112)")
-    top = SAFE_T + (LOGO_PX + 20 if logo else 0)
+    top = SAFE_T + (LOGO_PX + 14 if logo else 0)
     lo, hi = top + half, SAFE_B - half
     std = min(1250, SAFE_B - 85 - emoji_gap())  # so hoch, dass ein Emoji darunter noch über der Beschreibung bleibt
     note = None
@@ -1585,6 +1585,11 @@ def plan_layout(card=None, logo=False, force=False):
         cy = fbx[0] - half - 60
     elif fbx[0] - half - 15 >= lo:
         cy = lo
+    elif fbx[0] + 0.14 * (fbx[1] - fbx[0]) - half >= lo:
+        # Test des Inhabers 07.10. (sehr nahes Selfie, das Gesicht füllt die unteren zwei Drittel): Die Untertitel lagen „ganz
+        # unten“ quer über Nase und Mund. Über dem Kopf ist dann der bessere Platz – die Zeile darf dabei höchstens den
+        # obersten Rand des Gesichtsfelds berühren (Haare/Stirnansatz), nie Augen, Nase oder Mund.
+        cy, note = lo, "sehr nahes Gesicht – Untertitel über dem Kopf (am Haaransatz)"
     else:                               # Gesicht füllt den ganzen freien Bereich → ganz unten (Kinn/Hals statt Augen)
         cy, note = hi, "kein freier Platz neben dem Gesicht – Untertitel ganz unten"
     hy, title = top, bool(card)
@@ -1602,8 +1607,8 @@ def plan_layout(card=None, logo=False, force=False):
         ok = [y for y in cand if free(y)]
         if ok:
             hy = int(ok[0]) - rand
-        elif fbx and cy < fbx[0] and top + ch + 15 + half <= fbx[0] - half - 15:
-            hy, cy = top - rand, top + ch + 15 + half   # Untertitel stehen über dem Kopf: Titel ganz oben, Untertitel direkt darunter
+        elif fbx and cy < fbx[0] + 0.14 * (fbx[1] - fbx[0]) and top + ch + 12 + 2 * half <= fbx[0] + 0.14 * (fbx[1] - fbx[0]):
+            hy, cy = top - rand, top + ch + 12 + half   # Untertitel stehen über dem Kopf: Titel ganz oben, Untertitel direkt darunter
         elif force and not _cut(top, top + ch, cy - half - 15, cy + half + 15):
             # Inhaber 06.10. abends: „Die Caption kannst du drin lassen.“ Der Titel entfällt nicht mehr – findet sich kein
             # ganz freier Platz, steht er (einzeilig, flach, nur 3 s) ganz oben am Rand: dort trifft er höchstens Haare/Stirn.
@@ -2371,7 +2376,38 @@ def viral_sounds(ranges, fx):
 
 EMOJI_PX = 140   # Emoji-Größe im fertigen Bild (Quelle 160 px → wird nur verkleinert, bleibt scharf)
 HOOK_Y = SAFE_T  # Oberkante der Titel-Karte (unter der Statusleiste/TikTok-Suche)
-LOGO_PX, LOGO_Y = 190, SAFE_T  # Kunden-Logo oben links (Breite, Oberkante) – unter den Leisten der Apps (Regel 112)
+LOGO_PX, LOGO_Y = 116, SAFE_T  # Kunden-Logo oben links (Breite, Oberkante) – unter den Leisten der Apps (Regel 112)
+
+
+def logo_png(src, out):
+    """Inhaber 07.10.: „Das Logo sieht hingeklebt aus.“ Das Logo wird als kleines, sauberes Abzeichen eingesetzt: kleiner
+    (116 statt 190 px), abgerundete Ecken, weicher Schatten, leicht durchscheinend – wie ein Wasserzeichen eines Senders,
+    nicht wie ein aufgeklebtes Bild. Hat das Logo schon einen durchsichtigen Hintergrund, bleibt seine Form erhalten."""
+    try:
+        from PIL import Image, ImageDraw, ImageFilter
+        im = Image.open(src).convert("RGBA")
+        w = 4 * LOGO_PX
+        im = im.resize((w, max(8, round(im.height * w / im.width))), Image.LANCZOS)
+        if im.height > w:  # sehr hohes Logo → auf Quadrat begrenzen
+            im = im.crop((0, (im.height - w) // 2, w, (im.height + w) // 2))
+        a = im.getchannel("A")
+        if a.getextrema()[0] > 250:  # kein durchsichtiger Hintergrund → abgerundetes Abzeichen
+            m = Image.new("L", im.size, 0)
+            ImageDraw.Draw(m).rounded_rectangle((0, 0, im.width - 1, im.height - 1), radius=int(min(im.size) * 0.24), fill=255)
+            im.putalpha(m)
+            a = m
+        pad = 4 * 14
+        canvas = Image.new("RGBA", (im.width + 2 * pad, im.height + 2 * pad), (0, 0, 0, 0))
+        sh = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+        sh.paste((0, 0, 0, 110), (pad, pad + 10), a)
+        canvas = Image.alpha_composite(canvas, sh.filter(ImageFilter.GaussianBlur(22)))
+        im.putalpha(a.point(lambda v: int(v * 0.93)))
+        canvas.alpha_composite(im, (pad, pad))
+        canvas = canvas.resize((canvas.width // 4, canvas.height // 4), Image.LANCZOS)
+        canvas.save(out)
+        return out, 14
+    except Exception:  # noqa: BLE001
+        return src, 0
 APPLE_EMOJI = "/System/Library/Fonts/Apple Color Emoji.ttc"
 
 
@@ -2705,6 +2741,13 @@ def burn(idx, cut, words_out, title, ranges=None, kept=None):
     if not PREM:  # Regel 112: erst die Plätze vergeben, dann zeichnen (Premium vergibt sie in premium_events mit seinem 3D-Titel)
         from PIL import Image as _Im
         plan_layout(_Im.open(card).size if card else None, bool(logo))
+        _fb = face_box()
+        if card and LAY["title"] and _fb and LAY["cy"] < _fb[0] + 0.14 * (_fb[1] - _fb[0]) and _Im.open(card).size[1] > 150:
+            # Untertitel stehen über dem Kopf (nahes Gesicht): zweizeiliger Titel würde sie in die Stirn drücken → flache Karte
+            flach = hook_card(title, os.path.join(A.out, f"titel-{idx}.png"), flach=True)
+            card = flach or hook_card(title, os.path.join(A.out, f"titel-{idx}.png"))
+            plan_layout(_Im.open(card).size, bool(logo), force=True)
+            card = card if LAY["title"] else None
         if card and not LAY["title"]:  # zweizeilig kein Platz → einzeilig und flacher versuchen, erst dann weglassen
             card = hook_card(title, os.path.join(A.out, f"titel-{idx}.png"), flach=True) or \
                 hook_card(title, os.path.join(A.out, f"titel-{idx}.png"))  # zu lang für eine Zeile → zweizeilige Karte
@@ -2755,9 +2798,10 @@ def burn(idx, cut, words_out, title, ranges=None, kept=None):
         fc.append(f"[{vin}][hc]overlay=x=(W-w)/2:y={ypos}:eof_action=pass[vh]")
         vin, ni = "vh", ni + 1
     if logo:  # Kunden-Logo oben links (wie in den Malo's-Videos des Nutzers): blendet weich ein und bleibt
+        logo, lpad = logo_png(logo, os.path.join(A.out, f"logo-{idx}.png"))
         inputs += ["-loop", "1", "-i", logo]
-        fc.append(f"[{ni}:v]format=rgba,scale={LOGO_PX}:-1:flags=lanczos,fade=t=in:st=0.1:d=0.35:alpha=1[lg]")
-        fc.append(f"[{vin}][lg]overlay=x={lx}:y={LOGO_Y}:shortest=1[vl]")
+        fc.append(f"[{ni}:v]format=rgba,scale={LOGO_PX + 2 * lpad}:-1:flags=lanczos,fade=t=in:st=0.1:d=0.35:alpha=1[lg]")
+        fc.append(f"[{vin}][lg]overlay=x={lx - lpad}:y={LOGO_Y - lpad}:shortest=1[vl]")
         vin, ni = "vl", ni + 1
     if PLAN and PLAN.get("bilder"):  # Produktbilder als Sticker: gleiten von unten rein, bleiben 1,8 s, Pop-Sound
         # NIE vor das Gesicht (Regel 83): freien Bereich neben/über/unter dem Kopf suchen, Sticker passend verkleinern

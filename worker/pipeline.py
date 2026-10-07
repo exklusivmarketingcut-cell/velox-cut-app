@@ -2660,11 +2660,18 @@ def premium_events(fx, words_out, title, voll=True):
                          color=WHITE if li == 0 else ACC)
     for f in fx:
         t0, txt = f["t"], (f.get("text") or "").strip().upper()
-        if not txt or t0 < 3.2:  # nicht mit dem Titel überlappen
+        if not txt:
             continue
         m = NUM.search(txt)
-        if m and not voll and not re.search(r"€|euro|eur\b", txt, re.I):
-            continue  # Viral: Zähler nur für Preise (wie im Website-Beispiel) – „3 Cheesecakes“ bleibt normaler Untertitel
+        # Premium-Lauf 07.10.: „5 CLASSIC“ und „3 CHEESECAKES“ zählten von 0 hoch (albern), der eigentliche Preis „unter 10 Euro“
+        # bei Sekunde 2 fiel dagegen weg (alte Sperre „nicht in den ersten 3 s“ – der Zähler steht aber an der Untertitel-Stelle,
+        # nicht beim Titel). Hochgezählt werden nur Preise, Prozente und große Zahlen; kleine Mengen werden bei Premium zur Karte.
+        zaehlbar = bool(m) and (bool(re.search(r"€|euro|eur\b|%|prozent", txt, re.I))
+                                or float(m.group(1).replace(".", "").replace(" ", "").replace(",", ".")) >= 100)
+        if m and not zaehlbar:
+            m = None
+            if not voll:
+                continue  # Viral: Zähler nur für Preise (wie im Website-Beispiel) – „3 Cheesecakes“ bleibt normaler Untertitel
         if m:  # Zähler
             raw = m.group(1)
             val = float(raw.replace(".", "").replace(" ", "").replace(",", "."))

@@ -400,7 +400,7 @@ def bild_zum_wort(kand):
                  "sichtbar = ist die angesagte Handlung bzw. das genannte Ding in den Bildern eindeutig zu sehen? "
                  "von = Sekunde, in der die angesagte Handlung wirklich beginnt (NICHT das Hingreifen in einen Behälter, nicht der "
                  "Kameraschwenk dorthin – der Moment, in dem das Angesagte passiert: die Gurken landen auf dem Burger). "
-                 "bis = Sekunde, in der die Handlung fertig ist. was = was man dort sieht (kurz). "
+                 "bis = Sekunde, in der die Handlung fertig ist. was = was man dort sieht (höchstens 6 Wörter). "
                  "Nur angeben, was du wirklich siehst; im Zweifel sichtbar=false. Sagt der Satz keine Handlung an "
                  "(Begrüßung, Meinung, Preis), dann sichtbar=false.",
                  parts, {"type": "object", "properties": {"stellen": {"type": "array", "items": {"type": "object", "properties": {

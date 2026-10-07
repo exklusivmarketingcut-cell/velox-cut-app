@@ -110,6 +110,34 @@ async function aiReady() {
   return ai.ok;
 }
 
+/** YouTube-Link? (youtube.com/watch, youtu.be, Shorts, Live) → Video-ID, sonst null */
+function youtubeId(url) {
+  try {
+    const u = new URL(url);
+    const h = u.hostname.replace(/^(www|m|music)\./, '');
+    if (h === 'youtu.be') return u.pathname.slice(1).split('/')[0] || null;
+    if (h !== 'youtube.com') return null;
+    return u.searchParams.get('v') || /^\/(shorts|live|embed)\/([\w-]{6,})/.exec(u.pathname)?.[2] || null;
+  } catch { return null; }
+}
+
+/** YouTube-Video herunterladen (yt-dlp, höchstens 1080p und 3 Stunden) */
+function ytDownload(job, id, file) {
+  const bin = process.env.YTDLP || ['/opt/homebrew/bin/yt-dlp', '/usr/local/bin/yt-dlp'].find((p) => existsSync(p)) || 'yt-dlp';
+  return new Promise((resolve, reject) => {
+    const p = spawn(bin, ['--no-playlist', '--no-progress', '--match-filter', 'duration<=10800 & !is_live',
+      '-f', 'bv*[vcodec^=avc1][height<=1080]+ba[ext=m4a]/bv*[height<=1080][ext=mp4]+ba[ext=m4a]/bv*[height<=1080]+ba/b[height<=1080]/b', // H.264 zuerst (AV1 kann nicht jeder Schritt lesen) '--merge-output-format', 'mp4',
+      '-o', file, `https://www.youtube.com/watch?v=${id}`], { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, PATH: `/opt/homebrew/bin:/usr/local/bin:${process.env.PATH || ''}` } });
+    let err = '';
+    p.stdout.on('data', () => { beat.last_output = new Date().toISOString(); });
+    p.stderr.on('data', (b) => { beat.last_output = new Date().toISOString(); err = (err + b).slice(-1500); });
+    p.on('error', () => reject(new Error('YouTube-Download ist auf der Schnitt-Maschine nicht eingerichtet.')));
+    p.on('close', (code) => (code === 0 && existsSync(file) ? resolve()
+      : reject(new Error(/Private video|Sign in|members-only|age/i.test(err) ? 'Dieses YouTube-Video ist privat oder nur mit Anmeldung abrufbar.'
+        : 'YouTube-Video nicht abrufbar – stimmt der Link? (Live-Übertragungen und Videos über 3 Stunden gehen nicht.)'))));
+  });
+}
+
 /** Google-Drive-Freigabelink → direkter Download */
 function driveDirect(url) {
   const id = /\/d\/([\w-]{20,})/.exec(url)?.[1] || new URL(url).searchParams.get('id');
@@ -134,7 +162,10 @@ async function download(job, dir) {
     return inDir;
   }
   const file = join(dir, 'source.mp4');
-  if (job.source_kind === 'upload') {
+  if (job.source_kind !== 'upload' && youtubeId(job.source_url || '')) {
+    await setStage(job.id, 'Lädt das YouTube-Video …');
+    await ytDownload(job, youtubeId(job.source_url), file);
+  } else if (job.source_kind === 'upload') {
     const r = await r2get(`uploads/${job.source_path}`);
     if (!r.ok) throw new Error('Upload nicht gefunden.');
     await streamPipeline(Readable.fromWeb(r.body), createWriteStream(file));
@@ -176,7 +207,8 @@ async function refreshTrends() {
 /** Mehrere Clips: montage.py plant den Schnitt und setzt die Sprech-Stellen zu EINER Datei zusammen → { src, plan } */
 function runMontage(job, inDir, dir, words = '') {
   return new Promise((resolve, reject) => {
-    const args = [join(import.meta.dirname, 'montage.py'), '--out', join(dir, 'montage'), '--style', job.style, '--clips', String(job.clips), ...(words ? ['--words', words.slice(0, 300)] : []), inDir];
+    const args = [join(import.meta.dirname, 'montage.py'), '--out', join(dir, 'montage'), '--style', job.style, '--clips', '1', // ein Ordner = ein Video (Inhaber 06.10.)
+      ...(words ? ['--words', words.slice(0, 300)] : []), inDir];
     const p = spawn(PYTHON, args, { stdio: ['ignore', 'pipe', 'pipe'], env: { VELOX_MASCHINE: MASCHINE, ...process.env, PYTHONUNBUFFERED: '1' } });
     let last = '';
     let errTxt = '';
@@ -197,8 +229,9 @@ function runMontage(job, inDir, dir, words = '') {
   });
 }
 
-function runPipeline(job, src, dir, logo, words = '', plan = null, clips = job.clips) {
+function runPipeline(job, src, dir, logo, words = '', plan = null, clips = job.clips, skip = 0) {
   const args = [PIPELINE, '--src', src, '--out', dir, '--style', job.style, '--clips', String(clips), '--caption', job.caption_style, '--color', job.caption_color];
+  if (skip > 0) args.push('--skip', String(skip)); // derselbe Link wurde schon geschnitten → nächstbester Clip
   if (plan) args.push('--plan', plan); // Schnittplan aus mehreren Clips (B-Rolls, Bilder, Clip-Grenzen)
   if (job.music === 'auto') args.push('--music', 'auto'); // lizenzfreie Hintergrundmusik (schnitt-maschine/musik)
   if (logo) args.push('--logo', logo); // Kunden-Logo oben links
@@ -278,7 +311,14 @@ async function processJob(job) {
     }
     if (!result) {
       try {
-        result = await runPipeline(job, src, dir, logo, pw?.brand_words || '', plan, plan ? 1 : job.clips); // Montage = eine Geschichte = ein Video
+        // Derselbe Link (YouTube/Drive) wurde von diesem Kunden schon geschnitten → die schon gelieferten Clips überspringen
+        let skip = 0;
+        if (!plan && job.source_kind === 'drive' && job.source_url) {
+          const key = youtubeId(job.source_url) || job.source_url;
+          const { data: alt } = await sb.from('jobs').select('source_url, clips').eq('user_id', job.user_id).eq('status', 'done').neq('id', job.id).limit(200);
+          skip = (alt ?? []).filter((j) => j.source_url && (youtubeId(j.source_url) || j.source_url) === key).reduce((a, j) => a + (j.clips || 1), 0);
+        }
+        result = await runPipeline(job, src, dir, logo, pw?.brand_words || '', plan, plan ? 1 : job.clips, skip); // Montage = eine Geschichte = ein Video
       } catch (e) { // einzelnes Video ohne Sprache (nur B-Roll) → Musik-Schnitt statt Fehlermeldung
         if (plan || !/keine Sprache|keine Tonspur/.test(String(e?.message)) || e?.message === 'KI_KONTINGENT') throw e;
         result = await runMusikschnitt(job, src, dir, logo, pw?.brand_words || '');

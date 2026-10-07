@@ -22,6 +22,7 @@ ap.add_argument("--style", default="clean", choices=["clean", "viral", "premium"
 ap.add_argument("--clips", type=int, default=1)
 ap.add_argument("--caption", default="rise")
 ap.add_argument("--color", default="#F6E27F")
+ap.add_argument("--skip", type=int, default=0, help="so viele der besten Momente überspringen (derselbe Link wurde schon geschnitten → nächstbester Clip)")
 ap.add_argument("--keep-work", action="store_true", help="Zwischendateien behalten (Fehlersuche)")
 ap.add_argument("--no-review", action="store_true", help="ohne KI-Abnahme (nur für schnelle Tests)")
 ap.add_argument("--music", default="none", help="Hintergrundmusik: none | auto (KI wählt passend) | Name aus schnitt-maschine/musik")
@@ -731,8 +732,13 @@ if PLAN:  # mehrere Clips: die Auswahl der Sätze hat montage.py schon getroffen
 elif SHORT:
     MOMENTS = [gemini_story(WORDS) or rule_story(WORDS)]
 else:
-    MOMENTS = [m for m in (gemini_moments(WORDS, A.clips) or []) if 0 <= m["start"] <= m["end"] < len(WORDS)][:A.clips]
-    MOMENTS = MOMENTS or rule_moments(WORDS, A.clips)
+    # Inhaber 06.10.: derselbe Link noch einmal → der NÄCHSTBESTE Clip (nicht wieder derselbe). Es werden entsprechend mehr
+    # Momente gesucht und die schon gelieferten übersprungen; gibt das Video nicht so viele her, die letzten gefundenen.
+    _n = A.clips + max(0, A.skip)
+    _all = [m for m in (gemini_moments(WORDS, _n) or []) if 0 <= m["start"] <= m["end"] < len(WORDS)][:_n] or rule_moments(WORDS, _n)
+    MOMENTS = _all[A.skip:A.skip + A.clips] or _all[-A.clips:]
+    if A.skip:
+        log(f"Link wurde schon {A.skip}× geschnitten → Moment {min(A.skip, max(0, len(_all) - A.clips)) + 1} von {len(_all)} gefundenen")
 ki.require_or_exit("Satzauswahl")
 stage("Schneidet Pausen, Füllwörter und Versprecher raus …", 45)
 

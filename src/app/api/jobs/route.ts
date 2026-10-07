@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { createAdmin, createClient, getUser } from '@/lib/supabase/server';
 import { jobCost, MAX_CLIPS_PER_JOB, PLANS, type PlanId } from '@/lib/pricing';
 
-const DRIVE = /^https:\/\/(drive|docs)\.google\.com\//;
+const DRIVE = /^https:\/\/((drive|docs)\.google\.com|(www\.|m\.)?youtube\.com|youtu\.be)\//; // Google Drive oder YouTube
 const Body = z.object({
   sourceKind: z.enum(['upload', 'drive', 'folder']),
   sourcePath: z.string().max(400).optional(),
@@ -36,7 +36,7 @@ export async function POST(request: Request) {
   if (!parsed.success) return NextResponse.json({ error: 'Angaben unvollständig.' }, { status: 400 });
   const b = parsed.data;
   if (b.sourceKind === 'upload' && !b.sourcePath?.startsWith(`${user.id}/`)) return NextResponse.json({ error: 'Datei fehlt.' }, { status: 400 });
-  if (b.sourceKind === 'drive' && !DRIVE.test(b.driveUrl ?? '')) return NextResponse.json({ error: 'Bitte einen Google-Drive-Link einfügen.' }, { status: 400 });
+  if (b.sourceKind === 'drive' && !DRIVE.test(b.driveUrl ?? '')) return NextResponse.json({ error: 'Bitte einen Google-Drive- oder YouTube-Link einfügen.' }, { status: 400 });
   if (b.sourceKind === 'folder' && (!b.sourcePaths?.length || b.sourcePaths.some((x) => !x.startsWith(`${user.id}/`))))
     return NextResponse.json({ error: 'Dateien fehlen.' }, { status: 400 });
 

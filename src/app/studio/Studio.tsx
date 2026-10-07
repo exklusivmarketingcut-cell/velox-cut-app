@@ -72,7 +72,7 @@ const readHeroLink = () => {
   try { return sessionStorage.getItem('velox_link'); } catch { return null; }
 };
 const noSubscribe = () => () => {};
-const DRIVE_RE = /^https:\/\/(drive|docs)\.google\.com\//;
+const DRIVE_RE = /^https:\/\/((drive|docs)\.google\.com|(www\.|m\.)?youtube\.com|youtu\.be)\//; // Links, die wir öffnen können: Google Drive, YouTube
 
 export default function Studio({ credits, initialJobs }: { credits: number; initialJobs: Job[] }) {
   const [tab, setTab] = useState<'upload' | 'drive'>('upload');
@@ -218,9 +218,9 @@ export default function Studio({ credits, initialJobs }: { credits: number; init
         await putFile(s.signedUrl, file, setUp);
         sourcePath = s.path;
         sourceName = file.name;
-      } else if (!/^https:\/\/(drive|docs)\.google\.com\//.test(drive.trim())) {
-        throw new Error('Bitte füge einen Google-Drive-Link ein (Freigabe: „Jeder mit dem Link“).');
-      } else sourceName = /\/folders\//.test(drive) ? 'Google-Drive-Ordner' : 'Google Drive';
+      } else if (!/^https:\/\/((drive|docs)\.google\.com|(www\.|m\.)?youtube\.com|youtu\.be)\//.test(drive.trim())) {
+        throw new Error('Bitte füge einen YouTube- oder Google-Drive-Link ein (Drive-Freigabe: „Jeder mit dem Link“).');
+      } else sourceName = /youtu\.?be/.test(drive) ? 'YouTube-Video' : /\/folders\//.test(drive) ? 'Google-Drive-Ordner' : 'Google Drive';
       const r = await fetch('/api/jobs', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sourceKind: sourcePaths ? 'folder' : tab, sourcePath, sourcePaths, driveUrl: tab === 'drive' ? drive.trim() : undefined, sourceName, style, captionStyle: caption, captionColor: color, clips, useLogo, music }),
@@ -260,14 +260,14 @@ export default function Studio({ credits, initialJobs }: { credits: number; init
             </div>
           ) : (
             <div className="hint">
-              <span>Diesen Link können wir noch nicht direkt öffnen. Lade das Video als Datei hoch oder teile es über Google Drive.</span>
+              <span>Diesen Link können wir noch nicht direkt öffnen. Lade das Video als Datei hoch oder nutze einen YouTube- oder Google-Drive-Link.</span>
               <button type="button" className="btn" onClick={() => dropHeroLink(false)}>Okay</button>
             </div>
           )
         ) : null}
         <div className="tabs" role="tablist">
           <button className={tab === 'upload' ? 'on' : ''} onClick={() => setTab('upload')} type="button">📁 Datei hochladen</button>
-          <button className={tab === 'drive' ? 'on' : ''} onClick={() => setTab('drive')} type="button">Google Drive</button>
+          <button className={tab === 'drive' ? 'on' : ''} onClick={() => setTab('drive')} type="button">Link (YouTube / Drive)</button>
         </div>
         {tab === 'upload' ? (
           <div
@@ -298,9 +298,9 @@ export default function Studio({ credits, initialJobs }: { credits: number; init
           </div>
         ) : (
           <label className="f">
-            Google-Drive-Link (Video oder ganzer Ordner)
-            <input className="inp" value={drive} onChange={(e) => setDrive(e.target.value)} placeholder="https://drive.google.com/drive/folders/…" />
-            <span className="note">In Drive: Rechtsklick → Freigeben → „Jeder mit dem Link“. Bei einem Ordner schneiden wir alle Clips und Bilder darin zu einem Video – bitte nur das Rohmaterial für ein Video in den Ordner legen.</span>
+            YouTube- oder Google-Drive-Link
+            <input className="inp" value={drive} onChange={(e) => setDrive(e.target.value)} placeholder="https://www.youtube.com/watch?v=… oder https://drive.google.com/…" />
+            <span className="note">YouTube: Wir holen den besten Moment aus dem Video – denselben Link noch einmal einfügen = der nächstbeste Clip. Bitte nur Videos, an denen du die Rechte hast. In Drive: Rechtsklick → Freigeben → „Jeder mit dem Link“. Bei einem Ordner schneiden wir alle Clips und Bilder darin zu einem Video – bitte nur das Rohmaterial für ein Video in den Ordner legen.</span>
           </label>
         )}
 

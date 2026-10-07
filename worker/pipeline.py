@@ -329,6 +329,22 @@ def repeat_idx(words):
             if same and not SENT_END.search(words[k + L - 1]["t"]):
                 out.update(words[j]["i"] for j in range(k, k + L))
                 break
+    # Ordner-Test des Inhabers 07.10. („Die Gewinner, äh, die Gewinner sind die drei Top-Kommentare“): Zwischen den beiden
+    # Anläufen stand ein Füllwort – so wurde der Neustart nicht erkannt, blieb als Stotterer im Video, und die Schlusskontrolle
+    # strich daraufhin den GANZEN Satz. Derselbe Vergleich deshalb noch einmal ohne Füllwörter: erster Anlauf + Füllwort raus.
+    idx = [j for j in range(n) if toks[j] and toks[j] not in FILLER]
+    for p in range(len(idx)):
+        for L in (4, 3, 2):
+            if p + 2 * L > len(idx):
+                continue
+            ia, ib = idx[p:p + L], idx[p + L:p + 2 * L]
+            if ib[0] - ia[-1] < 2:      # ohne Füllwort dazwischen ist es der Fall oben
+                continue
+            a, b = [toks[j] for j in ia], [toks[j] for j in ib]
+            same = a == b or (a[:-1] == b[:-1] and len(a[-1]) >= 2 and b[-1].startswith(a[-1][:2]))
+            if same and not SENT_END.search(words[ia[-1]]["t"]):
+                out.update(words[j]["i"] for j in range(ia[0], ib[0]))
+                break
     return out
 
 
@@ -3159,6 +3175,23 @@ def gemini_fix_story(m, kept, problems):
     drin = [k for k, st in enumerate(sents) if any(w["i"] in kept_i for w in st)]
     if drin:
         keep = sorted(set(keep) | {drin[0], drin[-1]})
+    # Zweite feste Sicherung (Ordner-Test des Inhabers 07.10.: „Die Gewinner sind die drei Top-Kommentare unter diesem Video“
+    # fiel komplett weg, weil darin ein Stotterer bemängelt wurde): Der Nachschnitt darf einen Satz, der im Video ist, nur dann
+    # streichen, wenn er DOPPELT ist (sein Inhalt steht in einem anderen behaltenen Satz) oder eine Panne bespricht. Einen
+    # Satz mit eigenem Inhalt streicht keine Kontrolle – „ein paar Sachen hat er einfach weggelassen, die wichtig wären“.
+    inhalt = lambda st: {norm(w["t"]) for w in st if len(norm(w["t"])) >= 4}
+    zurueck = []
+    for k in drin:
+        if k in keep:
+            continue
+        a_ = inhalt(sents[k])
+        rest = set().union(*[inhalt(sents[j]) for j in keep]) if keep else set()
+        panne = re.search(r"verbrannt|angebrannt|ist falsch|falsch gemacht|oh no|nochmal|warte", " ".join(w["t"] for w in sents[k]).lower())
+        if a_ and len(a_ & rest) / len(a_) < 0.6 and not panne:
+            zurueck.append(k)
+    if zurueck:
+        keep = sorted(set(keep) | set(zurueck))
+        log(f"Nachschnitt: {len(zurueck)} Satz/Sätze mit eigenem Inhalt bleiben im Video (nur Doppeltes und Pannen dürfen raus)")
     new = {"start": sents[keep[0]][0]["i"], "end": sents[keep[-1]][-1]["i"], "title": m.get("title", ""),
            "drop": {w["i"] for k in range(keep[0], keep[-1] + 1) if k not in keep for w in sents[k]}}
     if new["start"] == m["start"] and new["end"] == m["end"] and new["drop"] == (m.get("drop") or set()):
@@ -3286,6 +3319,9 @@ def trim_joins(ranges, kept, joins):
     # Eng gefasst (Test am Malo's-Rohschnitt: ohne diese Grenzen fielen 14 s wortlose HANDLUNG weg): gekürzt wird nur ein
     # KURZER Rand (≤ 0,8 s zwischen Wort und Clip-Grenze), in dem wirklich ein Geräusch liegt (≥ 8 dB über der Ruhe-Stelle).
     # Lange wortlose Strecken sind Handlung oder Schwenk – dafür gelten die Regeln 96/97/107, nicht diese.
+    # Inhaber 07.10.: „an den Wechseln schneller schneiden – der minimale Leerraum, in dem nichts gesagt wird, muss weg“.
+    # Gekürzt wird nur an ANHALTENDER Ruhe (mind. 0,15 s) – eine kurze Lautpause mitten im Wort („Ma-tcha“) zählt nicht.
+    lang_still = lambda t: still(t) and still(t + 0.05) and still(t + 0.1)
     fremd = lambda t0, t1, tief: t1 - t0 > 0.04 and max(lv(t0 + k * 0.05) for k in range(int((t1 - t0) / 0.05) + 1)) >= lv(tief) + 8
     for a, b in ranges:
         a0, b0 = a, b
@@ -3295,12 +3331,16 @@ def trim_joins(ranges, kept, joins):
                 t = _ruhe(last, False, min(0.5, b - last))
                 if still(t) and fremd(t + 0.05, b, t):
                     b = min(b, max(last + 0.08, t + 0.03))
+                elif lang_still(t):   # kein fremder Laut, aber echte Ruhe: nicht weiter zeigen, wie die Person „wegwischt“
+                    b = min(b, max(last + 0.18, t + 0.10))
         if LV and any(abs(a - (j + 0.02)) < 0.03 for j in joins):   # beginnt an einer Clip-Grenze
             first = min((w["s"] for w in kept if a - 0.05 <= w["s"] < b), default=None)
             if first is not None and 0.2 < first - a <= 0.8:
                 t = _ruhe(first, True, min(0.45, first - a))
                 if still(t) and fremd(a, t - 0.05, t):
                     a = max(a, min(first - 0.05, t - 0.03))
+                elif still(t) and still(t - 0.05) and still(t - 0.1):
+                    a = max(a, min(first - 0.10, t - 0.08))
         if b - a > 0.08:
             out.append([a, b])
             n_cut += (a - a0) + (b0 - b)

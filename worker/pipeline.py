@@ -605,7 +605,7 @@ def drop_doubles(sents, keep):
 CREW = re.compile(r"(\bpasst( das| es| so)?\s*\?|^passt[.!]?$|\bläuft('?s| es| die kamera)?\s*\?|nimmst du (schon )?auf|"
                   r"(bist du|seid ihr) (so ?weit|bereit)|hast du('?s| es) (drauf|drin)|ist (das|es) drin|kamera läuft|"
                   r"noch ?mal (bitte|von vorne)|von vorne|\baction\b|\bcut\b)", re.I)
-CREW_SHORT = re.compile(r"^(sorry|warte|wartet|moment|stopp?|nee warte|sekunde)\b", re.I)
+CREW_SHORT = re.compile(r"^(sorry|warte|wartet|moment|stopp?|nee warte|sekunde)\b|^(so|okay|ok|gut so)[.!?…]*$", re.I)
 
 
 def retake_idx(words):
@@ -2642,6 +2642,13 @@ def fit_fs(txt, width=900, fs_max=150, k=None):
 HIDE = []  # Zeitfenster, in denen eine Premium-Grafik steht (dort keine normalen Untertitel)
 CARDS = []       # Premium: Stichwort-Karten dieses Clips (Zeit, Text, Symbol, Platz) – premium_events plant, burn zeichnet
 CARD_PITCH = 146  # Höhe einer Karte samt Abstand
+# Inhaber 07.10.: „Bei Strawberry Matcha sollte eine Erdbeere im Feld sein.“ Liefert die KI kein Symbol, wählt die Karte
+# selbst eines nach dem Stichwort (nur aus den vorhandenen Emoji-Bildern); erst wenn nichts passt, bleibt der neutrale Punkt.
+CARD_ICON = [(r"erdbeer|strawberry|beere", "🍓"), (r"cheesecake|kuchen|torte|cake|slice", "🍰"), (r"burger|patty", "🍔"),
+             (r"pizza", "🍕"), (r"matcha|latte|kaffee|coffee|tee\b|espresso|cappuccino", "☕"), (r"schoko|choco|nutella", "🍫"),
+             (r"banan", "🍌"), (r"€|euro|preis|rabatt|sparen|günstig|gratis|kostenlos", "💸"), (r"geschenk|gewinn|verlos", "🎁"),
+             (r"uhr|zeit|minuten|stunden|schnell", "⏰"), (r"standort|adresse|straße|mannheim|hier", "📍"),
+             (r"neu\b|launch|start", "🚀"), (r"top|beste|nummer 1|sieger", "🏆"), (r"\d", "💯")]
 GRUEN = "&H0064E15A"  # Zähler am Ziel
 
 
@@ -2747,7 +2754,9 @@ def premium_events(fx, words_out, title, voll=True):
             HIDE.append((t0 - 0.05, t0 + 2.0))
             f["sfx"] = "kaching" if re.search(r"€|euro|eur\b", txt, re.I) else f.get("sfx")
         elif voll:  # Stichwort/Produkt → Karte mit Symbol, erscheint beim gesprochenen Wort (Stil-Muster vom Inhaber bestätigt 07.10.)
-            karten.append({"t": t0, "text": " ".join((f.get("text") or "").split())[:26], "emoji": f.get("emoji")})
+            ktxt = " ".join((f.get("text") or "").split())[:26]
+            ico = f.get("emoji") or next((e for pat, e in CARD_ICON if re.search(pat, ktxt, re.I)), None)
+            karten.append({"t": t0, "text": ktxt, "emoji": ico})
     # Karten, die kurz nacheinander fallen (Aufzählung), stapeln sich und bleiben gemeinsam stehen
     CARDS.clear()
     gruppen = []
@@ -3554,6 +3563,58 @@ def trim_joins(ranges, kept, joins):
     return out
 
 
+def sprachkanten(ranges, kept):
+    """Inhaber 07.10. (Golden Thai): „…dass du das über Papaya weißt“ – das „weißt“ wurde am Ende angeschnitten; und vor
+    einem Satz sieht man ihn tief einatmen und aufs Handy (Skript) schauen. Beides ist dieselbe Ursache: Die Zeiten der
+    Worterkennung stimmen an den Rändern nicht genau. An jedem echten Schnitt wird deshalb der Pegel befragt:
+      Ende   – läuft die Stimme über das erkannte Wortende hinaus, bleibt der Abschnitt bis zum echten Ende der Stimme stehen
+               (höchstens 0,35 s; nur wenn danach wirklich Ruhe kommt – sonst wäre es schon das nächste, gestrichene Wort).
+      Anfang – was vor dem Einsatz der Stimme liegt (Luftholen, Blick zur Seite, Leerlauf), wird abgeschnitten."""
+    if not LV:
+        return ranges
+    laut = sorted(LV)[int(len(LV) * 0.9)]
+    ruhe = sorted(LV)[int(len(LV) * 0.2)]
+    # Schwelle „hier spricht jemand“: knapp unter der Mitte zwischen Grundrauschen und Sprachlautstärke. Eine feste Zahl
+    # unter dem Sprachpegel taugt nicht – bei einer sehr leisen Aufnahme (Golden Thai: Sprache −41 dB, Rauschen −64 dB)
+    # lag das Atmen sonst schon über der Schwelle.
+    thr = ruhe + 0.45 * (laut - ruhe)
+    lv = lambda t: LV[min(len(LV) - 1, max(0, int(t / 0.05)))]
+    out, verl, gek = [], 0.0, 0.0
+    for k, (a, b) in enumerate(ranges):
+        ws = [w for w in kept if a - 0.05 <= w["s"] < b]
+        prev_b = ranges[k - 1][1] if k else None
+        next_a = ranges[k + 1][0] if k + 1 < len(ranges) else None
+        if ws and (next_a is None or next_a - b >= 0.3) and lv(b) >= thr:
+            lim = min(b + 0.35, (next_a - 0.05) if next_a is not None else DUR)
+            t = b
+            while t < lim and lv(t) >= thr:
+                t += 0.05
+            if t < lim:                      # die Stimme endet wirklich innerhalb der Frist → bis dorthin stehen lassen
+                verl += t + 0.04 - b
+                b = t + 0.04
+        if ws and (prev_b is None or a - prev_b >= 0.3):
+            lim = min(ws[0]["e"] - 0.25, a + 1.5)
+            t = a
+            while t < lim and lv(t) < thr and lv(t + 0.05) < thr:
+                t += 0.05
+            if t - a >= 0.1:
+                gek += t - 0.06 - a
+                a = t - 0.06
+        if ws and next_a is None:
+            # Inhaber 07.10. (Premium): „Am Schluss direkt cutten – nicht warten, bis die Kamera runtergeht.“ Das Video endet
+            # 0,3 s nach dem echten Ende der Stimme (statt bis zu 1,3 s Nachlauf).
+            t = b
+            while t > ws[-1]["e"] - 0.15 and lv(t - 0.05) < thr:
+                t -= 0.05
+            if b - (t + 0.30) > 0.1:
+                gek += b - (t + 0.30)
+                b = t + 0.30
+        if b - a > 0.08:
+            out.append([a, b])
+    STATS["sprachkanten"] = {"ende_verlaengert_s": round(verl, 2), "anfang_gekuerzt_s": round(gek, 2)}
+    return out
+
+
 def split_joins(ranges, kept):
     """Clip-Grenze mitten in einem Abschnitt → dort trennen (eigener Ausschnitt je Clip), danach Regel 109."""
     if not (PLAN and PLAN.get("joins")):
@@ -3578,7 +3639,7 @@ def make_cut(n, m, step):
     choose_speed(kept)
     ranges = split_joins(ranges, kept)
     ranges, kept = limit60(ranges, kept)
-    ranges = tidy(ranges)
+    ranges = tidy(sprachkanten(tidy(ranges), kept))
     if os.environ.get("VELOX_DEBUG"):  # Fehlersuche: Wörter (mit „raus“) und Schnittliste ablegen
         kid = {w["i"] for w in kept}
         json.dump({"words": [[w["t"], round(w["s"], 2), round(w["e"], 2), w["i"] in kid] for w in words],
@@ -3597,7 +3658,7 @@ def make_cut(n, m, step):
         # Fehler bis 06.10.: im sicheren Modus fehlte die Trennung an den Clip-Grenzen (und damit Regel 109) – bei Malo's
         # lief zweimal genau dieser Pfad, die Abschnitte gingen dann wieder über Clip-Wechsel hinweg.
         ranges, kept = limit60(split_joins(ranges, kept), kept)
-        ranges = tidy(ranges)
+        ranges = tidy(sprachkanten(tidy(ranges), kept))
         if os.environ.get("VELOX_DEBUG"):  # Fehlersuche: auch die Schnittliste des sicheren Modus ablegen
             kid = {w["i"] for w in kept}
             json.dump({"words": [[w["t"], round(w["s"], 2), round(w["e"], 2), w["i"] in kid] for w in words],

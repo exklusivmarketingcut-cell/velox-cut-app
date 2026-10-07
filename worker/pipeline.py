@@ -3698,7 +3698,10 @@ def sprachkanten(ranges, kept):
                                       str((PLAN or {}).get("format") or (STATS.get("story_format") or {}).get("format") or "").lower()))
     out, verl, gek = [], 0.0, 0.0
     for k, (a, b) in enumerate(ranges):
-        ws = [w for w in kept if a - 0.05 <= w["s"] < b]
+        # Zuordnung über die Wortmitte: Die Erkennung lässt ein Wort nach einer Pause oft zu früh beginnen („Ihr“ ab 12,08 s,
+        # gesprochen erst ab 12,5 s). Über den Wortanfang gezählt, galt es als letztes Wort des Abschnitts DAVOR – und dessen
+        # Nachlauf mit „so“ und Kopfdrehen blieb stehen (Premium-Test 07.10.).
+        ws = [w for w in kept if a - 0.05 <= (w["s"] + w["e"]) / 2 < b]
         prev_b = ranges[k - 1][1] if k else None
         next_a = ranges[k + 1][0] if k + 1 < len(ranges) else None
         if ws and (next_a is None or next_a - b >= 0.3) and lv(b) >= thr:

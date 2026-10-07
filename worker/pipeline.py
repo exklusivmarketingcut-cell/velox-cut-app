@@ -389,8 +389,14 @@ def gemini_moments(words, n):
 
 
 def sentences(words):
+    """Sätze am Satzzeichen – und an jeder Sprechpause ab 1,2 s. (Test 07.10., Golden Thai: Bei genuschelten Anläufen setzt die
+    Erkennung keine Satzzeichen; mehrere Anläufe mit bis zu 14 s Pause dazwischen galten als EIN Satz. Davon blieb dann ein
+    Stück eines kaputten Anlaufs im Video, und die saubere letzte Fassung flog raus.)"""
     out, cur = [], []
     for w in words:
+        if cur and w["s"] - cur[-1]["e"] >= 1.2:
+            out.append(cur)
+            cur = []
         cur.append(w)
         if SENT_END.search(w["t"]):
             out.append(cur)
@@ -643,14 +649,29 @@ def retake_idx(words):
         cov = sum(m.size for m in sm.get_matching_blocks())
         return sm.ratio() >= 0.72 or (cov >= 0.8 * min(len(toks[x]), len(toks[y])) and toks[x][:2] == toks[y][:2])
 
-    spaeter = {a_: [b_ for b_ in lang if b_ > a_ and gleich(a_, b_)] for a_ in lang}
+    # Neuansatz über die Satzgrenze: „Während alle über Avocado-Toast reden. – über Avocado-Toast reden, ignorieren 99 % …“
+    # Das Ende des einen Satzes ist der Anfang des nächsten → das doppelte Stück am Ende des ersten fällt weg (immer aktiv).
+    aehnlich = lambda x, y: x == y or (min(len(x), len(y)) >= 4 and difflib.SequenceMatcher(None, x, y).ratio() >= 0.8)
+    for a_ in range(len(sents) - 1):
+        wa = [w for w in sents[a_] if norm(w["t"]) and norm(w["t"]) not in FILLER]
+        wb = [w for w in sents[a_ + 1] if norm(w["t"]) and norm(w["t"]) not in FILLER]
+        for k in range(min(6, len(wa), len(wb)), 1, -1):
+            if all(aehnlich(norm(wa[len(wa) - k + j]["t"]), norm(wb[j]["t"])) for j in range(k)):
+                ab = sents[a_].index(wa[len(wa) - k])
+                out.update(w["i"] for w in sents[a_][ab:])
+                keep.update(w["i"] for w in wb[:k])
+                break
+    def enthalten(x, y):  # Bruchstück oder verhaspelter Anlauf desselben Satzes: der Wortschatz deckt sich (Wortfolge darf abweichen)
+        if len(toks[x]) < len(toks[y]) and sum(1 for t_ in toks[x] if t_ in toks[y]) >= 0.85 * len(toks[x]):
+            return True
+        sx, sy = {t_ for t_ in toks[x] if len(t_) >= 3}, {t_ for t_ in toks[y] if len(t_) >= 3}
+        return min(len(sx), len(sy)) >= 5 and len(sx & sy) >= 0.6 * min(len(sx), len(sy))
+
+    spaeter = {a_: [b_ for b_ in lang if b_ > a_ and (gleich(a_, b_) or enthalten(a_, b_))] for a_ in lang}
     # Skript-Modus, wenn mindestens DREI VERSCHIEDENE Sätze später wiederkommen (Umfrage: nur die eine Frage wiederholt sich)
     koepfe = [a_ for a_ in lang if spaeter[a_] and not any(a_ in spaeter[v] for v in lang if v < a_)]
+    skript_raus = set()
     if len(koepfe) >= 3:
-        def enthalten(x, y):  # Bruchstück („… die deine Verdauung in 24 Stunden komplett umkrempeln kann“) steckt im späteren ganzen Satz
-            return len(toks[x]) < len(toks[y]) and sum(1 for t_ in toks[x] if t_ in toks[y]) >= 0.85 * len(toks[x])  # Wortfolge darf abweichen
-        for a_ in lang:
-            spaeter[a_] = sorted(set(spaeter[a_]) | {b_ for b_ in lang if b_ > a_ and enthalten(a_, b_)})
         n_weg = 0
         for a_ in lang:
             if not spaeter[a_]:
@@ -659,7 +680,7 @@ def retake_idx(words):
             voll = max(len(toks[k]) for k in gruppe)
             beste = [k for k in gruppe if len(toks[k]) >= 0.7 * voll][-1]   # die LETZTE Fassung, sofern sie nicht nur ein Bruchstück ist
             if a_ != beste:
-                out.update(w["i"] for w in sents[a_])
+                skript_raus.update(w["i"] for w in sents[a_])  # schlägt jeden Schutz „letzte Fassung“ aus den Nah-Regeln
                 n_weg += 1
             keep.update(w["i"] for w in sents[beste])
         STATS["skript_anlaeufe_entfernt"] = n_weg
@@ -686,7 +707,7 @@ def retake_idx(words):
             keep.difference_update(gone)  # das Signalwort schlägt den Schutz „letzte Fassung“ eines früheren Anlaufs
             out.update(gone)
             keep.update(w["i"] for w in words[m + 1:m + 3])
-    return out - keep, keep
+    return (out - keep) | skript_raus, keep - skript_raus
 
 
 RESTART_WORDS = {"warte", "wartet", "sorry", "moment", "stopp", "stop", "nochmal", "nee"}
@@ -3517,6 +3538,15 @@ def trim_joins(ranges, kept, joins):
                     a = max(a, min(first - 0.05, t - 0.03))
                 elif still(t) and still(t - 0.05) and still(t - 0.1):
                     a = max(a, min(first - 0.10, t - 0.08))
+            # Inhaber 07.10. (Premium-Test): „Kurz bevor er redet, nimmt er Luft – das hört man, und einen Moment passiert
+            # nichts. Das muss direkt nacheinander kommen.“ Atmen ist kein „fremdes Geräusch“ und keine Stille; es liegt aber
+            # deutlich unter der Sprachlautstärke. Der Abschnitt beginnt deshalb am echten Einsatz der Stimme: vom erkannten
+            # Wortanfang rückwärts, solange es sprachlaut ist – davor (Luftholen, Lippengeräusch, Leerlauf) wird abgeschnitten.
+            if first is not None and first - a > 0.12:
+                i0 = int(first / 0.05)
+                while i0 > int(a / 0.05) and (lv(i0 * 0.05 - 0.025) >= laut - 16 or lv(i0 * 0.05 - 0.075) >= laut - 16):
+                    i0 -= 1
+                a = max(a, min(first - 0.04, i0 * 0.05 - 0.06))
         if b - a > 0.08:
             out.append([a, b])
             n_cut += (a - a0) + (b0 - b)

@@ -1042,6 +1042,21 @@ def keep_ranges(words, safe=False, extra_drop=frozenset()):
             geholt_ki += 1
     if geholt_ki:
         STATS["einzelwort_der_ki_behalten"] = geholt_ki
+    # Inhaber 08.10. nachts (Viral, „nach ‚zu essen‘ nicht richtig geschnitten“): Vor „wenn du es ohne Milch schaffst“ stand ein
+    # einzelnes „Okay,“ – 0,9 s nach dem Satz davor, 0,8 s vor dem nächsten Wort. Das ist ein Startzeichen an sich selbst oder
+    # den Kameramann, kein Inhalt: Ein einzelnes Einwurfwort, das frei zwischen zwei Pausen steht, fällt weg.
+    _start = {"okay", "ok", "so", "gut", "also", "genau", "ja", "und", "los", "bitte"}
+    frei = 0
+    for k, w in enumerate(words):
+        if w["i"] in drop or _nn(w) not in _start:
+            continue
+        davor = w["s"] - words[k - 1]["e"] if k else 9.0
+        danach = words[k + 1]["s"] - w["e"] if k + 1 < len(words) else 9.0
+        if davor >= 0.5 and danach >= 0.5:
+            drop.add(w["i"])
+            frei += 1
+    if frei:
+        STATS["startzeichen_gestrichen"] = frei
     # nachvollziehbar machen, WER ein Wort gestrichen hat (Fehlersuche 08.10.: „ohne“ fehlte in „Mittagspause ohne Foodkoma“)
     STATS["gestrichen_von"] = {f"{w['t']}@{w['s']:.1f}": "+".join(n for n, m in (("fuell", fil), ("wdh", rep), ("ki", gem), ("anlauf", ret), ("extra", set(extra_drop))) if w["i"] in m)
                                for w in words if w["i"] in drop}

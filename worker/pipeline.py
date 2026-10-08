@@ -2223,9 +2223,29 @@ def render_cut(idx, ranges):
     # (bis ×12, pumpte zwischen den Wörtern). Im Hörvergleich wählte er „eine Mischung aus neu und Original“: KEINE
     # Entrauschung mehr, nur Brummen unter 80 Hz raus, die Stimme ganz leicht betont, leise Stellen sanft und langsam angehoben
     # (höchstens ×2,5), dann auf Sendelautstärke.
-    fc.append(f"[{prev}]{tempo}highpass=f=80:p=2,equalizer=f=220:t=q:w=1.2:g=-0.8,"
-              f"equalizer=f=3000:t=q:w=1.2:g=0.8,dynaudnorm=f=500:g=31:p=0.9:m=2.5,loudnorm=I=-14:TP=-1.5:LRA=11,"
+    # Inhaber 08.10.: „Kannst gerne das Broadcast benutzen und so optimieren, dass man die Stimmen besser hört und die Geräusche
+    # außenherum leicht unterdrückt werden.“ Broadcast = sein Premiere-Preset (Multiband-Kompressor, material/preset/Broadcast
+    # Preset.prfpset), Werte 1:1 ausgelesen: Trennfrequenzen 137/1147/6910 Hz, Schwellen −20,2/−17,6/−24,8/−25 dB, Verhältnis
+    # 3:1/2:1/2:1/3:1, Verstärkung +1/0/0/+3 dB, Attack 1 ms, Release 100 ms, Begrenzer mit +10 dB Eingang.
+    # Davor: die Sprache auf einen festen Arbeitspegel bringen (sonst greift das Preset bei leisen Aufnahmen gar nicht) und
+    # zwischen den Wörtern sanft absenken (Expander, höchstens −9 dB – KEINE Entrauschung, die klang „wie unter Wasser“).
+    # Hörvergleich 08.10. am Golden-Thai-Rohschnitt: Stimme gleich laut, Umgebung zwischen den Wörtern 7 dB leiser.
+    _laut = sorted(LV)[int(len(LV) * 0.9)] if LV else -24.0
+    vor_db = min(34.0, max(-6.0, -20.0 - _laut))
+    fc.append(f"[{prev}]{tempo}highpass=f=80:p=2,equalizer=f=220:t=q:w=1.2:g=-0.8,equalizer=f=3000:t=q:w=1.2:g=1.5,"
+              f"volume={vor_db:.1f}dB,agate=threshold=0.02:ratio=2:range=0.35:attack=4:release=180:knee=6:detection=rms,"
+              f"acrossover=split=137 1147 6910:order=4th[bq1][bq2][bq3][bq4]")
+    fc.append("[bq1]acompressor=threshold=0.0977:ratio=3:attack=1:release=100:makeup=1.122[bc1]")
+    fc.append("[bq2]acompressor=threshold=0.132:ratio=2:attack=1:release=100:makeup=1[bc2]")
+    fc.append("[bq3]acompressor=threshold=0.0575:ratio=2:attack=1:release=100:makeup=1[bc3]")
+    fc.append("[bq4]acompressor=threshold=0.0562:ratio=3:attack=1:release=100:makeup=1.413[bc4]")
+    fc.append(f"[bc1][bc2][bc3][bc4]amix=inputs=4:normalize=0,volume=10dB,alimiter=limit=0.977:attack=5:release=50:level=0,"
+              # zweite, sanfte Absenkung NACH dem Kompressor (der hebt die Umgebung sonst wieder an – Straßen-Umfrage 08.10.:
+              # nur davor +1,5 dB Abstand Stimme/Umgebung, davor und danach +5 dB)
+              f"agate=threshold=0.09:ratio=1.6:range=0.4:attack=6:release=220:knee=8:detection=rms,"
+              f"loudnorm=I=-14:TP=-1.5:LRA=11,"
               f"afade=t=in:d=0.03,afade=t=out:st={max(0.0, total - 0.18):.3f}:d=0.18,aresample=48000[ac]")
+    STATS["ton"] = {"kette": "broadcast", "vorverstaerkung_db": round(vor_db, 1)}
     fc.append(f"[0:v]setsar=1,{GRADE},format=yuv420p[vc]")
     script = os.path.join(A.out, f"cut-{idx}.filter")
     open(script, "w").write(";\n".join(fc))

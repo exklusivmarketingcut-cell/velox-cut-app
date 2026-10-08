@@ -226,7 +226,7 @@ def look_mats(batch):
         os.remove(p)
     res = gemini("Beschreibe für jede Stelle in wenigen Wörtern, was zu sehen ist (z. B. „Nahaufnahme Cheeseburger in der Hand“, "
                  "„Preistafel“, „Laden von außen“, „Person redet“, „unscharf“). broll = taugt als kurzer Zwischenschnitt über "
-                 "gesprochenem Text (Produkt, Essen, Zubereitung, Laden, Schild – gutes, ruhiges Bild; KEIN Gesicht im Gespräch).",
+                 "gesprochenem Text (Produkt, Essen, Zubereitung, Laden, Schild – gutes, ruhiges Bild). broll = false, sobald eine Person von vorn mit Gesicht zu sehen ist – auch wenn sie gerade schweigt, wartet oder zur Seite schaut.",
                  parts, {"type": "object", "properties": {"stellen": {"type": "array", "items": {"type": "object", "properties": {
                      "id": {"type": "string"}, "inhalt": {"type": "string"}, "broll": {"type": "boolean"}}, "required": ["id", "inhalt", "broll"]}}},
                          "required": ["stellen"]})
@@ -240,6 +240,35 @@ with ThreadPoolExecutor(4) as ex:
             if m:
                 m.update(inhalt=d.get("inhalt", ""), ok=bool(d.get("broll")))
 mats = [m for m in mats if m.get("ok")]
+
+
+def zeigt_gesicht(m):
+    """Inhaber 08.10.: Über „Nummer 33“ lag als Zwischenbild eine Aufnahme, in der ER SELBST stumm am Tisch sitzt – man hört
+    ihn reden und sieht ihn mit geschlossenem Mund. Ein Zwischenbild zeigt nie ein Gesicht von vorn (Produkt, Hände, Laden ja)."""
+    try:
+        import cv2
+        kas = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+        cap = cv2.VideoCapture(m["c"]["file"])
+        n = 0
+        for k in range(5):
+            cap.set(cv2.CAP_PROP_POS_MSEC, 1000 * (m["a"] + (m["b"] - m["a"]) * (k + 0.5) / 5))
+            ok, fr = cap.read()
+            if not ok:
+                continue
+            g = cv2.cvtColor(fr, cv2.COLOR_BGR2GRAY)
+            g = cv2.resize(g, (640, int(640 * g.shape[0] / g.shape[1])))
+            n += any(w >= 45 for (_, _, w, _) in kas.detectMultiScale(g, 1.1, 6, minSize=(45, 45)))
+        cap.release()
+        return n >= 2
+    except Exception as e:
+        log(f"  Gesichts-Prüfung Zwischenbild nicht möglich: {e}")
+        return False
+
+
+for m in list(mats):
+    if m["c"].get("talk") and zeigt_gesicht(m):
+        log(f"  Zwischenbild {m['id']} verworfen – Sprecher von vorn im Bild („{m.get('inhalt', '')[:40]}“)")
+        mats.remove(m)
 log(f"B-Roll-Material: {len(mats)} Stellen – " + "; ".join(f"{m['id']} {m.get('inhalt', '')[:30]}" for m in mats[:12]))
 
 pics = []

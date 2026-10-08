@@ -359,3 +359,10 @@ Protokoll aller Schnitte: `schnitt-maschine/logs/jobs.jsonl` (neben dem Ordner `
     Musik) zu Ende – mindestens 1,6 s zu sehen, höchstens 3 s über den Satz hinaus. Ein Satz OHNE eigene Handlung bleibt an
     seiner Stelle bzw. läuft weiter, verbraucht aber nie die Handlung des nächsten Satzes. Nie dasselbe Bild zweimal, nie
     zurückspringen. Fehlstarts und Regie-Sätze („Also, warte …“, „Wie heißt das?“) fliegen vor dem Zusammensetzen raus.
+
+## Regel 116 – Kein Leerlauf, kein Fremdlaut, kein stummer Sprecher als Zwischenbild (Inhaber 08.10., Ordner-Tests Golden Thai)
+- **Leerlauf mitten im Abschnitt:** Liegt innerhalb eines Abschnitts 0,4 s oder länger nur Ruhe/Atmen (Pegel unter der Sprech-Schwelle, kein leises Wort darin), bleiben 0,22 s stehen. Grund: Die Worterkennung lässt das nächste Wort oft zu früh beginnen, die Pause sah dann wie Sprache aus („hängt vor ‚Willst du eine Mittagspause‘“, „nach ‚Restaurants‘ kürzer cutten“).
+- **Clip-Wechsel:** Der Anfang eines Abschnitts wird auch direkt nach einem Clip-Wechsel am Pegel geprüft (vorher nur nach einer Lücke).
+- **Kurzer Laut vor dem Satz** (≤ 0,3 s, danach ≥ 0,3 s Ruhe, noch vor dem ersten Wort): gehört nicht zum Satz und fällt weg.
+- **Schlusslaut:** Eine Senke von 0,1 s im letzten Wort ist nicht das Stimm-Ende („Thailan-ds“ bleibt ganz).
+- **Zwischenbild (B-Roll) zeigt nie ein Gesicht von vorn** aus einem Sprech-Clip: Über „Nummer 33“ lag eine Aufnahme, in der der Sprecher selbst stumm am Tisch sitzt – man hört ihn und sieht ihn nicht sprechen. Prüfung per Gesichtserkennung (montage.py `zeigt_gesicht`), zusätzlich im KI-Auftrag.

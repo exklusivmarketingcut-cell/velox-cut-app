@@ -3723,6 +3723,36 @@ def sprachkanten(ranges, kept):
     # In einer Zubereitung passiert die Handlung NACH der Ansage (Regel 107) – dort bleibt der Nachlauf stehen
     _handlung_bleibt = bool(re.search(r"zubereit|anleitung|tutorial|rezept|behind|so wird|so entsteht",
                                       str((PLAN or {}).get("format") or (STATS.get("story_format") or {}).get("format") or "").lower()))
+    # Inhaber 08.10. (Ordner-Tests Golden Thai): „Kurz bevor er sagt ‚Willst du eine Mittagspause‘, hängt das ein bisschen“,
+    # „nach ‚Restaurants‘ hätte man kürzer cutten können“. Gemessen: 0,4–0,5 s Leerlauf MITTEN in einem Abschnitt. Ursache:
+    # Die Erkennung lässt das nächste Wort zu früh beginnen („Die“ ab 10,34 s, gesprochen ab 10,68 s) – für den Schnitt sah es
+    # aus, als ginge die Sprache durch. Jetzt entscheidet auch hier der Pegel: Liegt innerhalb eines Abschnitts 0,4 s oder
+    # länger nur Ruhe/Atmen (kein leises Wort darin), bleiben davon 0,22 s stehen – der Rest fällt weg.
+    _zeigen = [(float(z[0]), float(z[1])) for z in ((PLAN or {}).get("zeigen") or []) if isinstance(z, (list, tuple)) and len(z) >= 2]
+    _joins = list((PLAN or {}).get("joins") or [])
+    neu, leer = [], 0.0
+    for a, b in ranges:
+        cur, t = a, a + 0.15
+        while not _handlung_bleibt and t < b - 0.15:
+            if lv(t) >= thr:
+                t += 0.05
+                continue
+            q0 = t
+            while t < b - 0.15 and lv(t) < thr:
+                t += 0.05
+            q1 = t
+            if q1 >= b - 0.15 or q1 - q0 < 0.4:
+                continue
+            if any(w["s"] >= q0 - 0.02 and w["e"] <= q1 + 0.02 for w in kept) or any(z0 < q1 and z1 > q0 for z0, z1 in _zeigen):
+                continue
+            c0, c1 = q0 + 0.12, q1 - 0.10
+            if c1 - c0 >= 0.15 and c0 - cur >= 0.3 and b - c1 >= 0.3:
+                neu.append([cur, c0])
+                leer += c1 - c0
+                cur = c1
+        neu.append([cur, b])
+    _geteilt = {round(r[0], 2) for r in neu} - {round(r[0], 2) for r in ranges}
+    ranges = neu
     out, verl, gek = [], 0.0, 0.0
     for k, (a, b) in enumerate(ranges):
         # Zuordnung über die Wortmitte: Die Erkennung lässt ein Wort nach einer Pause oft zu früh beginnen („Ihr“ ab 12,08 s,
@@ -3743,17 +3773,36 @@ def sprachkanten(ranges, kept):
             # Inhaber 07.10. (Premium): Nach „… Toppings nach Wahl“ sagt er noch „so“ und dreht den Kopf – „da muss direkt
             # der Cut kommen“. Vor einem Schnitt endet der Abschnitt deshalb dort, wo die Stimme des letzten behaltenen Wortes
             # verklingt (+0,15 s) – was danach kommt (Laut, Blick, Leerlauf), gehört nicht mehr dazu.
+            # Nachtrag 08.10.: Eine Senke von 0,1 s mitten im letzten Wort („Thailan-ds“) ist noch nicht das Ende der Stimme –
+            # sonst fehlt der Schlusslaut und es klingt wie ein Versprecher.
             t = max(a, ws[-1]["e"] - 0.1)
-            while t < b and lv(t) >= thr:
+            while t < b and (lv(t) >= thr or lv(t + 0.05) >= thr or lv(t + 0.10) >= thr):
                 t += 0.05
             if b - (t + 0.10) > 0.06:
                 gek += b - (t + 0.10)
                 b = t + 0.10
-        if ws and (prev_b is None or a - prev_b >= 0.3):
+        # Auch an einem Clip-Wechsel (dort schließen die Abschnitte direkt aneinander an): Vor „Willst du …“ blieben 0,4 s
+        # Atmen stehen, weil der Anfang nur nach einer Lücke geprüft wurde (Inhaber 08.10.).
+        am_wechsel = any(abs(a - j) < 0.2 for j in _joins)
+        if ws and round(a, 2) not in _geteilt and (prev_b is None or a - prev_b >= 0.3 or am_wechsel):
             lim = min(ws[0]["e"] - 0.12, a + 1.5)
             t = a
-            while t < lim and lv(t) < thr and lv(t + 0.05) < thr:
-                t += 0.05
+            while t < lim:
+                if lv(t) < thr and lv(t + 0.05) < thr:
+                    t += 0.05
+                    continue
+                # Inhaber 08.10. (Viral, „nach ‚Küche‘ hört man einen kleinen Versprecher“): ein kurzer Laut (Schmatzen, „ä“,
+                # Ansatz) und danach wieder Ruhe, noch bevor das erste Wort wirklich beginnt – der Laut gehört nicht zum Satz.
+                l1 = t
+                while l1 < lim and (lv(l1) >= thr or lv(l1 + 0.05) >= thr):
+                    l1 += 0.05
+                q1 = l1
+                while q1 < lim and lv(q1) < thr:
+                    q1 += 0.05
+                if l1 - t <= 0.3 and q1 - l1 >= 0.3 and q1 < lim:
+                    t = l1
+                    continue
+                break
             if t - a >= 0.1:
                 gek += t - 0.06 - a
                 a = t - 0.06
@@ -3768,7 +3817,7 @@ def sprachkanten(ranges, kept):
                 b = t + 0.30
         if b - a > 0.08:
             out.append([a, b])
-    STATS["sprachkanten"] = {"ende_verlaengert_s": round(verl, 2), "anfang_gekuerzt_s": round(gek, 2)}
+    STATS["sprachkanten"] = {"ende_verlaengert_s": round(verl, 2), "anfang_gekuerzt_s": round(gek, 2), "leerlauf_raus_s": round(leer, 2)}
     return out
 
 

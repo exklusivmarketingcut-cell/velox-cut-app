@@ -1040,6 +1040,31 @@ def keep_ranges(words, safe=False, extra_drop=frozenset()):
         drop -= {w["i"] for w in words[j:m] if w["i"] not in fil}
         getauscht += 1
         k = m
+    # Inhaber 08.10. (Viral, „am Location-Wechsel ganz am Anfang ein Versprecher“): „Halal Thai? Nein. Halal Thai ist kein
+    # Trend.“ – Anlauf, Selbstkorrektur, neuer Anlauf. Steht zwischen zwei gleichen Anfängen (2–6 Wörter) nur ein
+    # Korrekturwort, fallen der erste Anlauf und das Korrekturwort weg.
+    _korr = {"nein", "ne", "nee", "quatsch", "nochmal", "sorry", "stopp", "stop", "moment", "falsch", "warte", "anders", "also", "äh", "ähm"}
+    k = 0
+    while k < len(words):
+        ok_ = False
+        for L in range(6, 1, -1):
+            A_ = words[k:k + L]
+            if len(A_) < L or any(w["i"] in drop for w in A_) or not all(_n(w) for w in A_):
+                continue
+            j = k + L
+            mitte = []
+            while j < len(words) and len(mitte) < 3 and (words[j]["i"] in drop or not _n(words[j]) or _n(words[j]) in _korr):
+                if words[j]["i"] not in drop and _n(words[j]) in _korr:
+                    mitte.append(j)
+                j += 1
+            B_ = words[j:j + L]
+            if mitte and len(B_) == L and [_n(w) for w in B_] == [_n(w) for w in A_] and not any(w["i"] in drop for w in B_):
+                drop |= {w["i"] for w in words[k:j]}
+                getauscht += 1
+                k, ok_ = j, True
+                break
+        if not ok_:
+            k += 1
     if getauscht:
         STATS["letzte_fassung_getauscht"] = getauscht
     # Zweiter Kontroll-Lauf 08.10.: „Halal Thai … Halal Thai ist kein Trend“ – gestrichen wurden der Anlauf UND das zweite
@@ -2887,7 +2912,11 @@ def premium_events(fx, words_out, title, voll=True):
                 if zahl:
                     ktxt = f"{zahl} {ktxt}"[:26]
             ico = f.get("emoji") or next((e for pat, e in CARD_ICON if re.search(pat, ktxt, re.I)), None)
-            karten.append({"t": t0, "text": ktxt, "emoji": ico})
+            # Inhaber 08.10.: „Er sagt schon die Nummer 33 und das wird erst später eingeblendet.“ Beginnt die Karte mit einer
+            # Zahl, die kurz vorher gesprochen wird, erscheint sie bei der Zahl – nicht erst beim Namen danach.
+            mz = re.match(r"\d+", ktxt)
+            tk = next((w[1] for w in words_out if mz and t0 - 1.8 <= w[1] < t0 and re.sub(r"\D", "", str(w[0])) == mz.group(0)), None)
+            karten.append({"t": tk if tk is not None else t0, "text": ktxt, "emoji": ico})
     # Karten, die kurz nacheinander fallen (Aufzählung), stapeln sich und bleiben gemeinsam stehen
     CARDS.clear()
     gruppen = []
@@ -2900,21 +2929,18 @@ def premium_events(fx, words_out, title, voll=True):
     half = CAPFS[0] * 0.6
 
     def platz(n, ta, tb):
-        """Oberkante für n Karten im Zeitraum ta–tb: unter den Untertiteln, sonst darüber, sonst an ihrer Stelle (dann
-        pausieren sie). Rückgabe (y, Anzahl, die wirklich passt)."""
-        h = n * CARD_PITCH
+        """Oberkante für n Karten im Zeitraum ta–tb: unter den Untertiteln, sonst darüber, sonst oben über dem Kopf.
+        Inhaber 08.10. (Premium, „er sagt schon die Nummer 33 und das wird erst später eingeblendet“): Früher wichen die
+        UNTERTITEL der Karte, wenn kein Platz war – vier Sekunden lang stand kein gesprochenes Wort im Bild. Untertitel
+        pausieren nie mehr; findet eine Karte keinen freien Platz, gibt es None zurück."""
+        h = (n - 1) * CARD_PITCH + 130
         frei = lambda y0: SAFE_T <= y0 and y0 + h <= SAFE_B and not hits_face(210, y0, 870, y0 + h, ta, tb) \
             and not (LAY.get("trect") and ta < 3.4 and _cut(y0, y0 + h, LAY["trect"][1] - 10, LAY["trect"][3] + 10))
-        oben, unten = cy - half - 26 - h, cy + half + 26
-        if frei(unten) and not any(a_ < tb and b_ > ta for a_, b_ in HIDE):
-            return unten, n
-        if frei(oben):
-            return oben, n
-        y0 = min(max(cy - h / 2, SAFE_T), SAFE_B - h)
-        if hits_face(210, y0, 870, y0 + h, ta, tb):
-            n, y0 = 1, cy - CARD_PITCH / 2               # zu wenig Platz für den Stapel → nur eine Karte
-        HIDE.append((ta - 0.05, tb if n > 1 else ta + 2.2))
-        return y0, n
+        unten = min(cy + half + 26, SAFE_B - h)          # darf bis auf 10 px an die Untertitel heranrücken
+        for y0 in ([unten] if unten >= cy + half + 10 else []) + [cy - half - 26 - h, SAFE_T + 10]:
+            if frei(y0):
+                return y0
+        return None
 
     for g in gruppen:
         ta, tb = g[0]["t"], g[-1]["t"] + 2.2
@@ -2923,12 +2949,20 @@ def premium_events(fx, words_out, title, voll=True):
         nc = next((c_ for c_ in CUT_TIMES if c_ >= g[-1]["t"] + 0.9), None)
         if nc is not None and nc < tb + 0.28:
             tb = nc - 0.30
-        y0, n = platz(len(g), ta, tb)
-        if n < len(g):
-            g, tb = g[:1], g[0]["t"] + 2.2
+        y0 = platz(len(g), ta, tb)
+        if y0 is not None:
+            for r, k in enumerate(g):
+                # Inhaber 07.10.: nummerierte Schritte – in einer Aufzählung trägt jede Karte ihre Nummer („1“, „2“, „3“)
+                CARDS.append({**k, "y": int(y0 + r * CARD_PITCH), "bis": tb, "nr": r + 1 if len(g) > 1 else None})
+            continue
+        # Der Stapel passt nicht → die Karten kommen einzeln nacheinander (jede löst die vorige ab)
         for r, k in enumerate(g):
-            # Inhaber 07.10.: nummerierte Schritte – in einer Aufzählung trägt jede Karte ihre Nummer („1“, „2“, „3“)
-            CARDS.append({**k, "y": int(y0 + r * CARD_PITCH), "bis": tb, "nr": r + 1 if len(g) > 1 else None})
+            bis = min(tb, g[r + 1]["t"] - 0.05) if r + 1 < len(g) else tb
+            y1 = platz(1, k["t"], bis)
+            if y1 is None or bis - k["t"] < 0.8:
+                log(f"Karte „{k['text']}“ weggelassen – kein freier Platz neben Gesicht und Untertiteln")
+                continue
+            CARDS.append({**k, "y": int(y1), "bis": bis, "nr": r + 1 if len(g) > 1 else None})
     if voll:
         ende = words_out[-1][2] if words_out else 0.0
         # Orts-Marke (Inhaber 07.10.): fällt ein Ort, erscheint oben eine Karte mit Stecknadel – wenn dort frei ist
@@ -3871,6 +3905,19 @@ def sprachkanten(ranges, kept):
             continue
         if b - a > 0.08:
             out.append([a, b])
+    # Inhaber 08.10. (Premium, „mit Tofu“ klingt abgehackt/doppelt): Aus einer 0,4-s-Sprechpause zwischen „mit“ und „Tofu“
+    # wurden 0,2 s herausgeschnitten – gespart ist nichts, aber der Ausklang des Wortes davor wird hörbar gekappt.
+    # Ein Schnitt, der weniger als 0,25 s spart und kein gestrichenes Wort entfernt, wird zurückgenommen (kein Clip-Wechsel).
+    ks_ = {(round(w["s"], 2), round(w["e"], 2)) for w in kept}
+    weg = [w for w in WORDS if (round(w["s"], 2), round(w["e"], 2)) not in ks_]
+    glatt = []
+    for a, b in out:
+        if glatt and 0.02 <= a - glatt[-1][1] < 0.25 and not any(abs(a - j) < 0.2 for j in _joins) \
+                and not any(w["s"] < a and w["e"] > glatt[-1][1] for w in weg):
+            glatt[-1][1] = b
+        else:
+            glatt.append([a, b])
+    out = glatt
     STATS["sprachkanten"] = {"ende_verlaengert_s": round(verl, 2), "anfang_gekuerzt_s": round(gek, 2), "leerlauf_raus_s": round(leer, 2)}
     return out
 

@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 // Beispielsatz, Wort für Wort – * = hervorgehobenes Wort (wie im fertigen Video)
 const SAMPLE = ['So', 'sehen', 'deine', '*Untertitel', 'im', 'fertigen', '*Video', 'aus.'];
 // Wörter pro Einblendung je Stil (identisch mit worker/pipeline.py)
-const PER: Record<string, number> = { rise: 4, clean: 4, hormozi: 3, neon: 3, comic: 2, serif: 4 };
+const PER: Record<string, number> = { rise: 4, clean: 4, hormozi: 3, neon: 3, comic: 2, serif: 4, wide: 2, bold: 3, box: 3, impact: 3, mini: 5 };
 
 /** Live-Vorschau: gewählter Untertitel-Stil + Farbe auf dem eigenen Video (sobald gewählt) oder einem Beispielbild */
 export default function CaptionPreview({ caption, color, file }: { caption: string; color: string; file: File | null }) {

@@ -1054,6 +1054,13 @@ def puzzle(g):
     offen = [c for c in talk if c["id"] not in benutzt and len(c.get("sents") or []) >= 2]
     if not alt or not offen or len(talk) < 2:
         return
+    # Test Malo's-Ordner 08.10.: Der Plan war mit 55 Sätzen schon ein ganzes Video (Zubereitung der Junior Box) – die Prüfung
+    # hängte trotzdem „Das ist der beste Burger in Mannheim. Hier bei Malo's in Neckarau.“ aus einem ANDEREN Video hinten an.
+    # Fehlende Teile sucht sie deshalb nur, solange das geplante Video kurz ist (unter 40 s Sprache) – ein langes hat sein Ende.
+    geplant = sum(c["sents"][k][-1]["e"] - c["sents"][k][0]["s"] for c, k in (ref(x) for x in alt))
+    if geplant >= 40.0:
+        log(f"Puzzle-Prüfung: übersprungen – der Plan hat schon {geplant:.0f} s Sprache")
+        return
     txt = lambda c, k: " ".join(w["t"] for w in c["sents"][k])
     zeilen = ["## AKTUELLER SCHNITTPLAN (in dieser Reihenfolge)"]
     zeilen += [f"  {x}  {txt(*ref(x))}" for x in alt]

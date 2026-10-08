@@ -2233,7 +2233,7 @@ def render_cut(idx, ranges):
     _laut = sorted(LV)[int(len(LV) * 0.9)] if LV else -24.0
     vor_db = min(34.0, max(-6.0, -20.0 - _laut))
     fc.append(f"[{prev}]{tempo}highpass=f=80:p=2,equalizer=f=220:t=q:w=1.2:g=-0.8,equalizer=f=3000:t=q:w=1.2:g=1.5,"
-              f"volume={vor_db:.1f}dB,agate=threshold=0.02:ratio=2:range=0.35:attack=4:release=180:knee=6:detection=rms,"
+              f"volume={vor_db:.1f}dB,"
               f"acrossover=split=137 1147 6910:order=4th[bq1][bq2][bq3][bq4]")
     fc.append("[bq1]acompressor=threshold=0.0977:ratio=3:attack=1:release=100:makeup=1.122[bc1]")
     fc.append("[bq2]acompressor=threshold=0.132:ratio=2:attack=1:release=100:makeup=1[bc2]")
@@ -2242,7 +2242,8 @@ def render_cut(idx, ranges):
     fc.append(f"[bc1][bc2][bc3][bc4]amix=inputs=4:normalize=0,volume=10dB,alimiter=limit=0.977:attack=5:release=50:level=0,"
               # zweite, sanfte Absenkung NACH dem Kompressor (der hebt die Umgebung sonst wieder an – Straßen-Umfrage 08.10.:
               # nur davor +1,5 dB Abstand Stimme/Umgebung, davor und danach +5 dB)
-              f"agate=threshold=0.09:ratio=1.6:range=0.4:attack=6:release=220:knee=8:detection=rms,"
+              # Inhaber 08.10. nachts zu den Hörproben mit Absenkung zwischen den Wörtern (Expander, leicht und stark):
+              # „abgehackt“. Deshalb KEIN Expander/Gate mehr – die Umgebung darf nicht auf- und zugehen.
               f"loudnorm=I=-14:TP=-1.5:LRA=11,"
               f"afade=t=in:d=0.03,afade=t=out:st={max(0.0, total - 0.18):.3f}:d=0.18,aresample=48000[ac]")
     STATS["ton"] = {"kette": "broadcast", "vorverstaerkung_db": round(vor_db, 1)}

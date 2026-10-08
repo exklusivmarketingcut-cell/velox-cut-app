@@ -748,7 +748,11 @@ def build(plan, odir):
     for u in units:
         d = bw.get(u["nr"]) or {}
         # Ein langer, vollständiger Satz (≥ 8 Wörter) ist kein Fehlstart, nur weil die KI darin ein Stolpern sieht
-        if ((d.get("fehlstart") and len(u["ws"]) < 8) or fehl_re.search(u["satz"])) and not re.search(r"warten (kurz|bis)", u["satz"], re.I):
+        # … und ein TEILSTÜCK eines Satzes auch nicht (Test 08.10.: aus „Halal Thai | ist kein | Trend, das gibt es …“ strich die
+        # KI in jedem Lauf das Mittelstück „ist kein“ – übrig blieb einmal „Thai ist kein Trend“, einmal nur „Trend“). Anläufe
+        # INNERHALB eines Satzes erkennt der Feinschnitt am Wortlaut (Regel 116/118); hier fällt nur ein ganzer Satz weg.
+        teil = sum(1 for v in units if sent_of[id(v["ws"][0])] == sent_of[id(u["ws"][0])]) > 1
+        if ((d.get("fehlstart") and len(u["ws"]) < 8 and not teil) or fehl_re.search(u["satz"])) and not re.search(r"warten (kurz|bis)", u["satz"], re.I):
             u["raus"] = True
             log(f"  Fehlstart gestrichen: {sent_of[id(u['ws'][0])]} „{u['satz'][:60]}“")
     pan_re = re.compile(r"verbrannt|angebrannt|ist falsch|falsch gemacht|oh no|schiefgegangen|\bah, ah\b", re.I)

@@ -135,20 +135,31 @@ for c in clips:
         if n1 - n0 + 1 < 8:
             n0 = n1 + 1
             continue
-        a0, b0 = max(0.0, float(flach[n0]["start"]) - 0.3), float(flach[n1]["end"]) + 0.3
         teil = wav[:-4] + "_teil.wav"
         # Der Notbetrieb kommt von zu leisem Ton (Golden Thai: Sprache bei −41 dB). Mit angehobenem Pegel versteht die
-        # Erkennung dieselbe Stelle sauber („Mein Angebot an dich. Ich lade dich gern bei uns zum Essen ein.“).
-        _x = _np.frombuffer(subprocess.run(["ffmpeg", "-v", "error", "-ss", f"{a0:.2f}", "-to", f"{b0:.2f}", "-i", wav, "-f", "s16le", "-"],
-                                           capture_output=True).stdout, dtype=_np.int16).astype(_np.float32) / 32768
-        _rms = 20 * _np.log10(float(_np.sqrt((_x ** 2).mean())) + 1e-7) if len(_x) else -30.0
-        gain = min(30.0, max(0.0, -22.0 - _rms))
-        run(["ffmpeg", "-v", "error", "-y", "-ss", f"{a0:.2f}", "-to", f"{b0:.2f}", "-i", wav, "-af",
-             f"volume={gain:.1f}dB,alimiter=limit=0.9", teil])
-        r2 = mlx_whisper.transcribe(teil, path_or_hf_repo=os.environ.get("VELOX_WHISPER", "mlx-community/whisper-large-v3-turbo"),
-                                    word_timestamps=True, condition_on_previous_text=False, language="de")
-        os.remove(teil)
-        neu_w = [dict(w, start=float(w["start"]) + a0, end=float(w["end"]) + a0) for s2 in r2["segments"] for w in s2.get("words", []) if w["word"].strip()]
+        # Erkennung dieselbe Stelle sauber („Mein Angebot an dich. Ich lade dich gern bei uns zum Essen ein.“). Das klappt
+        # nicht bei jedem Ausschnitt auf Anhieb – deshalb mehrere Versuche (Ränder, Pegel, Satzzeichen-Vorgabe), der erste
+        # mit Satzzeichen gilt. Die Ränder reichen höchstens bis an die Nachbarwörter (nichts doppelt).
+        links = float(flach[n0 - 1]["end"]) + 0.05 if n0 else 0.0
+        rechts = float(flach[n1 + 1]["start"]) - 0.05 if n1 + 1 < len(flach) else 1e9
+        neu_w = []
+        for vor, nachl, mehr, vorgabe in ((0.3, 0.3, 0, None), (0.5, 1.4, 0, None), (0.5, 1.4, 0, "Okay. Ich sage den Satz noch einmal, ganz in Ruhe."),
+                                         (0.5, 1.4, -6, None), (1.0, 2.0, 4, "Okay. Ich sage den Satz noch einmal, ganz in Ruhe.")):
+            a0 = max(0.0, links, float(flach[n0]["start"]) - vor)
+            b0 = min(rechts, float(flach[n1]["end"]) + nachl)
+            _x = _np.frombuffer(subprocess.run(["ffmpeg", "-v", "error", "-ss", f"{a0:.2f}", "-to", f"{b0:.2f}", "-i", wav, "-f", "s16le", "-"],
+                                               capture_output=True).stdout, dtype=_np.int16).astype(_np.float32) / 32768
+            _rms = 20 * _np.log10(float(_np.sqrt((_x ** 2).mean())) + 1e-7) if len(_x) else -30.0
+            gain = min(30.0, max(0.0, -22.0 - _rms + mehr))
+            run(["ffmpeg", "-v", "error", "-y", "-ss", f"{a0:.2f}", "-to", f"{b0:.2f}", "-i", wav, "-af",
+                 f"volume={gain:.1f}dB,alimiter=limit=0.9", teil])
+            r2 = mlx_whisper.transcribe(teil, path_or_hf_repo=os.environ.get("VELOX_WHISPER", "mlx-community/whisper-large-v3-turbo"),
+                                        word_timestamps=True, condition_on_previous_text=False, language="de", initial_prompt=vorgabe)
+            os.remove(teil)
+            kand = [dict(w, start=float(w["start"]) + a0, end=float(w["end"]) + a0) for s2 in r2["segments"] for w in s2.get("words", []) if w["word"].strip()]
+            if kand and re.search(r"[.!?]", " ".join(w["word"] for w in kand)) and len(kand) >= 0.6 * (n1 - n0 + 1):
+                neu_w = kand
+                break
         if neu_w and re.search(r"[.!?]", " ".join(w["word"] for w in neu_w)):
             log(f"  {c['id']}: Abschnitt {a0:.0f}–{b0:.0f} s neu abgehört (Erkennung war im Notbetrieb)")
             flach[n0:n1 + 1] = neu_w
@@ -517,12 +528,83 @@ def alle_schritte(c):
     return out
 
 
+def letzte_fassung(order):
+    """Inhaber 08.10. (Halal-Ordner): „‚Mein Angebot an dich‘ bei Sekunde 14 war nur die Vorbereitung – er hat sich den Satz
+    einmal selbst vorgesagt. Später im Clip kommt derselbe Satz noch einmal, in besser. Die Software muss aus mehreren
+    Versuchen – auch wenn sie teils richtig sind – genau den richtigen Satz finden.“
+    Wer einen Satz mehrfach aufnimmt, hört mit der guten Fassung auf. Deshalb: Kommt im selben Clip SPÄTER ein Satz, der die
+    gewählten Sätze noch einmal enthält (und im Wesentlichen aus ihnen besteht – also kein Gespräch ÜBER den Satz), ersetzt
+    er sie. Mehrere gewählte Teilsätze können dabei in einer späteren, zusammenhängenden Fassung aufgehen."""
+    import difflib
+    tok = lambda c, k: [re.sub(r"[^a-zäöüß0-9]", "", w["t"].lower()) for w in c["sents"][k] if re.sub(r"[^a-zäöüß0-9]", "", w["t"].lower())]
+
+    def ohne_anlauf(B):  # „mein angebot an dich nein mein angebot an dich …“ → der Anlauf zählt nicht mit
+        for n in (5, 4, 3):
+            i = 0
+            while i + 2 * n <= len(B):
+                j = next((j for j in range(i + n, min(len(B) - n, i + n + 3) + 1) if B[j:j + n] == B[i:i + n]), None)
+                if j is not None:
+                    B = B[:i] + B[j:]
+                else:
+                    i += 1
+        return B
+
+    out = list(order)
+    for c in {id(c): c for c, _ in order}.values():
+        while True:
+            ks = [k for cc, k in out if cc is c]
+            best = None
+            for j in range(len(c["sents"]) - 1, min(ks), -1):
+                if j in ks:
+                    continue
+                B = ohne_anlauf(tok(c, j))
+                if len(B) < 3:
+                    continue
+                drin, treffer = [], 0
+                for k in ks:
+                    A = tok(c, k)
+                    if not A or k > j:
+                        continue
+                    m = sum(b.size for b in difflib.SequenceMatcher(None, A, B, autojunk=False).get_matching_blocks())
+                    if m / len(A) >= 0.8:
+                        drin.append(k)
+                        treffer += m
+                if drin and treffer / len(B) >= 0.55:
+                    best = (j, drin)
+                    break
+            if not best:
+                break
+            j, drin = best
+            i0 = next(i for i, (cc, k) in enumerate(out) if cc is c and k in drin)
+            alt_txt = " / ".join(" ".join(w["t"] for w in c["sents"][k]) for k in drin)
+            out = [x for x in out if not (x[0] is c and x[1] in drin)]
+            out.insert(i0, (c, j))
+            log(f"  Letzte Fassung: {c['id']}.{','.join(map(str, drin))} „{alt_txt[:60]}“ → {c['id']}.{j} „{' '.join(w['t'] for w in c['sents'][j])[:90]}“")
+    return out
+
+
 def build(plan, odir):
     """Eine Geschichte → montage.mp4 + plan.json in <odir>."""
     os.makedirs(odir, exist_ok=True)
     order = [r for r in (ref(x) for x in (plan or {}).get("sprechteile") or []) if r]
     if not order:  # Rückfall ohne KI: alle Sprech-Clips der Reihe nach
         order = [(c, k) for c in talk for k in range(len(c["sents"]))]
+    order = letzte_fassung(order)
+    # Die gute Fassung beginnt oft selbst mit einem Anlauf: „Mein Angebot an dich, nein, mein Angebot an dich, ich lade dich …“.
+    # Im Test 08.10. wurde deshalb der GANZE Satz als Fehlstart gestrichen – der Schluss fehlte wieder. Der Anlauf samt
+    # Korrekturwort wird hier abgeschnitten; der Satz beginnt beim zweiten Ansetzen.
+    _kw = {"nein", "ne", "nee", "nochmal", "quatsch", "sorry", "stopp", "stop", "moment", "warte", "falsch", "anders"}
+    _t = lambda w: re.sub(r"[^a-zäöüß0-9]", "", w["t"].lower())
+    for c, k in order:
+        st = c["sents"][k]
+        tk = [_t(w) for w in st]
+        for n in (5, 4, 3, 2):
+            hit = next((j for j in range(n + 1, min(len(tk) - n, n + 3) + 1)
+                        if tk[j:j + n] == tk[:n] and all(tk[:n]) and any(x in _kw for x in tk[n:j])), None)
+            if hit:
+                log(f"  Anlauf gekappt: {c['id']}.{k} „{' '.join(w['t'] for w in st[:hit])}“ | {' '.join(w['t'] for w in st[hit:])[:70]}")
+                c["sents"][k] = st[hit:]
+                break
     # Inhaber 06.10. abends („du hast viel zu viel rausgenommen – Patty drauflegen, Soße auf den Deckel, Salat fehlen“):
     # In einer Zubereitung/Anleitung lässt die Montage zwischen dem ersten und letzten gewählten Satz eines Clips nichts aus.
     # Versprecher, Fehlstarts und Füllwörter entfernt danach die Pipeline, Pannen-Sätze der Schritt „Bild folgt dem Wort“.
@@ -665,7 +747,8 @@ def build(plan, odir):
     fehl_re = re.compile(r"^\W*(also,? )?warte\b|wie hei(ß|ss)t das|^\W*sag mal\b|drei, zwei, eins|ich will sagen|^\W*also,? als er\W*$", re.I)
     for u in units:
         d = bw.get(u["nr"]) or {}
-        if (d.get("fehlstart") or fehl_re.search(u["satz"])) and not re.search(r"warten (kurz|bis)", u["satz"], re.I):
+        # Ein langer, vollständiger Satz (≥ 8 Wörter) ist kein Fehlstart, nur weil die KI darin ein Stolpern sieht
+        if ((d.get("fehlstart") and len(u["ws"]) < 8) or fehl_re.search(u["satz"])) and not re.search(r"warten (kurz|bis)", u["satz"], re.I):
             u["raus"] = True
             log(f"  Fehlstart gestrichen: {sent_of[id(u['ws'][0])]} „{u['satz'][:60]}“")
     pan_re = re.compile(r"verbrannt|angebrannt|ist falsch|falsch gemacht|oh no|schiefgegangen|\bah, ah\b", re.I)

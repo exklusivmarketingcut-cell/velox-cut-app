@@ -3847,8 +3847,12 @@ def sprachkanten(ranges, kept):
             if any(w["s"] >= q0 - 0.02 and w["e"] <= q1 + 0.02 for w in kept) or any(z0 < q1 and z1 > q0 for z0, z1 in _zeigen):
                 continue
             c0, c1 = q0 + 0.12, q1 - 0.10
-            if fetzen is not None and fetzen - 0.01 < c0:      # der Schnitt beginnt vor dem Fetzen
-                c0 = max(q0, int(fetzen / 0.05 + 1e-6) * 0.05 - 0.01)
+            if fetzen is not None:
+                # Nachtrag 08.10. abends (Inhaber: „man hört trotzdem zweimal ‚mit‘, und ‚Tofu‘ kommt zu schnell“): Der Fetzen
+                # ist 0,1 s lang und beginnt schon in der ersten ruhigen Messstelle – der Schnitt setzt deshalb direkt am Ende
+                # des Wortes davor an (Anfang der Ruhe) und lässt vor dem nächsten Wort eine hörbare Pause (0,16 s) stehen.
+                c0 = int(q0 / 0.05 + 1e-6) * 0.05
+                c1 = q1 - 0.16
             if c1 - c0 >= 0.15 and c0 - cur >= 0.3 and b - c1 >= 0.3:
                 neu.append([cur, c0])
                 leer += c1 - c0

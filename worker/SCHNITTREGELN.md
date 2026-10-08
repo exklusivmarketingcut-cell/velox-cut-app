@@ -376,3 +376,9 @@ Protokoll aller Schnitte: `schnitt-maschine/logs/jobs.jsonl` (neben dem Ordner `
 - **Verhörte Strecken neu abhören**: Liefert die Erkennung ≥ 8 Wörter am Stück klein geschrieben und ohne Satzzeichen (Notbetrieb bei sehr leisem Ton), wird die Strecke mit angehobenem Pegel neu abgehört. Ursache des fehlenden Schlusses: 40 s kamen als ein unlesbarer „Satz“.
 - **Satzgrenze auch nach ≥ 1,5 s Sprechpause** (Montage).
 - Premium/Feinschnitt: Laut-Fetzen (eine Messstelle, ≥ 8 dB unter Sprache) in einer Pause wird mit der Pause herausgeschnitten („mit – [m] – Tofu“).
+
+## Regel 118 – Aus mehreren Versuchen die richtige Fassung (Inhaber 08.10. abends)
+„‚Mein Angebot an dich‘ bei Sekunde 14 war nur die Vorbereitung – später kommt derselbe Satz noch einmal, in besser.“
+- **Letzte Fassung gewinnt (montage.py `letzte_fassung`)**: Kommt im selben Clip später ein Satz, der die gewählten Sätze noch einmal enthält und im Wesentlichen aus ihnen besteht (≥ 55 %, also kein Gespräch ÜBER den Satz), ersetzt er sie – auch mehrere Teilsätze durch eine zusammenhängende spätere Fassung.
+- **Anlauf kappen**: Beginnt die gute Fassung selbst mit „X, nein, X …“, fällt nur der Anlauf weg, nicht der Satz. Ein Satz mit ≥ 8 Wörtern wird nie als „Fehlstart“ ganz gestrichen.
+- **Leise Strecken**: Neu-Abhören in bis zu 5 Versuchen (Ränder, Pegel, Satzzeichen-Vorgabe).

@@ -131,6 +131,23 @@ run(["ffmpeg", "-v", "error", "-y", "-i", A.src, "-vn", "-ac", "1", "-ar", "1600
 # Spracherkennung auf dem Original-Ton: Tests (29.09.) zeigten, dass eine künstlich angehobene Spur mehr Wörter verhört
 # („Mansell“ statt „Mandeln“). Leise Stellen fängt stattdessen die Hörprobe am fertigen, ausgeglichenen Ton auf (align).
 wav_asr = wav
+# Ausnahme (Inhaber 08.10., Golden Thai): SEHR leise Aufnahmen (Sprache unter −33 dB). Dort fällt die Erkennung streckenweise
+# in einen Notbetrieb und verhört ganze Sätze („echtes teil schafft zu essen“ statt „Echtes Thai scharf zu essen“) – der
+# Sinn-Check strich den Satz daraufhin als Unsinn. Nur in diesem Fall hört die Erkennung auf einer schlicht lauter gedrehten
+# Kopie (reine Verstärkung + Begrenzer, kein Filter); alle Pegel-Messungen laufen weiter auf dem Original.
+try:
+    import numpy as _np0
+    _x0 = _np0.frombuffer(open(wav, "rb").read()[44:], dtype=_np0.int16).astype(_np0.float32) / 32768
+    _lv0 = sorted(20 * _np0.log10(_np0.sqrt((_x0[i:i + 800] ** 2).mean()) + 1e-7) for i in range(0, max(0, len(_x0) - 800), 800))
+    _sp0 = float(_lv0[int(len(_lv0) * 0.9)]) if _lv0 else -20.0
+    if _sp0 < -33.0:
+        wav_asr = os.path.join(A.out, "audio_laut.wav")
+        run(["ffmpeg", "-v", "error", "-y", "-i", wav, "-af", f"volume={min(30.0, -20.0 - _sp0):.1f}dB,alimiter=limit=0.9", wav_asr])
+        log(f"Sehr leise Aufnahme (Sprache {_sp0:.0f} dB) – Spracherkennung hört auf einer lauter gedrehten Kopie")
+        STATS["asr_lauter_db"] = round(float(min(30.0, -20.0 - float(_sp0))), 1)
+    del _x0, _lv0
+except Exception as _e0:  # noqa: BLE001
+    wav_asr = wav
 
 import mlx_whisper  # noqa: E402  (erst hier laden – dauert)
 
@@ -1009,6 +1026,25 @@ def keep_ranges(words, safe=False, extra_drop=frozenset()):
     fil, rep, gem = filler_idx(words), repeat_idx(words), gemini_cuts(words)
     ret, final = retake_idx(words)
     drop = (fil | rep | gem | ret | set(extra_drop)) - (final - fil)  # letzte Fassung einer Wiederholung bleibt immer
+    # Kontroll-Lauf 08.10. abends: In „Willst du eine Mittagspause ohne Foodkoma“ strich die KI einmal nur das „ohne“ – der Satz
+    # war kaputt. Ein EINZELNES Wort mitten zwischen zwei behaltenen Wörtern darf die KI allein nur streichen, wenn es ein
+    # Füll-/Einwurfwort oder die Doppelung eines Nachbarn ist; alles andere bleibt (Inhaltswörter fallen nie einzeln weg).
+    _nn = lambda w: re.sub(r"[^a-zäöüß0-9]", "", w["t"].lower())
+    _einwurf = {"ja", "so", "okay", "ok", "also", "äh", "ähm", "hm", "genau", "ne", "nein", "halt", "und", "na", "gut", "ey", "boah", "ach"}
+    geholt_ki = 0
+    for k in range(1, len(words) - 1):
+        w = words[k]
+        if w["i"] in gem and w["i"] in drop and w["i"] not in (fil | rep | ret | set(extra_drop)) \
+                and words[k - 1]["i"] not in drop and words[k + 1]["i"] not in drop \
+                and _nn(w) and _nn(w) not in _einwurf and _nn(w) not in (_nn(words[k - 1]), _nn(words[k + 1])) \
+                and words[k + 1]["s"] - words[k - 1]["e"] < 1.2:
+            drop.discard(w["i"])
+            geholt_ki += 1
+    if geholt_ki:
+        STATS["einzelwort_der_ki_behalten"] = geholt_ki
+    # nachvollziehbar machen, WER ein Wort gestrichen hat (Fehlersuche 08.10.: „ohne“ fehlte in „Mittagspause ohne Foodkoma“)
+    STATS["gestrichen_von"] = {f"{w['t']}@{w['s']:.1f}": "+".join(n for n, m in (("fuell", fil), ("wdh", rep), ("ki", gem), ("anlauf", ret), ("extra", set(extra_drop))) if w["i"] in m)
+                               for w in words if w["i"] in drop}
     # Regel 116 (Kontroll-Lauf 08.10.): „Willst du eine – Willst du eine Mittagspause ohne Foodkoma“. Die KI strich einmal den
     # Anlauf (richtig), im nächsten Lauf die ZWEITE Fassung samt „Mittagspause ohne“ – übrig blieb „Willst du eine Foodkoma“.
     # Fest verdrahtet: Stehen dieselben 2–6 Wörter direkt hintereinander zweimal da und die spätere Fassung ist gestrichen,
@@ -2233,7 +2269,9 @@ def render_cut(idx, ranges):
     _laut = sorted(LV)[int(len(LV) * 0.9)] if LV else -24.0
     vor_db = min(34.0, max(-6.0, -20.0 - _laut))
     fc.append(f"[{prev}]{tempo}highpass=f=80:p=2,equalizer=f=220:t=q:w=1.2:g=-0.8,equalizer=f=3000:t=q:w=1.2:g=1.5,"
-              f"volume={vor_db:.1f}dB,"
+              # Inhaber 08.10. nachts nach dem Hörvergleich an der Straßen-Umfrage: „Broadcast + Rauschen leicht und nur
+              # Broadcast sind ganz in Ordnung“ → die leichte Entrauschung (6 dB, lernt das Grundrauschen mit) bleibt drin.
+              f"volume={vor_db:.1f}dB,afftdn=nr=6:nf=-45:tn=1,"
               f"acrossover=split=137 1147 6910:order=4th[bq1][bq2][bq3][bq4]")
     fc.append("[bq1]acompressor=threshold=0.0977:ratio=3:attack=1:release=100:makeup=1.122[bc1]")
     fc.append("[bq2]acompressor=threshold=0.132:ratio=2:attack=1:release=100:makeup=1[bc2]")
@@ -3637,9 +3675,11 @@ def gemini_fix_story(m, kept, problems):
         if k in keep:
             continue
         a_ = inhalt(sents[k])
-        rest = set().union(*[inhalt(sents[j]) for j in keep]) if keep else set()
+        # „doppelt“ heißt: EIN anderer behaltener Satz sagt dasselbe. Über alle Sätze zusammengezählt galt „Echtes Thai scharf
+        # zu essen“ als doppelt (Thai, scharf, essen kommen verstreut vor) und flog im Viral-Test 08.10. dreimal raus.
+        deckung = max((len(a_ & inhalt(sents[j])) / len(a_) for j in keep), default=0.0) if a_ else 1.0
         panne = re.search(r"verbrannt|angebrannt|ist falsch|falsch gemacht|oh no|nochmal|warte", " ".join(w["t"] for w in sents[k]).lower())
-        if a_ and len(a_ & rest) / len(a_) < 0.6 and not panne:
+        if a_ and deckung < 0.6 and not panne:
             zurueck.append(k)
     if zurueck:
         keep = sorted(set(keep) | set(zurueck))
@@ -3867,7 +3907,9 @@ def sprachkanten(ranges, kept):
                 continue
             if any(w["s"] >= q0 - 0.02 and w["e"] <= q1 + 0.02 for w in kept) or any(z0 < q1 and z1 > q0 for z0, z1 in _zeigen):
                 continue
-            c0, c1 = q0 + 0.12, q1 - 0.10
+            # Vorlauf 0,16 s (vorher 0,10): „Echtes Thai scharf“ kam als „Ich das Thai scharf“ heraus – der weiche Vokal am
+            # Wortanfang liegt noch unter der Schwelle, der Schnitt saß 0,04 s davor und die Blende nahm den Anlaut weg.
+            c0, c1 = q0 + 0.12, q1 - 0.16
             if fetzen is not None:
                 # Nachtrag 08.10. abends (Inhaber: „man hört trotzdem zweimal ‚mit‘, und ‚Tofu‘ kommt zu schnell“): Der Fetzen
                 # ist 0,1 s lang und beginnt schon in der ersten ruhigen Messstelle – der Schnitt setzt deshalb direkt am Ende
@@ -3932,9 +3974,27 @@ def sprachkanten(ranges, kept):
                     t = l1
                     continue
                 break
-            if t - a >= 0.1:
-                gek += t - 0.06 - a
-                a = t - 0.06
+            if t - a >= 0.14:
+                gek += t - 0.10 - a
+                a = t - 0.10
+        # Gegenstück zum Ende (Viral-Test 08.10.: „Echtes Thai scharf“ kam als „…chtes“ heraus – die Erkennung ließ das Wort erst
+        # 0,18 s NACH dem lauten „E“ beginnen): Liegt direkt vor dem Abschnitt noch Stimme und davor Ruhe, beginnt der Abschnitt
+        # am echten Einsatz (höchstens 0,35 s früher; nie in ein gestrichenes Wort oder den Abschnitt davor hinein).
+        if ws and round(a, 2) not in _geteilt and lv(a - 0.05) >= thr:
+            grenze = max((prev_b + 0.06) if prev_b is not None else 0.0, a - 0.35)
+            t = a
+            while t - 0.05 >= grenze and lv(t - 0.05) >= thr:
+                t -= 0.05
+            if t < a and t - 0.05 >= grenze and lv(t - 0.05) < thr and not any(w["s"] < a and w["e"] > t for w in _weg):
+                verl += a - (t - 0.06)
+                a = max(grenze, t - 0.06)
+        elif ws and round(a, 2) not in _geteilt and (lv(a) >= thr or lv(a + 0.05) >= thr) and (prev_b is None or a - prev_b >= 0.15):
+            # Die Stimme setzt praktisch AM Schnitt ein (0,03 s Vorlauf): Die Blende am Schnitt nimmt dann den Anlaut weg
+            # („Echtes“ → „…chtes“). Davor ist Ruhe – also 0,08 s früher beginnen.
+            neu_a = max((prev_b + 0.06) if prev_b is not None else 0.0, a - 0.08)
+            if not any(w["s"] < a and w["e"] > neu_a for w in _weg):
+                verl += a - neu_a
+                a = neu_a
         if ws and next_a is None:
             # Inhaber 07.10. (Premium): „Am Schluss direkt cutten – nicht warten, bis die Kamera runtergeht.“ Das Video endet
             # 0,3 s nach dem echten Ende der Stimme (statt bis zu 1,3 s Nachlauf).

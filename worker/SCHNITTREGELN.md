@@ -382,3 +382,10 @@ Protokoll aller Schnitte: `schnitt-maschine/logs/jobs.jsonl` (neben dem Ordner `
 - **Letzte Fassung gewinnt (montage.py `letzte_fassung`)**: Kommt im selben Clip später ein Satz, der die gewählten Sätze noch einmal enthält und im Wesentlichen aus ihnen besteht (≥ 55 %, also kein Gespräch ÜBER den Satz), ersetzt er sie – auch mehrere Teilsätze durch eine zusammenhängende spätere Fassung.
 - **Anlauf kappen**: Beginnt die gute Fassung selbst mit „X, nein, X …“, fällt nur der Anlauf weg, nicht der Satz. Ein Satz mit ≥ 8 Wörtern wird nie als „Fehlstart“ ganz gestrichen.
 - **Leise Strecken**: Neu-Abhören in bis zu 5 Versuchen (Ränder, Pegel, Satzzeichen-Vorgabe).
+
+## Regel 119 – Ton und Wortanfänge (Inhaber 08.10. nachts)
+- **Ton-Kette**: Arbeitspegel → leichte Entrauschung (afftdn 6 dB) → sein Broadcast-Preset (Multiband-Kompressor, Werte aus `material/preset/Broadcast Preset.prfpset`) → Begrenzer → Lautheit −14. KEIN Expander/Gate: seine Hörprobe damit war „abgehackt“.
+- **Sehr leise Aufnahmen** (Sprache < −33 dB): Die Erkennung im Feinschnitt hört auf einer lauter gedrehten Kopie; Messungen bleiben auf dem Original.
+- **Wortanfang am Schnitt**: mindestens ~0,1 s Vorlauf vor dem Stimmeinsatz, Abschnitt beginnt notfalls früher (Anlaut „E“ in „Echtes“ ging verloren).
+- **KI darf kein einzelnes Inhaltswort** zwischen zwei behaltenen Wörtern streichen („Mittagspause [ohne] Foodkoma“).
+- **Nachschnitt**: „doppelt“ nur, wenn EIN anderer Satz ≥ 60 % desselben Inhalts hat (nicht über alle Sätze zusammengezählt). Teilstück eines Satzes ist nie „Fehlstart“.

@@ -1009,6 +1009,56 @@ def keep_ranges(words, safe=False, extra_drop=frozenset()):
     fil, rep, gem = filler_idx(words), repeat_idx(words), gemini_cuts(words)
     ret, final = retake_idx(words)
     drop = (fil | rep | gem | ret | set(extra_drop)) - (final - fil)  # letzte Fassung einer Wiederholung bleibt immer
+    # Regel 116 (Kontroll-Lauf 08.10.): „Willst du eine – Willst du eine Mittagspause ohne Foodkoma“. Die KI strich einmal den
+    # Anlauf (richtig), im nächsten Lauf die ZWEITE Fassung samt „Mittagspause ohne“ – übrig blieb „Willst du eine Foodkoma“.
+    # Fest verdrahtet: Stehen dieselben 2–6 Wörter direkt hintereinander zweimal da und die spätere Fassung ist gestrichen,
+    # wird getauscht – der Anlauf fällt weg, die spätere Fassung bleibt samt den mit ihr gestrichenen Folgewörtern.
+    _n = lambda w: re.sub(r"[^a-zäöüß0-9]", "", w["t"].lower())
+    k, getauscht = 0, 0
+    while k < len(words):
+        hit = None
+        for L in range(6, 1, -1):
+            A_ = words[k:k + L]
+            if len(A_) < L or any(w["i"] in drop for w in A_) or not all(_n(w) for w in A_):
+                continue
+            j = k + L
+            while j < len(words) and words[j]["i"] in drop and [_n(w) for w in words[j:j + L]] != [_n(w) for w in A_]:
+                j += 1
+            B_ = words[j:j + L]
+            if len(B_) == L and [_n(w) for w in B_] == [_n(w) for w in A_] and all(w["i"] in drop for w in B_) \
+                    and B_[0]["s"] - A_[-1]["e"] < 6.0:
+                hit = (L, j)
+                break
+        if not hit:
+            k += 1
+            continue
+        L, j = hit
+        m = j + L
+        while m < len(words) and words[m]["i"] in drop and words[m]["i"] not in fil and m - (j + L) < 4:
+            m += 1
+        drop |= {w["i"] for w in words[k:k + L]}
+        drop -= {w["i"] for w in words[j:m] if w["i"] not in fil}
+        getauscht += 1
+        k = m
+    if getauscht:
+        STATS["letzte_fassung_getauscht"] = getauscht
+    # Zweiter Kontroll-Lauf 08.10.: „Halal Thai … Halal Thai ist kein Trend“ – gestrichen wurden der Anlauf UND das zweite
+    # „Halal“; zu hören war „Thai ist kein Trend“. Die letzte Fassung beginnt dort, wo der Anlauf begann: Steht direkt vor dem
+    # ersten behaltenen Wort ein gestrichenes Wort, das mit ihm zusammen schon im gestrichenen Anlauf davor vorkommt, bleibt es.
+    geholt = 0
+    for _ in range(3):
+        for m in range(2, len(words)):
+            if words[m]["i"] in drop or words[m - 1]["i"] not in drop or words[m - 1]["i"] in fil or not _n(words[m - 1]):
+                continue
+            q = m - 2
+            while q >= 0 and words[q]["i"] in drop and m - q <= 8:
+                if _n(words[q]) == _n(words[m - 1]) and q + 1 < m - 1 and _n(words[q + 1]) == _n(words[m]):
+                    drop.discard(words[m - 1]["i"])
+                    geholt += 1
+                    break
+                q -= 1
+    if geholt:
+        STATS["fassungsanfang_zurueckgeholt"] = geholt
     # Regel 114: stumme Zeige-Strecken der Montage (Arbeitsschritte als schnelle Bildfolge). Dort gibt es keine Sprache –
     # was die Erkennung trotzdem „hört“ (Halluzination auf Stille), wird nie Untertitel.
     zeigen = [(float(a), float(b)) for a, b in ((PLAN or {}).get("zeigen") or []) if b - a > 0.2]
@@ -3799,7 +3849,7 @@ def sprachkanten(ranges, kept):
                 q1 = l1
                 while q1 < lim and lv(q1) < thr:
                     q1 += 0.05
-                if l1 - t <= 0.3 and q1 - l1 >= 0.3 and q1 < lim:
+                if l1 - t <= 0.3 and q1 - l1 >= 0.3:
                     t = l1
                     continue
                 break
@@ -3815,6 +3865,10 @@ def sprachkanten(ranges, kept):
             if b - (t + 0.30) > 0.1:
                 gek += b - (t + 0.30)
                 b = t + 0.30
+        if not ws and not _handlung_bleibt and b - a < 0.8 and not any(z0 < b and z1 > a for z0, z1 in _zeigen) \
+                and all(lv(a + i * 0.05) < thr for i in range(int((b - a) / 0.05) + 1)):
+            gek += b - a      # Reststück ohne Wort und ohne Ton (0,3 s Stillstand zwischen zwei Sätzen) – weg damit
+            continue
         if b - a > 0.08:
             out.append([a, b])
     STATS["sprachkanten"] = {"ende_verlaengert_s": round(verl, 2), "anfang_gekuerzt_s": round(gek, 2), "leerlauf_raus_s": round(leer, 2)}

@@ -117,8 +117,45 @@ for c in clips:
                                word_timestamps=True, condition_on_previous_text=False, language="de",
                                hallucination_silence_threshold=2.0,
                                initial_prompt=((A.words + ". ") if A.words else "") + "Ähm, also, ja. Genau.")
-    ws = [{"t": w["word"].strip(), "s": float(w["start"]), "e": float(w["end"]), "p": float(w.get("probability", 1))}
-          for sg in r["segments"] for w in sg.get("words", []) if w["word"].strip()]
+    # Inhaber 08.10. (Halal-Ordner, „da fehlt ein Stück vom Video“): 40 Sekunden eines Clips kamen als EIN Satz ohne Punkt und
+    # Komma zurück, klein geschrieben und verhört („ich starte ich gern bei uns zum essen ein echtes teil scharf …“) – die
+    # Erkennung war dort in ihren Notbetrieb gefallen. Darin lag der ganze Schluss des Videos („Mein Angebot an dich. Ich lade
+    # dich gern bei uns zum Essen ein. …“), für die Planung unsichtbar. Solche Abschnitte werden einzeln neu abgehört.
+    import numpy as _np
+    flach = [w for sg in r["segments"] for w in sg.get("words", []) if w["word"].strip()]
+    klein = lambda w: w["word"].strip() == w["word"].strip().lower() and not re.search(r"[.!?,]", w["word"])
+    n0 = 0
+    while n0 < len(flach):
+        if not klein(flach[n0]):
+            n0 += 1
+            continue
+        n1 = n0   # Notbetrieb = mindestens 8 Wörter am Stück klein geschrieben und ohne jedes Satzzeichen
+        while n1 + 1 < len(flach) and klein(flach[n1 + 1]) and float(flach[n1 + 1]["start"]) - float(flach[n1]["end"]) < 4.0:
+            n1 += 1
+        if n1 - n0 + 1 < 8:
+            n0 = n1 + 1
+            continue
+        a0, b0 = max(0.0, float(flach[n0]["start"]) - 0.3), float(flach[n1]["end"]) + 0.3
+        teil = wav[:-4] + "_teil.wav"
+        # Der Notbetrieb kommt von zu leisem Ton (Golden Thai: Sprache bei −41 dB). Mit angehobenem Pegel versteht die
+        # Erkennung dieselbe Stelle sauber („Mein Angebot an dich. Ich lade dich gern bei uns zum Essen ein.“).
+        _x = _np.frombuffer(subprocess.run(["ffmpeg", "-v", "error", "-ss", f"{a0:.2f}", "-to", f"{b0:.2f}", "-i", wav, "-f", "s16le", "-"],
+                                           capture_output=True).stdout, dtype=_np.int16).astype(_np.float32) / 32768
+        _rms = 20 * _np.log10(float(_np.sqrt((_x ** 2).mean())) + 1e-7) if len(_x) else -30.0
+        gain = min(30.0, max(0.0, -22.0 - _rms))
+        run(["ffmpeg", "-v", "error", "-y", "-ss", f"{a0:.2f}", "-to", f"{b0:.2f}", "-i", wav, "-af",
+             f"volume={gain:.1f}dB,alimiter=limit=0.9", teil])
+        r2 = mlx_whisper.transcribe(teil, path_or_hf_repo=os.environ.get("VELOX_WHISPER", "mlx-community/whisper-large-v3-turbo"),
+                                    word_timestamps=True, condition_on_previous_text=False, language="de")
+        os.remove(teil)
+        neu_w = [dict(w, start=float(w["start"]) + a0, end=float(w["end"]) + a0) for s2 in r2["segments"] for w in s2.get("words", []) if w["word"].strip()]
+        if neu_w and re.search(r"[.!?]", " ".join(w["word"] for w in neu_w)):
+            log(f"  {c['id']}: Abschnitt {a0:.0f}–{b0:.0f} s neu abgehört (Erkennung war im Notbetrieb)")
+            flach[n0:n1 + 1] = neu_w
+            n0 += len(neu_w)
+        else:
+            n0 = n1 + 1
+    ws = [{"t": w["word"].strip(), "s": float(w["start"]), "e": float(w["end"]), "p": float(w.get("probability", 1))} for w in flach]
     # Überlange Wörter (> 1 s, z. B. „machen“ 2,7 s): darin steckt oft Geflüster vom Team, das Whisper verschluckt hat.
     # Das echte Wort ist der lauteste Abschnitt; ist der Rest deutlich leiser, wird das Wort darauf gekürzt → die Lücke
     # davor/danach schneidet das Zusammensetzen dann heraus.
@@ -143,9 +180,12 @@ for c in clips:
     os.remove(wav)
     ws = [w for w in ws if w["p"] > 0.25 or len(ws) > 6]  # einzelne Halluzinationen in stummen Clips
     cur = []
-    for w in ws:
+    for n_, w in enumerate(ws):
         cur.append(w)
-        if SENT_END.search(w["t"]):
+        # Satzende auch ohne Punkt: nach einer langen Sprechpause (≥ 1,5 s) beginnt ein neuer Satz – sonst wird aus mehreren
+        # Anläufen ein einziger Riesen-„Satz“, den die Planung nur ganz oder gar nicht nehmen kann.
+        pause = n_ + 1 < len(ws) and ws[n_ + 1]["s"] - w["e"] >= 1.5
+        if SENT_END.search(w["t"]) or pause:
             c["sents"].append(cur)
             cur = []
     if cur:
@@ -914,6 +954,112 @@ for (titel, n0), g in zip(_vorher, stories):  # nachvollziehbar: was die Filter 
     if _nach[id(g)] < 2 or _nach[id(g)] < n0:
         log(f"  „{titel}“: {n0} → {_nach[id(g)]} gültige Sätze nach den Filtern" + (" → VERWORFEN (unter 2 Sätze)" if _nach[id(g)] < 2 else ""))
 stories = [g for g in stories if sum(1 for x in g["sprechteile"] if ref(x)) >= 2] or stories[:1] or [None]
+
+
+def puzzle(g):
+    """Inhaber 08.10. (Halal-Ordner): „Da fehlt ein Stück vom Video … die Software muss wirklich ALLE Videos aus dem Ordner
+    anschauen und sie zusammenfügen wie Puzzleteile – wenn der Anfang oder das Ende fehlt, ergibt das Video keinen Sinn.“
+    Ursache: Die Planung hatte den dritten Clip (Angebot/Einladung = der Schluss) als „anderes Thema“ aussortiert.
+    Deshalb eine zweite, gezielte Prüfung: Jeder Sprech-Clip, aus dem KEIN Satz im Plan steht, wird der KI einzeln vorgelegt –
+    fehlt dem Video ein Anfang, eine Fortsetzung oder der Schluss, der in diesem Clip liegt?"""
+    alt = [x.strip() for x in g.get("sprechteile") or [] if ref(x)]
+    benutzt = {x.split(".")[0] for x in alt}
+    offen = [c for c in talk if c["id"] not in benutzt and len(c.get("sents") or []) >= 2]
+    if not alt or not offen or len(talk) < 2:
+        return
+    txt = lambda c, k: " ".join(w["t"] for w in c["sents"][k])
+    zeilen = ["## AKTUELLER SCHNITTPLAN (in dieser Reihenfolge)"]
+    zeilen += [f"  {x}  {txt(*ref(x))}" for x in alt]
+    zeilen.append("## NICHT VERWENDETE CLIPS")
+    for c in offen:
+        zeilen.append(f"### {c['id']} ({c['dur']:.0f} s) – Bild: {c.get('inhalt', '?')}")
+        zeilen += [f"  {c['id']}.{k} [{st[0]['s']:.1f}–{st[-1]['e']:.1f}s] {' '.join(w['t'] for w in st)}" for k, st in enumerate(c["sents"])]
+    if os.environ.get("VELOX_DEBUG"):
+        log("\n".join(zeilen))
+    res = gemini(
+        "Du bist Cutter. Der Kunde hat EINEN Ordner mit Rohclips für EIN Kurzvideo hochgeladen – die Clips sind Puzzleteile "
+        "dieses einen Videos. Der Schnittplan unten verwendet einige Clips gar nicht. Prüfe jeden nicht verwendeten Clip: "
+        "Liegt darin ein Teil, der dem Video FEHLT – der Anfang (Aufhänger, Begrüßung), eine Fortsetzung oder das ENDE "
+        "(Angebot, Einladung, Challenge, Aufruf, Verabschiedung)? Gleiche Person bzw. gleicher Dreh und inhaltlich "
+        "anschließend = gehört dazu, auch wenn es ein neuer Gedanke ist (ein Angebot am Schluss ist kein anderes Thema). "
+        "Dann füge diese Sätze an der richtigen Stelle ein. Regeln: je Aussage nur die LETZTE saubere Fassung (im Rohmaterial "
+        "stehen viele Fehlversuche derselben Sätze hintereinander); keine Regie-Anweisungen, Absprachen oder Sätze an den "
+        "Kameramann; nichts, was schon im Plan gesagt wird; ein mehrteiliges Angebot VOLLSTÄNDIG (Ankündigung + Einladung + "
+        "Bedingung/Belohnung), nie nur ein Teil davon. Die erkannten Texte können Hörfehler enthalten („Schaf“ statt „scharf“) – "
+        "das ist kein Grund, einen Satz wegzulassen. Enthält ein Clip nur Wiederholungen, Regie oder wirklich ein anderes "
+        "Thema (anderes Produkt, anderer Anlass), bleibt er draußen. Antworte mit der Liste der NEUEN Sätze: je Satz seine "
+        "Nummer (z. B. C2.14) und die Nummer des Satzes aus dem aktuellen Plan, HINTER dem er stehen soll (oder „ANFANG“, wenn "
+        "er vor allem anderen kommt). Mehrere neue Sätze hintereinander bekommen dasselbe „nach“ und stehen in Sprech-"
+        "Reihenfolge. Fehlt nichts: ergaenzen=false und leere Liste.",
+        [{"text": "\n".join(zeilen)}],
+        {"type": "object", "properties": {"ergaenzen": {"type": "boolean"}, "grund": {"type": "string"},
+                                          "neu": {"type": "array", "items": {"type": "object", "properties": {
+                                              "satz": {"type": "string"}, "nach": {"type": "string"}}, "required": ["satz", "nach"]}}},
+         "required": ["ergaenzen", "grund", "neu"]}, timeout=120, deep=True)
+    if not res or not res.get("ergaenzen"):
+        log(f"Puzzle-Prüfung: {len(offen)} ungenutzte Sprech-Clips angesehen – nichts fehlt ({str((res or {}).get('grund'))[:120]})")
+        return
+    nr_ = lambda t: (re.search(r"C\d+\.\d+", str(t) or "") or [None])[0]
+    nach, dazu = {}, []
+    for d in res.get("neu") or []:
+        x, hinter = nr_(d.get("satz")), nr_(d.get("nach"))
+        if not x or not ref(x) or x in alt or x in dazu or x.split(".")[0] in benutzt:
+            continue
+        nach.setdefault(hinter if hinter in alt else (None if "ANFANG" in str(d.get("nach")).upper() else alt[-1]), []).append(x)
+        dazu.append(x)
+    if not dazu or len(dazu) > 10:
+        log(f"Puzzle-Prüfung: Vorschlag der KI nicht übernommen ({len(dazu)} neue Sätze; Antwort: {str(res.get('neu'))[:200]})")
+        return
+    neu = list(nach.get(None, []))
+    for x in alt:
+        neu.append(x)
+        neu += nach.get(x, [])
+    # Zweiter Blick je ergänztem Clip (Test 08.10.: übernommen wurde nur „Wenn du es ohne Milch schaffst, geht alles aufs Haus“ –
+    # ohne „Mein Angebot an dich. Ich lade dich gern bei uns zum Essen ein. Echtes Thai scharf zu essen.“ davor hängt der
+    # Satz in der Luft). Der Gedanke wird vom ersten bis zum letzten Satz geholt, jede Aussage in der letzten sauberen Fassung.
+    for cid in sorted({x.split(".")[0] for x in dazu}):
+        c = next(c for c in talk if c["id"] == cid)
+        gew = [x for x in dazu if x.split(".")[0] == cid]
+        r2 = gemini(
+            "Du bist Cutter. Aus einem Rohclip wurden die markierten Sätze als Teil (meist Schluss) eines Kurzvideos ausgewählt. "
+            "Im Rohclip probt der Sprecher denselben Gedanken mehrfach; dazwischen stehen Regie-Anweisungen. Prüfe: Ist der "
+            "Gedanke mit den markierten Sätzen VOLLSTÄNDIG – oder beginnt er im Clip früher (Ankündigung wie „Mein Angebot an "
+            "dich“, Einladung, Bedingung) bzw. geht er noch weiter? Gib die vollständige Satzfolge dieses einen Gedankens zurück, "
+            "in Sprech-Reihenfolge: jede Aussage genau einmal, jeweils in ihrer LETZTEN sauberen Fassung; keine Regie-Sätze, "
+            "keine Fehlversuche, keine Sätze an den Kameramann. Hörfehler im Text („Schaf“ statt „scharf“) sind kein Grund, "
+            "einen Satz wegzulassen. Höchstens 6 Sätze. Die markierten Sätze (oder eine spätere, sauberere Fassung davon) gehören dazu.",
+            [{"text": f"### {cid}\n" + "\n".join(
+                f"  {cid}.{k}{'  ← AUSGEWÄHLT' if f'{cid}.{k}' in gew else ''}  {' '.join(w['t'] for w in st)}" for k, st in enumerate(c["sents"]))}],
+            {"type": "object", "properties": {"saetze": {"type": "array", "items": {"type": "string"}}, "grund": {"type": "string"}},
+             "required": ["saetze", "grund"]}, timeout=90, deep=True)
+        folge = []
+        for x in (r2 or {}).get("saetze") or []:
+            x = (x or "").strip()
+            if ref(x) and x.split(".")[0] == cid and x not in folge and x not in alt:
+                folge.append(x)
+        folge.sort(key=lambda x: int(x.split(".")[1]))
+        log(f"Puzzle-Prüfung, zweiter Blick {cid}: {(r2 or {}).get('saetze')} – {str((r2 or {}).get('grund'))[:160]}")
+        if os.environ.get("VELOX_DEBUG"):
+            for k, st in enumerate(c["sents"]):
+                log(f"      {cid}.{k} {' '.join(w['t'] for w in st)}")
+        if len(folge) > len(gew) and len(folge) <= 6:
+            i0 = min(neu.index(x) for x in gew)
+            neu = [x for x in neu if x not in gew]
+            neu[i0:i0] = folge
+            dazu = [x for x in dazu if x not in gew] + folge
+            log(f"Puzzle-Prüfung: Gedanke aus {cid} vervollständigt ({', '.join(gew)} → {', '.join(folge)})")
+    g["sprechteile"] = neu
+    g["clips"] = sorted({str(c).strip() for c in g.get("clips") or []} | {x.split(".")[0] for x in dazu})
+    log(f"Puzzle-Prüfung: {len(dazu)} Sätze aus bisher ungenutzten Clips ergänzt ({', '.join(dazu)}) – {str(res.get('grund'))[:160]}")
+    for x in dazu:
+        log(f"    + {x} „{txt(*ref(x))[:70]}“")
+
+
+if stories[0] and len(stories) == 1:   # ein Ordner = ein Video: fehlende Puzzleteile suchen
+    try:
+        puzzle(stories[0])
+    except Exception as e:
+        log(f"Puzzle-Prüfung übersprungen: {e}")
 for n, g in enumerate(stories):
     if len(stories) > 1:
         stage(f"Setzt Video {n + 1} von {len(stories)} zusammen …")

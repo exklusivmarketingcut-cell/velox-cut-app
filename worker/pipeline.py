@@ -3814,6 +3814,18 @@ def sprachkanten(ranges, kept):
     # länger nur Ruhe/Atmen (kein leises Wort darin), bleiben davon 0,22 s stehen – der Rest fällt weg.
     _zeigen = [(float(z[0]), float(z[1])) for z in ((PLAN or {}).get("zeigen") or []) if isinstance(z, (list, tuple)) and len(z) >= 2]
     _joins = list((PLAN or {}).get("joins") or [])
+    # Kleine Schnitte (< 0,25 s, kein gestrichenes Wort, kein Clip-Wechsel), die der Grobschnitt schon gesetzt hat, werden zuerst
+    # geschlossen – sonst sieht die Leerlauf-Prüfung die Pause nur in zwei Hälften und lässt einen Laut-Fetzen darin stehen.
+    _ks = {(round(w["s"], 2), round(w["e"], 2)) for w in kept}
+    _weg = [w for w in WORDS if (round(w["s"], 2), round(w["e"], 2)) not in _ks]
+    zu = []
+    for a, b in ranges:
+        if zu and 0.02 <= a - zu[-1][1] < 0.25 and not any(abs(a - j) < 0.2 for j in _joins) \
+                and not any(w["s"] < a and w["e"] > zu[-1][1] for w in _weg):
+            zu[-1][1] = b
+        else:
+            zu.append([a, b])
+    ranges = zu
     neu, leer = [], 0.0
     for a, b in ranges:
         cur, t = a, a + 0.15
@@ -3821,8 +3833,13 @@ def sprachkanten(ranges, kept):
             if lv(t) >= thr:
                 t += 0.05
                 continue
-            q0 = t
-            while t < b - 0.15 and lv(t) < thr:
+            q0, fetzen = t, None
+            # Inhaber 08.10. (Premium, „am Ende hört man zweimal ‚mit‘“): In der Pause zwischen „… Mit“ und „Tofu“ steckt ein
+            # einzelner leiser Laut von 0,05 s (angesetztes Wort). Ein solcher Fetzen – eine einzige Messstelle, mindestens
+            # 8 dB unter Sprachlautstärke, davor und danach Ruhe – zählt zur Pause und wird mit ihr herausgeschnitten.
+            while t < b - 0.15 and (lv(t) < thr or (lv(t) < laut - 8 and lv(t - 0.05) < thr and lv(t + 0.05) < thr)):
+                if lv(t) >= thr and fetzen is None:
+                    fetzen = t
                 t += 0.05
             q1 = t
             if q1 >= b - 0.15 or q1 - q0 < 0.4:
@@ -3830,12 +3847,15 @@ def sprachkanten(ranges, kept):
             if any(w["s"] >= q0 - 0.02 and w["e"] <= q1 + 0.02 for w in kept) or any(z0 < q1 and z1 > q0 for z0, z1 in _zeigen):
                 continue
             c0, c1 = q0 + 0.12, q1 - 0.10
+            if fetzen is not None and fetzen - 0.01 < c0:      # der Schnitt beginnt vor dem Fetzen
+                c0 = max(q0, int(fetzen / 0.05 + 1e-6) * 0.05 - 0.01)
             if c1 - c0 >= 0.15 and c0 - cur >= 0.3 and b - c1 >= 0.3:
                 neu.append([cur, c0])
                 leer += c1 - c0
                 cur = c1
         neu.append([cur, b])
     _geteilt = {round(r[0], 2) for r in neu} - {round(r[0], 2) for r in ranges}
+    _kante = {round(r[1], 2) for r in neu} - {round(r[1], 2) for r in ranges}   # Enden, die die Leerlauf-Regel gesetzt hat
     ranges = neu
     out, verl, gek = [], 0.0, 0.0
     for k, (a, b) in enumerate(ranges):
@@ -3845,7 +3865,7 @@ def sprachkanten(ranges, kept):
         ws = [w for w in kept if a - 0.05 <= (w["s"] + w["e"]) / 2 < b]
         prev_b = out[-1][1] if out else None   # das (evtl. schon gekürzte) Ende des Abschnitts davor
         next_a = ranges[k + 1][0] if k + 1 < len(ranges) else None
-        if ws and (next_a is None or next_a - b >= 0.3) and lv(b) >= thr:
+        if ws and round(b, 2) not in _kante and (next_a is None or next_a - b >= 0.3) and lv(b) >= thr:
             lim = min(b + 0.35, (next_a - 0.05) if next_a is not None else DUR)
             t = b
             while t < lim and lv(t) >= thr:
@@ -3912,7 +3932,7 @@ def sprachkanten(ranges, kept):
     weg = [w for w in WORDS if (round(w["s"], 2), round(w["e"], 2)) not in ks_]
     glatt = []
     for a, b in out:
-        if glatt and 0.02 <= a - glatt[-1][1] < 0.25 and not any(abs(a - j) < 0.2 for j in _joins) \
+        if glatt and 0.02 <= a - glatt[-1][1] < 0.25 and round(a, 2) not in _geteilt and not any(abs(a - j) < 0.2 for j in _joins) \
                 and not any(w["s"] < a and w["e"] > glatt[-1][1] for w in weg):
             glatt[-1][1] = b
         else:

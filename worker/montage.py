@@ -627,7 +627,8 @@ def alle_schritte(c):
                  "die dazukommt (Fleisch auf die Platte, Käse, Soße, Gurken, Zwiebeln, Salat, Deckel …), jedes Wenden, Drücken, "
                  "Würzen, Zusammensetzen, Einpacken und das fertige Ergebnis. Je Schritt: sek = die Sekunde, in der man die Handlung "
                  "am deutlichsten sieht (die Zutat landet gerade), was = höchstens 5 Wörter. NICHT auflisten: Warten, Leerlauf, "
-                 "Kameraschwenks, Hingreifen in Behälter, Missgeschicke (etwas fällt herunter, wird weggeworfen), denselben Schritt doppelt.",
+                 "Kameraschwenks, Hingreifen in Behälter, Missgeschicke (etwas fällt herunter, wird weggeworfen), denselben Schritt doppelt, "
+                 "Momente, in denen eine andere Person oder eine fremde Hand ins Bild greift, etwas hereinreicht oder zurechtrückt.",
                  parts, {"type": "object", "properties": {"schritte": {"type": "array", "items": {"type": "object", "properties": {
                      "sek": {"type": "number"}, "was": {"type": "string"}}, "required": ["sek", "was"]}}}, "required": ["schritte"]},
                  timeout=240, deep=True)
@@ -1037,16 +1038,62 @@ def build(plan, odir):
             # das Spielzeug gezeigt.“ Die gestrichenen Sätze des Schlussteils verschwinden deshalb nicht: Wo dabei etwas
             # getan wird (einpacken, dazulegen), bleibt ein kurzes stummes Bild der Handlung (je 0,9 s, höchstens 5).
             tun = re.compile(r"\brein\b|\bdazu\b|\bdran\b|verpack|tüte|tuete|\bbox\b|pommes|spielzeug|leg|pack|kommt|mach", re.I)
+            kandid = [u for u in raus if not (bw.get(u["nr"]) or {}).get("panne") and tun.search(u["satz"]) and u["te"] - u["ta"] >= 0.8][:6]
+            # Inhaber 09.10.: „Bei Sekunde 20 kommt eine andere Hand ins Bild und schiebt ihm die Box zu – das darf man auf
+            # gar keinen Fall sehen.“ Das Bild wurde blind aus der Satzmitte genommen. Jetzt sieht die KI je Satz sechs Bilder
+            # mit Zeitangabe und nennt den Moment, in dem die Hauptperson die Handlung selbst ausführt – ohne fremde Hand,
+            # ohne dass jemand etwas hereinreicht oder zurechtrückt. Gibt es keinen solchen Moment, entfällt das Bild.
+            momente = {}
+            if kandid:
+                try:
+                    parts = []
+                    for n_k, u in enumerate(kandid):
+                        t_a, t_b = u["s0"], min(u["c"]["dur"] - 0.1, max(u["s1"], u["te"] + 1.5))
+                        parts.append({"text": f"Satz {n_k}: „{u['satz'][:80]}“ – Bilder:"})
+                        for q in range(6):
+                            tq = t_a + (t_b - t_a) * (q + 0.5) / 6
+                            fpath = os.path.join(A.out, f"sb_{n_k}_{q}.jpg")
+                            run(["ffmpeg", "-v", "error", "-y", "-ss", f"{tq:.2f}", "-i", u["c"]["file"], "-frames:v", "1",
+                                 "-vf", "scale=300:-2", "-q:v", "6", fpath])
+                            parts += [{"text": f"Sekunde {tq:.1f}:"},
+                                      {"inline_data": {"mime_type": "image/jpeg", "data": base64.b64encode(open(fpath, "rb").read()).decode()}}]
+                            os.remove(fpath)
+                    r4 = gemini(
+                        "Du bist Cutter. Zu jedem Satz siehst du sechs Bilder mit Zeitangabe aus derselben Aufnahme. Gesucht ist "
+                        "je Satz EIN kurzer Moment (0,9 s) für eine stumme Bildfolge, in dem man die im Satz genannte Handlung "
+                        "sauber sieht: Die HAUPTPERSON führt sie selbst aus (legt hinein, füllt ein, zeigt etwas). NICHT geeignet "
+                        "sind Momente, in denen eine ANDERE Person oder deren Hand/Arm ins Bild greift, etwas hereinreicht, "
+                        "zuschiebt oder zurechtrückt, in denen jemand durchs Bild läuft, die Person wartet/aus dem Bild schaut, "
+                        "das Bild verwackelt oder verdeckt ist. Antworte je Satz mit sek = Sekunde des besten Moments (aus den "
+                        "gezeigten Zeiten oder dazwischen) und ok = true – oder ok = false, wenn kein Bild geeignet ist. "
+                        "fremde_hand = true, wenn auf irgendeinem der Bilder eine fremde Hand/Person zu sehen ist (dann sek "
+                        "weit genug davon weg wählen).",
+                        parts, {"type": "object", "properties": {"saetze": {"type": "array", "items": {"type": "object", "properties": {
+                            "satz": {"type": "integer"}, "ok": {"type": "boolean"}, "sek": {"type": "number"},
+                            "fremde_hand": {"type": "boolean"}, "was": {"type": "string"}}, "required": ["satz", "ok"]}}},
+                                "required": ["saetze"]}, timeout=120, deep=True)
+                    for d4 in (r4 or {}).get("saetze") or []:
+                        if isinstance(d4.get("satz"), int) and 0 <= d4["satz"] < len(kandid):
+                            momente[d4["satz"]] = d4
+                except Exception as e:  # noqa: BLE001
+                    log(f"  Schlussteil-Bilder: KI-Schritt ausgefallen ({e}) – ohne Prüfung gibt es keine Bilder")
             bilder_n = 0
-            for u in raus:
-                d = bw.get(u["nr"]) or {}
-                if bilder_n >= 5 or d.get("panne") or not tun.search(u["satz"]) or u["te"] - u["ta"] < 0.8:
+            for n_k, u in enumerate(kandid):
+                d4 = momente.get(n_k) or {}
+                if bilder_n >= 5 or not d4.get("ok") or not isinstance(d4.get("sek"), (int, float)):
+                    if d4 and not d4.get("ok"):
+                        log(f"  Schlussteil ohne Bild: „{u['satz'][:40]}“ – kein sauberer Moment" + (" (fremde Hand im Bild)" if d4.get("fremde_hand") else ""))
                     continue
-                mitte = float(d["von"]) + 0.3 if d.get("sichtbar") and d.get("von") is not None else u["ta"] + 0.6 * (u["te"] - u["ta"])
-                a = min(max(u["s0"], mitte - 0.45), u["c"]["dur"] - 0.95)
+                a = min(max(0.0, float(d4["sek"]) - 0.45), u["c"]["dur"] - 0.95)
+                rf = ruhiges_fenster(u["c"], a, a + 0.9, a - 0.25, a + 1.15)   # nur minimal verschieben – der Moment ist geprüft
+                if rf is None:
+                    log(f"  Schlussteil ohne Bild: „{u['satz'][:40]}“ – verwackelt oder unscharf")
+                    continue
+                a = rf[0]
                 u.update(zeig=(a, a + 0.9), s0=a, s1=a + 0.9, als_bild=True)
                 bilder_n += 1
-                log(f"  Schlussteil als Bild: „{u['satz'][:40]}“ → {a:.1f}–{a + 0.9:.1f} s")
+                log(f"  Schlussteil als Bild: „{u['satz'][:40]}“ → {a:.1f}–{a + 0.9:.1f} s ({str(d4.get('was') or '')[:40]})"
+                    + (" – fremde Hand an anderer Stelle gemieden" if d4.get("fremde_hand") else ""))
             raus = [u for u in raus if not u.get("als_bild")]
             units = [u for u in units if not any(u is x for x in raus)]
             log(f"Schlussteil nach der Bildfolge gekürzt: {len(nach)} → {len(wahl)} Sätze "

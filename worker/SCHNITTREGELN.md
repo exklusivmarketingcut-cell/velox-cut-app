@@ -389,3 +389,11 @@ Protokoll aller Schnitte: `schnitt-maschine/logs/jobs.jsonl` (neben dem Ordner `
 - **Wortanfang am Schnitt**: mindestens ~0,1 s Vorlauf vor dem Stimmeinsatz, Abschnitt beginnt notfalls früher (Anlaut „E“ in „Echtes“ ging verloren).
 - **KI darf kein einzelnes Inhaltswort** zwischen zwei behaltenen Wörtern streichen („Mittagspause [ohne] Foodkoma“).
 - **Nachschnitt**: „doppelt“ nur, wenn EIN anderer Satz ≥ 60 % desselben Inhalts hat (nicht über alle Sätze zusammengezählt). Teilstück eines Satzes ist nie „Fehlstart“.
+
+## Regel 120 – Zubereitung „wie mein Schnitt“ (Entscheidung des Inhabers 08.10. nachts)
+Nach dem Malo's-Test mit durchgehender Erzählung (82 s, Satzfetzen): „Mach wie mein Schnitt.“
+- Begrüßung gesprochen → Zubereitung als **stumme schnelle Bildfolge** mit Musik (alle Schritte, Dreh-Reihenfolge) → Schluss gesprochen. Normalfall, sobald vor/nach der Zubereitung jemand in die Kamera spricht (abschalten nur mit `VELOX_BILDFOLGE=0`). Ersetzt die Entscheidung vom 07.10. („Erzählung bleibt“).
+- **Zeitbudget Bildfolge 14 s**: je Schritt 14 s / Anzahl, mindestens 0,55 s, höchstens 1,2 s.
+- **Schlussteil höchstens ~12 s**: Fertig-Meldung, höchstens eine Besonderheit, die letzten ein bis zwei Sätze (KI-Auswahl, Rückfall fest).
+- **Puzzle-Prüfung** (Regel 117) nur bei Plänen unter 40 s Sprache.
+- Ergebnis Malo's Junior Box: 28,7 s, dieselben vier Sätze wie sein Schnitt (27,9 s).

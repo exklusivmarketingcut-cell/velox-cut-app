@@ -783,9 +783,13 @@ def build(plan, odir):
     # bleibt, das Bild folgt dem Wort (Regel 111), der komplette Prozess ist zu sehen („bei einem langen Video klappt das schon
     # ganz gut“). Die stumme schnelle Bildfolge (Regel 114) ist deshalb nicht mehr der Normalfall; sie bleibt als Schalter
     # VELOX_BILDFOLGE=1 erhalten.
-    if schnell and n_zeig >= 3 and not (n_kamera >= 2 and os.environ.get("VELOX_BILDFOLGE")):
+    # Entscheidung des Inhabers 08.10. nachts, nach dem Malo's-Test mit Erzählung (82 s, Satzfetzen beim Arbeiten):
+    # „Mach wie mein Schnitt.“ → Die schnelle stumme Bildfolge ist wieder der NORMALFALL für Zubereitungen, sobald drumherum
+    # jemand vor der Kamera spricht (Begrüßung/Schluss). Abschalten nur noch mit VELOX_BILDFOLGE=0.
+    BILDFOLGE = os.environ.get("VELOX_BILDFOLGE", "1") != "0"
+    if schnell and n_zeig >= 3 and not (n_kamera >= 2 and BILDFOLGE):
         log("Zubereitung: Erzählung bleibt, das Bild folgt dem Wort (wie bei einem langen Video)")
-    if schnell and n_zeig >= 3 and n_kamera >= 2 and os.environ.get("VELOX_BILDFOLGE"):
+    if schnell and n_zeig >= 3 and n_kamera >= 2 and BILDFOLGE:
         neu_u, frei_z, weg = [], {}, 0
         # Bildfolge nur in den Clips, in denen wirklich gearbeitet wird (mind. 3 gezeigte Schritte). Ein einzelner Satz aus dem
         # Off in einem anderen Clip („Und jetzt ist unser Junior Burger fertig“) bleibt gesprochen – so auch im Schnitt des Inhabers.
@@ -841,6 +845,16 @@ def build(plan, odir):
                 a = max(a, sauber[-1][1]) if sauber else a
                 if b - a >= 0.7:
                     sauber.append((a, b))
+            # Test Malo's 08.10. nachts: 25 Schritte × 1,3 s = 32 s Bildfolge – das ganze Video des Inhabers hat 28 s. Die
+            # Bildfolge bekommt ein Zeitbudget von 14 s: je Schritt 14 s / Anzahl, mindestens 0,55 s, höchstens 1,2 s, immer
+            # um den Moment der Handlung herum (alle Schritte bleiben zu sehen, nur kürzer).
+            je = min(1.2, max(0.55, 14.0 / max(1, len(sauber))))
+            eng = []
+            for a, b in sauber:
+                m_ = (a + b) / 2
+                a2 = max(a, m_ - je / 2)
+                eng.append((a2, min(b, a2 + je)))
+            sauber = eng
             w0 = allw[id(c)][0]
             neue = [{"c": c, "ws": [w0], "s0": a, "s1": b, "zeig": (a, b), "innen": False, "satz": "", "nr": -1} for a, b in sauber]
             neu_u = [u for u in neu_u[:pos] if not (u.get("zeig") and u["c"] is c)] + neue + \
@@ -849,6 +863,35 @@ def build(plan, odir):
         log(f"Zubereitung als schnelle Bildfolge: {sum(1 for u in neu_u if u.get('zeig'))} Arbeitsschritte gezeigt, "
             f"{weg} Erklär-Sätze ohne eigene Handlung entfallen, {sum(1 for u in neu_u if not u.get('zeig'))} Sätze gesprochen")
         units = neu_u
+        # Der gesprochene Teil NACH der Bildfolge (Test Malo's: 27 s Einpacken Satz für Satz – beim Inhaber sind es vier Sätze:
+        # „Jetzt ist unser Junior Burger fertig. Spielzeug ist immer anders. So sieht die Junior Box bei Malo's aus. Und noch
+        # dazu eine Capri-Sonne.“). Ist er länger als 13 s, wählt die KI daraus: Fertig-Meldung, höchstens eine Besonderheit, Schluss.
+        letzt = max((i for i, u in enumerate(units) if u.get("zeig")), default=None)
+        nach = [u for u in units[letzt + 1:] if not u.get("zeig")] if letzt is not None else []
+        if sum(u["te"] - u["ta"] for u in nach) > 13.0 and len(nach) > 4:
+            wahl = None
+            try:
+                r3 = gemini(
+                    "Du bist Cutter für Kurzvideos. Ein Zubereitungs-Video: Begrüßung, dann die Zubereitung als schnelle Bildfolge "
+                    "mit Musik, dann spricht die Person wieder. Unten stehen die Sätze dieses Schlussteils mit Dauer. Er ist zu "
+                    "lang. Wähle höchstens 12 Sekunden aus, in dieser Reihenfolge: (1) die Fertig-Meldung („Jetzt ist unser Burger "
+                    "fertig“), (2) höchstens EINE Besonderheit, die neugierig macht (z. B. „Das Spielzeug ist immer anders“), "
+                    "(3) den Schluss – die letzten ein bis zwei vollständigen Sätze („So sieht die Junior Box bei uns aus. Und noch "
+                    "dazu eine Capri-Sonne.“). Nur vollständige, verständliche Sätze; keine Arbeitsanweisungen Schritt für Schritt "
+                    "(„jetzt in die Tüte, Pommes daneben“), keine Satzfetzen, keine Doppelungen. Gib die Nummern zurück.",
+                    [{"text": "\n".join(f"{i}: [{u['te'] - u['ta']:.1f} s] {u['satz']}" for i, u in enumerate(nach))}],
+                    {"type": "object", "properties": {"nummern": {"type": "array", "items": {"type": "integer"}}}, "required": ["nummern"]},
+                    timeout=90, deep=True)
+                wahl = sorted({int(i) for i in (r3 or {}).get("nummern") or [] if 0 <= int(i) < len(nach)})
+            except Exception as e:  # noqa: BLE001
+                log(f"  Schlussteil kürzen: KI-Schritt ausgefallen ({e})")
+            if not wahl or sum(nach[i]["te"] - nach[i]["ta"] for i in wahl) > 16.0:
+                fertig = next((i for i, u in enumerate(nach) if re.search(r"fertig|ready", u["satz"], re.I)), 0)
+                wahl = sorted({fertig, len(nach) - 2, len(nach) - 1})
+            raus = [u for i, u in enumerate(nach) if i not in wahl]
+            units = [u for u in units if not any(u is x for x in raus)]
+            log(f"Schlussteil nach der Bildfolge gekürzt: {len(nach)} → {len(wahl)} Sätze "
+                f"({sum(nach[i]['te'] - nach[i]['ta'] for i in wahl):.0f} s) – " + " | ".join(nach[i]["satz"][:40] for i in wahl))
     n_shift, frei = 0, {}
     for k, u in enumerate(units):
         if u.get("zeig"):

@@ -190,6 +190,34 @@ for seg in tr["segments"]:
             WORDS.append({"t": t, "s": float(w["start"]), "e": float(w["end"])})
 if len(WORDS) < 3:
     sys.exit("Im Video wurde keine Sprache erkannt.")
+# Wortgenaue Zuordnung (09.10.2026): Die Erkennung setzt Wortanfänge oft 0,2–0,4 s zu früh; daran hingen angeschnittene
+# Wörter und zu frühe/späte Schnitte (Novus-Videos des Inhabers). Ein zweites Modell legt jedes erkannte Wort auf ~20 ms genau
+# in den Ton. Übernommen wird nur, wenn das Ergebnis insgesamt zur Erkennung passt (sonst bleiben die alten Zeiten) und je
+# Wort nur, wenn es nicht weiter als 1,2 s abweicht. Bis zur Abnahme nur mit VELOX_WORTGENAU=1 aktiv (Testläufe).
+if os.environ.get("VELOX_WORTGENAU", "0") == "1":
+    try:
+        from wortgenau import wortzeiten
+        _wz = wortzeiten(wav, [w["t"] for w in WORDS])
+        if _wz:
+            _dev = sorted(abs(z[0] - w["s"]) for z, w in zip(_wz, WORDS))
+            if _dev[int(len(_dev) * 0.9)] < 1.0:
+                _n = 0
+                for z, w in zip(_wz, WORDS):
+                    if abs(z[0] - w["s"]) < 1.2 and z[1] > z[0]:
+                        w["s0"], w["e0"] = w["s"], w["e"]
+                        w["s"], w["e"] = float(z[0]), float(z[1])
+                        _n += 1
+                for a_, b_ in zip(WORDS, WORDS[1:]):   # Reihenfolge und Abstände bleiben gültig
+                    if b_["s"] < a_["e"]:
+                        b_["s"] = a_["e"]
+                    if b_["e"] < b_["s"] + 0.02:
+                        b_["e"] = b_["s"] + 0.02
+                STATS["wortgenau"] = {"woerter": _n, "von": len(WORDS), "abw_median": round(_dev[len(_dev) // 2], 2)}
+                log(f"Wortgenau: {_n} von {len(WORDS)} Wörtern neu verortet (mittlere Verschiebung {_dev[len(_dev) // 2]:.2f} s)")
+            else:
+                log("Wortgenau: Ergebnis passt nicht zur Erkennung – alte Wortzeiten bleiben")
+    except Exception as _ew:  # noqa: BLE001
+        log(f"Wortgenau nicht möglich ({_ew}) – alte Wortzeiten bleiben")
 # Datum/Zahlen, die die Spracherkennung zerlegt („11.“ „05.“ → „11.05.“, „19“ „:30“ → „19:30“), wieder zusammenfügen
 _m = []
 for w in WORDS:
@@ -3989,6 +4017,7 @@ def sprachkanten(ranges, kept):
         # gesprochen erst ab 12,5 s). Über den Wortanfang gezählt, galt es als letztes Wort des Abschnitts DAVOR – und dessen
         # Nachlauf mit „so“ und Kopfdrehen blieb stehen (Premium-Test 07.10.).
         ws = [w for w in kept if a - 0.05 <= (w["s"] + w["e"]) / 2 < b]
+        b_alt = b
         prev_b = out[-1][1] if out else None   # das (evtl. schon gekürzte) Ende des Abschnitts davor
         next_a = ranges[k + 1][0] if k + 1 < len(ranges) else None
         if ws and round(b, 2) not in _kante and (next_a is None or next_a - b >= 0.3) and lv(b) >= thr:
@@ -4063,6 +4092,22 @@ def sprachkanten(ranges, kept):
             if b - (t + 0.30) > 0.1:
                 gek += b - (t + 0.30)
                 b = t + 0.30
+        # Malo's-Kontroll-Lauf 09.10.: Das Ende eines Abschnitts wurde „bis zum Stimm-Ende“ um 0,17 s verlängert – über die
+        # Clip-Grenze hinweg. Zu sehen war kurz der NÄCHSTE Clip (er steht an der Theke, noch nicht bereit), dann der Schnitt.
+        # Ein Abschnitt darf nie über eine Clip-Grenze hinaus wachsen.
+        # (Auch der Fall, dass ein Mini-Rest hinter der Grenze beim Glätten wieder angehängt wurde: liegt hinter einer Clip-
+        # Grenze im Abschnitt kein behaltenes Wort mehr, endet der Abschnitt an der Grenze.)
+        for jn in sorted(_joins):
+            if a + 0.15 < jn < b and not any((w["s"] + w["e"]) / 2 > jn for w in ws):
+                gek += b - (jn - 0.02)
+                b = jn - 0.02
+                break
+        # … und umgekehrt: liegt VOR einer Clip-Grenze im Abschnitt kein behaltenes Wort, beginnt er erst an der Grenze
+        for jn in sorted(_joins, reverse=True):
+            if a < jn < b - 0.15 and ws and not any((w["s"] + w["e"]) / 2 < jn for w in ws):
+                gek += (jn + 0.02) - a
+                a = jn + 0.02
+                break
         if not ws and not _handlung_bleibt and b - a < 0.8 and not any(z0 < b and z1 > a for z0, z1 in _zeigen) \
                 and all(lv(a + i * 0.05) < thr for i in range(int((b - a) / 0.05) + 1)):
             gek += b - a      # Reststück ohne Wort und ohne Ton (0,3 s Stillstand zwischen zwei Sätzen) – weg damit

@@ -691,6 +691,17 @@ def letzte_fassung(order):
     return out
 
 
+def stueck_laenge(f, soll):
+    """Tatsächliche Länge eines Teilstücks (Sekunden); weicht sie vom Soll ab, steht es im Protokoll."""
+    try:
+        ist = float(run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", f]).stdout.strip())
+        if abs(ist - soll) > 0.02:
+            log(f"  Teilstück {os.path.basename(f)}: Soll {soll:.3f} s, Ist {ist:.3f} s")
+        return ist
+    except Exception:  # noqa: BLE001
+        return soll
+
+
 def build(plan, odir):
     """Eine Geschichte → montage.mp4 + plan.json in <odir>."""
     os.makedirs(odir, exist_ok=True)
@@ -1138,16 +1149,20 @@ def build(plan, odir):
         if p.get("zeig"):  # Regel 114: stummes Zeige-Stück (Bild der Handlung, kein Ton – die Pipeline legt Musik darunter)
             run(["ffmpeg", "-v", "error", "-y", "-ss", f"{s0:.3f}", "-t", f"{D + 0.5:.3f}", "-i", c["file"], "-f", "lavfi", "-t", f"{D:.6f}",
                  "-i", "anullsrc=r=48000:cl=stereo", "-map", "0:v:0", "-map", "1:a:0", "-vf", vf, "-af", f"atrim=0:{D:.6f}"] + enc + [out])
-            if zeigen and abs(zeigen[-1][1] - t) < 0.01:
-                zeigen[-1][1] = round(t + s1 - s0, 3)
-            else:
-                zeigen.append([round(t, 3), round(t + s1 - s0, 3)])
         elif p.get("shift"):  # Ton des Satzes, Bild aus der Handlung danach (Regel 111)
             run(["ffmpeg", "-v", "error", "-y", "-ss", f"{s0:.3f}", "-t", f"{D + 0.5:.3f}", "-i", c["file"],
                  "-ss", f"{s0 + p['shift']:.3f}", "-t", f"{D + 0.5:.3f}", "-i", c["file"], "-map", "1:v:0", "-map", "0:a:0",
                  "-vf", vf, "-af", af] + enc + [out])
         else:
             run(["ffmpeg", "-v", "error", "-y", "-ss", f"{s0:.3f}", "-t", f"{D + 0.5:.3f}", "-i", c["file"], "-vf", vf, "-af", af] + enc + [out])
+        # Die Zeitrechnung des Plans nimmt die GEMESSENE Länge jedes Teilstücks (Kontroll-Lauf 09.10.: Bild und Ton waren gleich
+        # lang, aber 0,3 s länger als der Plan – die Clip-Grenzen für den Feinschnitt lagen damit daneben).
+        L_ist = stueck_laenge(out, s1 - s0)
+        if p.get("zeig"):
+            if zeigen and abs(zeigen[-1][1] - t) < 0.01:
+                zeigen[-1][1] = round(t + L_ist, 3)
+            else:
+                zeigen.append([round(t, 3), round(t + L_ist, 3)])
         for w in ([] if p.get("zeig") else ws):
             ref_s = sent_of[id(w)]
             if id(w) in first_of:
@@ -1157,7 +1172,7 @@ def build(plan, odir):
         files_c.append(out)
         if n and not (p.get("zeig") and subs[n - 1].get("zeig")):
             joins.append(round(t, 3))  # hier stoßen zwei Clips aneinander → in der Pipeline immer ein Schnitt
-        t += s1 - s0
+        t += L_ist
         if p.get("extra"):  # die Handlung läuft nach dem Satz noch weiter → stumm anhängen (im Original redet er dort oft schon
             ea, eb = p["extra"]  # weiter); die Pipeline lässt diese Strecke stehen und legt Musik darunter (plan „zeigen“)
             nf2 = max(1, round((eb - ea) * FPS))
@@ -1168,8 +1183,9 @@ def build(plan, odir):
                  "-i", "anullsrc=r=48000:cl=stereo", "-map", "0:v:0", "-map", "1:a:0", "-vf", vf, "-af", f"atrim=0:{D2:.6f}",
                  "-ac", "2", "-c:v", "libx264", "-preset", "veryfast", "-crf", "17", "-frames:v", str(nf2), "-c:a", "pcm_s16le", out2])
             files_c.append(out2)
-            zeigen.append([round(t, 3), round(t + eb - ea, 3)])
-            t += eb - ea  # bewusst KEINE Clip-Grenze in „joins“: Bild läuft nahtlos weiter, die Pipeline soll hier nicht trennen
+            L2 = stueck_laenge(out2, eb - ea)
+            zeigen.append([round(t, 3), round(t + L2, 3)])
+            t += L2  # bewusst KEINE Clip-Grenze in „joins“: Bild läuft nahtlos weiter, die Pipeline soll hier nicht trennen
     lst = os.path.join(odir, "teile.txt")
     open(lst, "w").write("".join(f"file '{f}'\n" for f in files_c))
     src = os.path.join(odir, "montage.mp4")

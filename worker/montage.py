@@ -508,6 +508,63 @@ def bild_zum_wort(kand):
     return {int(d["nr"]): d for d in (res or {}).get("stellen") or [] if isinstance(d.get("nr"), (int, float))}
 
 
+def ruhiges_fenster(c, a, b, links=None, rechts=None):
+    """Inhaber 09.10.: „Manchmal sind Clips drin, die komplett verwackelt oder nicht benutzbar sind – das darf nicht passieren.“
+    Für ein stummes Bild-Stück (Bildfolge, Zwischenbild) wird gemessen statt geraten: in der Umgebung der gewünschten Stelle
+    (±0,7 s, nie über die Nachbarstücke hinaus) werden Bilder im 0,1-s-Takt gelesen, je Bild die Schärfe (Kantenstärke) und
+    von Bild zu Bild die Kamerabewegung (Verschiebung des ganzen Bildes). Zurück kommt das ruhigste, schärfste Fenster
+    gleicher Länge – oder None, wenn selbst das beste verwackelt oder unscharf ist."""
+    try:
+        import cv2
+        import numpy as np
+        L = b - a
+        t0 = max(0.0, a - 0.7, links if links is not None else 0.0)
+        t1 = min(c["dur"] - 0.05, b + 0.7, rechts if rechts is not None else 1e9)
+        if t1 - t0 < L:
+            t0, t1 = a, b
+        cap = cv2.VideoCapture(c["file"])
+        fr, ts = [], []
+        t = t0
+        while t <= t1 + 1e-6:
+            cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000)
+            ok, im = cap.read()
+            if ok:
+                g = cv2.cvtColor(im, cv2.COLOR_BGR2GRAY)
+                g = cv2.resize(g, (240, int(240 * g.shape[0] / g.shape[1]))).astype(np.float32)
+                fr.append(g)
+                ts.append(t)
+            t += 0.1
+        cap.release()
+        if len(fr) < 4:
+            return (a, b)
+        scharf = [float(cv2.Laplacian(g, cv2.CV_32F).var()) for g in fr]
+        win = cv2.createHanningWindow((fr[0].shape[1], fr[0].shape[0]), cv2.CV_32F)
+        beweg = [0.0]
+        for g0, g1 in zip(fr, fr[1:]):
+            (dx, dy), _ = cv2.phaseCorrelate(g0, g1, win)
+            beweg.append(float((dx * dx + dy * dy) ** 0.5))          # Pixel je 0,1 s bei 240 px Breite
+        n = max(2, int(round(L / 0.1)))
+        best = None
+        for i in range(0, max(1, len(fr) - n + 1)):
+            bw_ = beweg[i + 1:i + n]
+            m_b = sum(bw_) / max(1, len(bw_))
+            ruck = max(bw_) if bw_ else 0.0
+            m_s = sum(scharf[i:i + n]) / len(scharf[i:i + n])
+            naehe = abs(ts[i] - a)                                    # im Zweifel nah an der gewünschten Stelle bleiben
+            kosten = m_b + 0.5 * ruck - 0.004 * min(m_s, 400.0) + 1.5 * naehe
+            if best is None or kosten < best[0]:
+                best = (kosten, ts[i], m_b, ruck, m_s)
+        _, ta, m_b, ruck, m_s = best
+        med = sorted(scharf)[len(scharf) // 2]
+        # verwackelt: das ganze Bild wandert im Mittel > 5 % der Breite je 0,1 s oder springt um > 12 %; unscharf: kaum Kanten
+        if m_b > 12.0 or ruck > 29.0 or m_s < 12.0:
+            return None
+        return (round(ta, 2), round(ta + L, 2))
+    except Exception as e:  # noqa: BLE001
+        log(f"  Bildruhe-Prüfung nicht möglich: {e}")
+        return (a, b)
+
+
 def alle_schritte(c):
     """Inhaber 07.10.: „Bei einer Zubereitung muss man den KOMPLETTEN Prozess sehen – es fehlten wieder Zwiebeln und Salatblatt.“
     Die Sätze allein reichen dafür nicht (nicht jeder Handgriff wird angesagt, manche Ansage ist genuschelt). Die KI sieht
@@ -871,6 +928,20 @@ def build(plan, odir):
             # Test Malo's 08.10. nachts: 25 Schritte × 1,3 s = 32 s Bildfolge – das ganze Video des Inhabers hat 28 s. Die
             # Bildfolge bekommt ein Zeitbudget von 14 s: je Schritt 14 s / Anzahl, mindestens 0,55 s, höchstens 1,2 s, immer
             # um den Moment der Handlung herum (alle Schritte bleiben zu sehen, nur kürzer).
+            # Bildruhe: jedes Stück auf das ruhigste, schärfste Fenster in seiner Nähe legen; verwackelte entfallen
+            ruhig, raus_n = [], 0
+            for i_, (a, b) in enumerate(sauber):
+                li = ruhig[-1][1] if ruhig else None
+                re_ = sauber[i_ + 1][0] if i_ + 1 < len(sauber) else None
+                rf = ruhiges_fenster(c, a, b, li, re_)
+                if rf is None:
+                    raus_n += 1
+                    log(f"  Bild-Stück {c['id']} {a:.1f}–{b:.1f} s weggelassen – verwackelt oder unscharf")
+                    continue
+                ruhig.append(rf)
+            if raus_n or ruhig != sauber:
+                log(f"  Bildruhe {c['id']}: {sum(1 for x, y in zip(ruhig, sauber) if x != y)} Stücke auf ruhigere Stelle gelegt, {raus_n} weggelassen")
+            sauber = ruhig
             je = min(1.2, max(0.55, 14.0 / max(1, len(sauber))))
             eng = []
             for a, b in sauber:
@@ -1068,6 +1139,20 @@ def build(plan, odir):
     run(["ffmpeg", "-v", "error", "-y", "-i", roh, "-c:v", "copy", "-c:a", "aac", "-b:a", "256k", src])
     for f in files_c + [lst, roh]:
         os.remove(f)
+    # Gleichlauf-Kontrolle (Inhaber 09.10.: „Da darf nichts verrutschen – Mund, Ton und Untertitel müssen passen“): Bild- und
+    # Tonspur des Rohschnitts müssen gleich lang sein und bei 0 beginnen, und die Länge muss zur Summe der Teilstücke passen.
+    try:
+        pr = json.loads(run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_type,start_time,duration", "-of", "json", src]).stdout)
+        dv = next(float(x["duration"]) for x in pr["streams"] if x["codec_type"] == "video")
+        da = next(float(x["duration"]) for x in pr["streams"] if x["codec_type"] == "audio")
+        sv = next(float(x.get("start_time") or 0) for x in pr["streams"] if x["codec_type"] == "video")
+        ok_ = abs(dv - da) <= 0.04 and abs(sv) <= 0.012 and abs(dv - t) <= 0.05
+        log(f"Gleichlauf Rohschnitt: Bild {dv:.3f} s, Ton {da:.3f} s, Plan {t:.3f} s" + ("" if ok_ else "  ← ABWEICHUNG – Bild und Ton laufen auseinander"))
+        if not ok_:
+            STATS_M = {"gleichlauf_fehler_s": round(max(abs(dv - da), abs(dv - t)), 3)}
+            log(f"WARNUNG Gleichlauf: {STATS_M}")
+    except Exception as e:  # noqa: BLE001
+        log(f"Gleichlauf-Kontrolle nicht möglich: {e}")
 
     # B-Roll-Stücke vorbereiten (9:16, ohne Ton) und an die Satz-Zeiten in der zusammengesetzten Datei hängen
     brolls = []
@@ -1093,6 +1178,11 @@ def build(plan, odir):
         e = a + d
         if e - a < 0.8:
             continue
+        rf = ruhiges_fenster(c, a, e, m["a"], m["b"])
+        if rf is None:
+            log(f"  Zwischenbild {m['id']} weggelassen – verwackelt oder unscharf")
+            continue
+        a, e = rf
         out = os.path.join(odir, f"broll_{n}.mp4")
         run(["ffmpeg", "-v", "error", "-y", "-ss", f"{a:.3f}", "-to", f"{e:.3f}", "-i", c["file"], "-an", "-vf",
              "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,fps=30,setsar=1,format=yuv420p",

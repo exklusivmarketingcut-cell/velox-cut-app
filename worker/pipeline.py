@@ -2281,7 +2281,8 @@ def render_cut(idx, ranges):
     # Davor: die Sprache auf einen festen Arbeitspegel bringen (sonst greift das Preset bei leisen Aufnahmen gar nicht) und
     # zwischen den Wörtern sanft absenken (Expander, höchstens −9 dB – KEINE Entrauschung, die klang „wie unter Wasser“).
     # Hörvergleich 08.10. am Golden-Thai-Rohschnitt: Stimme gleich laut, Umgebung zwischen den Wörtern 7 dB leiser.
-    _laut = sorted(LV)[int(len(LV) * 0.9)] if LV else -24.0
+    _lvh = sorted(v for v in LV if v > -95.0) or sorted(LV)   # ohne digitale Stille (stumme Bildfolge)
+    _laut = _lvh[int(len(_lvh) * 0.9)] if _lvh else -24.0
     vor_db = min(34.0, max(-6.0, -20.0 - _laut))
     fc.append(f"[{prev}]{tempo}highpass=f=80:p=2,equalizer=f=220:t=q:w=1.2:g=-0.8,equalizer=f=3000:t=q:w=1.2:g=1.5,"
               # Inhaber 08.10. nachts nach dem Hörvergleich an der Straßen-Umfrage: „Broadcast + Rauschen leicht und nur
@@ -3858,7 +3859,8 @@ def trim_joins(ranges, kept, joins):
     out, n_cut = [], 0.0
     # Sicherung: gekürzt wird nur an einer ECHTEN Ruhe-Stelle (mind. 12 dB unter Sprachlautstärke). Liegt zwischen dem Wort
     # und dem Rand durchgehend Schall, bleibt alles stehen – es könnte ein Wortanfang sein, den die Erkennung verschluckt hat.
-    laut = sorted(LV)[int(len(LV) * 0.9)] if LV else 0.0
+    _lvj = sorted(v for v in LV if v > -95.0) or sorted(LV)
+    laut = _lvj[int(len(_lvj) * 0.9)] if _lvj else 0.0
     lv = lambda t: LV[min(len(LV) - 1, max(0, int(t / 0.05)))]
     still = lambda t: lv(t) <= laut - 12
     # Eng gefasst (Test am Malo's-Rohschnitt: ohne diese Grenzen fielen 14 s wortlose HANDLUNG weg): gekürzt wird nur ein
@@ -3911,8 +3913,12 @@ def sprachkanten(ranges, kept):
       Anfang – was vor dem Einsatz der Stimme liegt (Luftholen, Blick zur Seite, Leerlauf), wird abgeschnitten."""
     if not LV:
         return ranges
-    laut = sorted(LV)[int(len(LV) * 0.9)]
-    ruhe = sorted(LV)[int(len(LV) * 0.2)]
+    # Malo's-Test 09.10. („an der Theke ist er noch nicht bereit zu reden“): Die stumme Bildfolge ist digitale Stille (−120 dB).
+    # Sie zog den Ruhe-Wert so tief, dass sogar das Raumrauschen (−70 dB) als „Stimme“ galt – am Satzanfang wurde nichts mehr
+    # gekürzt. Digitale Stille zählt deshalb bei der Bestimmung von Ruhe und Sprachlautstärke nicht mit.
+    _lvx = sorted(v for v in LV if v > -95.0) or sorted(LV)
+    laut = _lvx[int(len(_lvx) * 0.9)]
+    ruhe = _lvx[int(len(_lvx) * 0.2)]
     # Schwelle „hier spricht jemand“: knapp unter der Mitte zwischen Grundrauschen und Sprachlautstärke. Eine feste Zahl
     # unter dem Sprachpegel taugt nicht – bei einer sehr leisen Aufnahme (Golden Thai: Sprache −41 dB, Rauschen −64 dB)
     # lag das Atmen sonst schon über der Schwelle.

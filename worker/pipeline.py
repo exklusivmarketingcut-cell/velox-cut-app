@@ -4187,12 +4187,16 @@ def sprachkanten(ranges, kept):
         if ws and next_a is None:
             # Inhaber 07.10. (Premium): „Am Schluss direkt cutten – nicht warten, bis die Kamera runtergeht.“ Das Video endet
             # 0,3 s nach dem echten Ende der Stimme (statt bis zu 1,3 s Nachlauf).
+            # Lauf 10.10. (Malo's, drei Abnahmen in Folge: „der letzte Satz bricht mitten im Wort ab“): Der Ausklang von
+            # „Capri-Sonne“ („…nne“, −50 dB) lag unter der Sprech-Schwelle und galt als Ruhe – das Video endete im Wort.
+            # Für das Ende des Videos gilt deshalb eine tiefere Schwelle (leiser Ausklang zählt als Stimme) und 0,40 s Ausklang.
+            thr_e = ruhe + 0.22 * (laut - ruhe)
             t = b
-            while t > ws[-1]["e"] - 0.15 and lv(t - 0.05) < thr:
+            while t > ws[-1]["e"] - 0.15 and lv(t - 0.05) < thr_e:
                 t -= 0.05
-            if b - (t + 0.30) > 0.1:
-                gek += b - (t + 0.30)
-                b = t + 0.30
+            if b - (t + 0.40) > 0.1:
+                gek += b - (t + 0.40)
+                b = t + 0.40
         # Malo's-Kontroll-Lauf 09.10.: Das Ende eines Abschnitts wurde „bis zum Stimm-Ende“ um 0,17 s verlängert – über die
         # Clip-Grenze hinweg. Zu sehen war kurz der NÄCHSTE Clip (er steht an der Theke, noch nicht bereit), dann der Schnitt.
         # Ein Abschnitt darf nie über eine Clip-Grenze hinaus wachsen.

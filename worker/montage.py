@@ -804,7 +804,10 @@ def build(plan, odir):
             if not d or d.get("sprecher_im_bild") or id(c) not in kueche:
                 neu_u.append(u)
                 continue
-            if not d.get("sichtbar") or d.get("von") is None:
+            # Inhaber 09.10.: „Nach dem Deckel wird der Burger kurz schlecht gezeigt, dann Cut, dann richtig.“ Das schlechte Bild
+            # kam aus einer Regie-Ansage („Mach einmal auf, leg den Salat richtig“) – so ein Satz ist kein Arbeitsschritt.
+            if not d.get("sichtbar") or d.get("von") is None or \
+                    re.search(r"\bmach (ein)?mal\b|\bleg (den|das|die)\b.*\brichtig|\bnoch ?mal\b|\bwarte\b|\bzeig mal\b|\bhalt (ihn|es|den|das) (mal )?(hoch|so)", u["satz"], re.I):
                 weg += 1
                 continue
             von = min(max(float(d["von"]), u["ta"] - 0.5), c["dur"] - 1.0)
@@ -815,7 +818,7 @@ def build(plan, odir):
                 weg += 1
                 continue
             frei_z[id(c)] = b
-            neu_u.append({**u, "zeig": (a, b), "s0": a, "s1": b})
+            neu_u.append({**u, "zeig": (a, b), "s0": a, "s1": b, "was": str(d.get("was") or "")})
             log(f"  Zeige-Stück {sent_of[id(u['ws'][0])]} „{u['satz'][:40]}“ → {a:.1f}–{b:.1f} s ({str(d.get('was') or '')[:50]})")
         # Kompletter Prozess (Inhaber 07.10.): je Arbeits-Clip alle sichtbaren Schritte von der KI holen und Lücken füllen
         for c in [c for c in clips if id(c) in kueche]:
@@ -830,18 +833,26 @@ def build(plan, odir):
             pos = next((i for i, u in enumerate(neu_u) if u.get("zeig") and u["c"] is c), None)
             if pos is None or not allw[id(c)]:
                 continue
-            stuecke = [u["zeig"] for u in da]
+            stuecke = [(u["zeig"][0], u["zeig"][1], u.get("was", "")) for u in da]
             neu_n = 0
             for sek, was in alle:
-                if any(a - 2.0 <= sek <= b + 2.0 for a, b in stuecke):
+                if any(a - 2.0 <= sek <= b + 2.0 for a, b, _ in stuecke):
                     continue          # diesen Schritt zeigt schon ein (genauer getroffenes) Stück aus den Sätzen
                 a = max(0.0, sek - 0.5)
-                stuecke.append((a, min(c["dur"] - 0.05, a + 1.3)))
+                stuecke.append((a, min(c["dur"] - 0.05, a + 1.3), was))
                 neu_n += 1
                 log(f"  Zusätzlicher Schritt {c['id']} {a:.1f} s: {was[:50]}")
             stuecke = sorted(x for x in stuecke if x[1] - x[0] >= 0.7)
+            # Folgt auf die Bildfolge ein gesprochener Fertig-Satz mit dem Produkt im Bild („Und jetzt ist unser Junior Burger
+            # fertig“), zeigt DER das fertige Produkt. Das Hochhalten/Aufklappen am Ende des Arbeits-Clips entfällt dann –
+            # sonst sieht man den Burger zweimal, einmal davon schlecht (Inhaber 09.10.).
+            danach = next((u for u in neu_u[pos:] if not u.get("zeig")), None)
+            if danach and re.search(r"fertig|ready", danach["satz"], re.I):
+                while len(stuecke) > 3 and re.search(r"fertig|hochheb|hochhalt|präsentier|praesentier|öffnen|oeffnen|aufklapp|zeigen", stuecke[-1][2], re.I):
+                    log(f"  Schlussbild der Bildfolge weggelassen ({stuecke[-1][2][:40]}) – das fertige Produkt zeigt der Satz danach")
+                    stuecke.pop()
             sauber = []
-            for a, b in stuecke:              # nie dasselbe Bild zweimal
+            for a, b, _ in stuecke:              # nie dasselbe Bild zweimal
                 a = max(a, sauber[-1][1]) if sauber else a
                 if b - a >= 0.7:
                     sauber.append((a, b))
@@ -889,6 +900,21 @@ def build(plan, odir):
                 fertig = next((i for i, u in enumerate(nach) if re.search(r"fertig|ready", u["satz"], re.I)), 0)
                 wahl = sorted({fertig, len(nach) - 2, len(nach) - 1})
             raus = [u for i, u in enumerate(nach) if i not in wahl]
+            # Inhaber 09.10.: „Man könnte zeigen, wie er alles reinmacht – den Burger, die Pommes, das Spielzeug. Es wird nur
+            # das Spielzeug gezeigt.“ Die gestrichenen Sätze des Schlussteils verschwinden deshalb nicht: Wo dabei etwas
+            # getan wird (einpacken, dazulegen), bleibt ein kurzes stummes Bild der Handlung (je 0,9 s, höchstens 5).
+            tun = re.compile(r"\brein\b|\bdazu\b|\bdran\b|verpack|tüte|tuete|\bbox\b|pommes|spielzeug|leg|pack|kommt|mach", re.I)
+            bilder_n = 0
+            for u in raus:
+                d = bw.get(u["nr"]) or {}
+                if bilder_n >= 5 or d.get("panne") or not tun.search(u["satz"]) or u["te"] - u["ta"] < 0.8:
+                    continue
+                mitte = float(d["von"]) + 0.3 if d.get("sichtbar") and d.get("von") is not None else u["ta"] + 0.6 * (u["te"] - u["ta"])
+                a = min(max(u["s0"], mitte - 0.45), u["c"]["dur"] - 0.95)
+                u.update(zeig=(a, a + 0.9), s0=a, s1=a + 0.9, als_bild=True)
+                bilder_n += 1
+                log(f"  Schlussteil als Bild: „{u['satz'][:40]}“ → {a:.1f}–{a + 0.9:.1f} s")
+            raus = [u for u in raus if not u.get("als_bild")]
             units = [u for u in units if not any(u is x for x in raus)]
             log(f"Schlussteil nach der Bildfolge gekürzt: {len(nach)} → {len(wahl)} Sätze "
                 f"({sum(nach[i]['te'] - nach[i]['ta'] for i in wahl):.0f} s) – " + " | ".join(nach[i]["satz"][:40] for i in wahl))

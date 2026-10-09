@@ -2298,6 +2298,9 @@ def render_cut(idx, ranges):
               # Inhaber 08.10. nachts zu den Hörproben mit Absenkung zwischen den Wörtern (Expander, leicht und stark):
               # „abgehackt“. Deshalb KEIN Expander/Gate mehr – die Umgebung darf nicht auf- und zugehen.
               f"loudnorm=I=-14:TP=-1.5:LRA=11,"
+              # Inhaber 09.10.: „Der Ton kommt ein paar Millisekunden hinterher.“ Gemessen mit Testsignal: Entrauschung 25 ms +
+              # Begrenzer 5 ms = 30 ms Verzögerung (die alte Kette hatte 0). Genau diese 30 ms werden vorn abgeschnitten.
+              f"atrim=start=0.030,asetpts=PTS-STARTPTS,"
               f"afade=t=in:d=0.03,afade=t=out:st={max(0.0, total - 0.18):.3f}:d=0.18,aresample=48000[ac]")
     STATS["ton"] = {"kette": "broadcast", "vorverstaerkung_db": round(vor_db, 1)}
     fc.append(f"[0:v]setsar=1,{GRADE},format=yuv420p[vc]")
@@ -2523,6 +2526,14 @@ MUSIC = {  # lizenzfrei (Pixabay, OHNE Content ID – siehe musik/LIZENZ.txt)
     "trap": "Trap, hart und modern – Hype, Wettkampf, junge Zielgruppe",
 }
 MUSIC_PICK = {}
+# Weitere Stücke kommen ohne Programmänderung dazu: Datei <name>.mp3 in den Musik-Ordner legen und in musik/katalog.json
+# eintragen: {"<name>": "Genre, Stimmung – wofür; küche: thai|türkisch|… (falls landestypisch)"}.
+try:
+    _kat = os.path.join(MUSIC_DIR, "katalog.json")
+    if os.path.exists(_kat):
+        MUSIC.update({str(k): str(v) for k, v in json.load(open(_kat, encoding="utf-8")).items()})
+except Exception as _ek:  # noqa: BLE001
+    log(f"Musik-Katalog nicht lesbar: {_ek}")
 
 
 def pick_music(kept):
@@ -2534,10 +2545,37 @@ def pick_music(kept):
         return os.path.join(MUSIC_DIR, f"{A.music}.mp3")
     if not have:
         return None
-    res = gemini("Du bist Editor für Kurzvideos." + NISCHE_HINT + " Wähle die Hintergrundmusik, die am besten zu Inhalt und Stimmung passt. "
-                 "Stil des Schnitts: " + {"clean": "ruhig, sauber", "viral": "schnell, laut", "premium": "hochwertig, kinoreif"}[A.style] + ".",
-                 "Musik:\n" + "\n".join(f"{n}: {d}" for n, d in have.items()) + "\n\nTranskript: " + " ".join(w["t"] for w in kept)[:3000],
-                 {"type": "object", "properties": {"musik": {"type": "string", "enum": list(have)}}, "required": ["musik"]})
+    # Inhaber 09.10.: „Die Musik passt nicht wirklich. Sie soll modern sein und zum Video und zum Unternehmen passen – keine
+    # Mittelaltermusik bei einem modernen Burgerladen. Bei einem thailändischen oder türkischen Restaurant darf es
+    # landestypische Musik sein. Das musst du der Software beibringen, wie sie wo zu entscheiden hat.“
+    # Entscheidung in zwei Schritten: erst das PROFIL (was würde passen – unabhängig vom Bestand), dann das beste vorhandene
+    # Stück dazu. Das Wunsch-Profil steht im Protokoll (STATS „musik_wunsch“), damit sichtbar wird, welche Stücke fehlen.
+    res = gemini(
+        "Du bist Musik-Redakteur für Kurzvideos (TikTok/Reels) von Unternehmen." + NISCHE_HINT + " Wähle die Hintergrundmusik.\n"
+        "REGELN:\n"
+        "1) Grundsatz MODERN: aktuelle, junge Klangwelt (Hip-Hop-/Trap-Beat, House, Afro, Lo-Fi, moderner Pop/Funk). Nie "
+        "altmodisch, nie Mittelalter/Folklore/Klassik/Fahrstuhlmusik, nichts Kitschiges.\n"
+        "2) Zum UNTERNEHMEN: Burger, Street-Food, Döner-Imbiss, Sneaker, Barber, Fitness → Hip-Hop/Trap/Funk mit Druck. Café, "
+        "Bäckerei, Dessert, Beauty, Wellness → Lo-Fi, weicher Pop, entspannt. Bar, Club, Shisha, Mode → House/Afro/Deep. "
+        "Familie, Kinder, Eis → fröhlich, hell. Handwerk, Immobilien, Beratung, Auto → modern-neutral, selbstbewusst, nicht verspielt.\n"
+        "3) LANDESKÜCHE: Ist das Unternehmen klar landestypisch (thailändisch, türkisch, arabisch, italienisch, indisch, "
+        "griechisch, mexikanisch, japanisch …), passt ein Stück mit Klängen dieses Landes – am liebsten modern produziert "
+        "(landestypische Instrumente über modernem Beat), traditionell nur, wenn es nichts Modernes gibt. Nie die Musik eines "
+        "ANDEREN Landes (kein arabisches Stück für ein Thai-Restaurant).\n"
+        "4) Zum VIDEO: Zubereitung/Bildfolge → gleichmäßiger Beat mit Zug, auf den sich schneiden lässt. Monolog/Erklärung → "
+        "ruhig, drängt sich nicht vor die Stimme. Umfrage/Challenge → verspielt, energisch. Hochwertige Produktbilder → edel, reduziert.\n"
+        "5) Gibt es im Bestand kein Stück, das Regel 3 erfüllt, nimm das beste MODERNE, neutrale Stück – lieber neutral als "
+        "falsches Land oder falsche Stimmung.\n"
+        "Antworte mit: wunsch = das ideale Profil in wenigen Wörtern (Genre, Land falls landestypisch, Stimmung), musik = das "
+        "beste vorhandene Stück, passt = true, wenn es dem Wunsch wirklich entspricht (nicht nur Notlösung).\n"
+        "Stil des Schnitts: " + {"clean": "ruhig, sauber", "viral": "schnell, laut", "premium": "hochwertig, kinoreif"}[A.style] + ". "
+        + ("Im Video gibt es eine stumme Bildfolge (Zubereitung) – dort trägt die Musik allein." if (PLAN or {}).get("zeigen") else ""),
+        "Bestand:\n" + "\n".join(f"{n}: {d}" for n, d in have.items()) + "\n\nTranskript: " + " ".join(w["t"] for w in kept)[:3000],
+        {"type": "object", "properties": {"wunsch": {"type": "string"}, "musik": {"type": "string", "enum": list(have)},
+                                          "passt": {"type": "boolean"}}, "required": ["wunsch", "musik", "passt"]})
+    if res:
+        STATS["musik_wunsch"] = {"wunsch": str(res.get("wunsch") or "")[:80], "passt": bool(res.get("passt"))}
+        log(f"Musik: Wunsch „{str(res.get('wunsch') or '')[:60]}“ → {res.get('musik')}" + ("" if res.get("passt") else " (Notlösung – passendes Stück fehlt im Bestand)"))
     name = (res or {}).get("musik")
     if name not in have:
         name = {"clean": "lofi", "viral": "hiphop-upbeat", "premium": "hiphop-groove"}[A.style]

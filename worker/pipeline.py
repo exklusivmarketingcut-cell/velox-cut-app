@@ -1243,11 +1243,18 @@ def keep_ranges(words, safe=False, extra_drop=frozenset()):
     kept = [w for w in words if w["i"] not in drop]
     PAD_IN, PAD_OUT, MAX_GAP = (0.08, 0.2, 0.2) if safe else (0.05, 0.1, 0.14)
     ranges = []
+    _pos = {w["i"]: k for k, w in enumerate(words)}
     for w in kept:
         tail = PAD_OUT + (0.08 if SENT_END.search(w["t"]) or w["t"].endswith(",") else 0)  # Satzende darf ausklingen
         if w is kept[-1]:  # letztes Wort des Videos: Whisper setzt das Ende oft zu früh („Capri-Son-“) – lieber kurz ausklingen
             tail = max(tail, 0.45)
         s, e = max(0.0, w["s"] - PAD_IN), min(DUR, w["e"] + tail)
+        if "s0" in w:   # wortgenau verortet: der Rand darf nie in ein gestrichenes Nachbarwort hineinreichen (sonst bleibt z. B.
+            _k = _pos.get(w["i"], -1)   # im vorsichtigen Modus mit seinen breiten Rändern ein Stück „ähm“ stehen – Lauf p2_fehler 09.10.)
+            if _k > 0 and words[_k - 1]["i"] in drop and "s0" in words[_k - 1]:
+                s = max(s, min(words[_k - 1]["e"], w["s"]))
+            if 0 <= _k < len(words) - 1 and words[_k + 1]["i"] in drop and "s0" in words[_k + 1]:
+                e = min(e, max(words[_k + 1]["s"], w["e"]))
         need = min(w["e"] - w["s"], expected_len(w["t"]))  # jedes Wort behält mindestens seine normale Länge
         for a, b in ([] if safe else SIL):  # Whisper dehnt Wörter gern über Pausen – Stille am Rand abschneiden
             if a <= s + 0.04 < b < e:
@@ -2507,7 +2514,9 @@ def align(ranges, kept, heard):
                 pos = (est[i][0], max(est[i][1], est[i][0] + 0.08))
         if pos:
             OUT_TIME[w["i"]] = pos[0]
-        if pos and not w.get("unclear"):  # Unverständliches: Ton bleibt, aber kein (falscher) Untertitel
+        # Unverständliches: Ton bleibt, aber kein (falscher) Untertitel. Ausnahme (Malo's 09.10., 0,6 s ohne Untertitel über
+        # „dazu eine“): Hört die Hörprobe am FERTIGEN Ton genau dieses Wort, ist es verständlich – dann bekommt es seinen Untertitel.
+        if pos and (not w.get("unclear") or i in match):
             words_out.append((w["t"], pos[0], pos[1]))
     # Was im fertigen Clip klar zu hören ist, aber noch keinen Untertitel hat (z. B. ein Satz, den die erste Erkennung im
     # Durcheinander überhört hat – der Ton blieb drin, der Text fehlte): aus der Hörprobe nachtragen. Nur in echten Lücken,
@@ -3313,6 +3322,30 @@ def burn(idx, cut, words_out, title, ranges=None, kept=None):
     """2. Durchgang: Untertitel (und bei Viral den Hook-Titel) einbrennen, web-sicheres MP4."""
     out = os.path.join(A.out, f"clip-{idx}.mp4")
     ass = os.path.join(A.out, f"clip-{idx}.ass")
+    # Premium-Grafiken neu (09.10.2026, premium2.py): KI wählt Bausteine aus den Vorbildern des Inhabers (Vollbild-Karte, Sprecher
+    # als Karte, Text hinter der Person, Zähler, Listen …), gezeichnet mit dem Remotion-Baukasten. Bis zur Abnahme nur mit
+    # VELOX_PREMIUM2=1. B-Roll und Bilder aus dem Schnittplan gehen mit (Vollbild, Karte unter dem Sprecher oder Handy-Mockup).
+    if PREM and os.environ.get("VELOX_PREMIUM2", "0") == "1":
+        try:
+            import premium2
+            _br = [dict(file=b_["file"], t=out_at(b_["t_src"]), dur=b_.get("dur", 2.4)) for b_ in (PLAN or {}).get("broll") or []]
+            _bi = [dict(file=b_["file"], t=out_at(b_["t_src"])) for b_ in (PLAN or {}).get("bilder") or []]
+            _br, _bi = [x for x in _br if x["t"] is not None], [x for x in _bi if x["t"] is not None]
+            _ct, _t0 = [], 0.0
+            for _rs, _re in (ranges or [])[:-1]:
+                _t0 += olen(_rs, _re)
+                _ct.append(round(_t0, 3))
+            _r = premium2.render(cut, words_out, title, out, lambda sy, us, sc: gemini(sy, us, sc, timeout=120, deep=True), cut_times=_ct,
+                                 logo=A.logo if A.logo and os.path.exists(A.logo) else None,
+                                 accent=A.color if A.color.lower() != "#f6e27f" else None, seed_text=os.path.basename(A.src) + str(idx), log=log,
+                                 brolls=_br, bilder=_bi)
+            if _r:
+                STATS["premium2"] = _r[1]
+                STATS["caption_words"] = max(STATS.get("caption_words", 0), sum(1 for w_ in words_out if norm(w_[0])))  # Untertitel zeichnet der Baukasten
+                return out
+            log("Premium-Grafiken (neu) nicht möglich – zeichne wie bisher")
+        except Exception as _ep:  # noqa: BLE001
+            log(f"Premium-Grafiken (neu) Fehler: {_ep} – zeichne wie bisher")
     if LOUD and ranges and kept and idx not in FX:
         FX[idx] = gemini_effects(kept, OUT_TIME)
     pfx = [{**f, "t": OUT_TIME[f["i"]]} for f in FX.get(idx, []) if f["i"] in OUT_TIME] if LOUD else []
@@ -3881,7 +3914,7 @@ def quality_check(path, words, kept, orig, secs):
     vid = next((st for st in info["streams"] if st["codec_type"] == "video"), {})
     if kinds != {"video", "audio"} or (vid.get("width"), vid.get("height")) != (1080, 1920):
         problems.append("Ausgabedatei unvollständig")
-    if abs(float(info["format"]["duration"]) - secs) > 1.0:
+    if abs(float(info["format"]["duration"]) - secs - (STATS.get("premium2") or {}).get("abspann_s", 0.0)) > 1.0:
         problems.append("Länge stimmt nicht")
     entry = {"style": A.style, "caption": A.caption, "src_s": round(DUR, 1), "orig_s": round(orig, 1), "out_s": secs,
              "pauses_s": round(pauses, 1), "removed_s": round(removed, 1), **STATS, "problems": problems}
@@ -4383,6 +4416,75 @@ def make_cut(n, m, step):
     return {"m": m, "words": words, "ranges": ranges, "kept": kept, "cut": cut, "secs": secs, "words_out": words_out}
 
 
+def zweiter_schnitt(n, c):
+    """Inhaber 09.10.: „Bau einen zweiten Schnitt ein, der korrigiert, was im ersten Lauf nicht korrigiert wurde.“
+    Ein Cutter hört sich den fertigen Schnitt noch einmal an und zieht nach. Genau das passiert hier – gemessen am FERTIGEN
+    Ton (ohne Musik), nicht an den Zeiten der Worterkennung:
+      • Leerlauf: Bleibt zwischen zwei Wörtern 0,5–1,5 s Ruhe/Atmen stehen (außerhalb stummer Bild-Strecken), wird sie auf
+        0,2 s gekürzt. Längere Ruhe ist gewollte Handlung und bleibt.
+      • Splitter: Ein Abschnitt unter 0,3 s ohne behaltenes Wort fällt weg.
+    Nur wenn etwas gefunden wird, wird neu gerendert. Rückgabe: neuer Schnitt oder None."""
+    try:
+        ranges, kept = [list(r) for r in c["ranges"]], c["kept"]
+        fmt = str((PLAN or {}).get("format") or (STATS.get("story_format") or {}).get("format") or "").lower()
+        zeig = [(float(z[0]), float(z[1])) for z in ((PLAN or {}).get("zeigen") or []) if isinstance(z, (list, tuple)) and len(z) >= 2]
+        raw = subprocess.run(["ffmpeg", "-v", "error", "-i", c["cut"], "-vn", "-ac", "1", "-ar", "16000", "-f", "s16le", "-"],
+                             capture_output=True).stdout
+        x = np.frombuffer(raw, np.int16).astype(np.float32) / 32768
+        if len(x) < 16000:
+            return None
+        lv = [20 * float(np.log10(np.sqrt((x[i:i + 320] ** 2).mean()) + 1e-7)) for i in range(0, len(x) - 320, 320)]
+        hoer = sorted(v for v in lv if v > -80.0)
+        if len(hoer) < 50:
+            return None
+        laut, ruhe = hoer[int(len(hoer) * 0.9)], hoer[int(len(hoer) * 0.15)]
+        thr = ruhe + 0.4 * (laut - ruhe)
+        offs, t = [], 0.0
+        for a, b in ranges:
+            offs.append((a, b, t))
+            t += olen(a, b)
+        quelle = lambda to: next(((a + (to - o) * SPEED[0], k) for k, (a, b, o) in enumerate(offs) if o <= to < o + olen(a, b)), (None, None))
+        weg, i, n_l = [], 0, 0
+        while i < len(lv):
+            if lv[i] >= thr:
+                i += 1
+                continue
+            j = i
+            while j < len(lv) and lv[j] < thr:
+                j += 1
+            g0, g1 = i * 0.02, j * 0.02
+            i = j
+            if not (0.5 <= g1 - g0 <= 1.5) or g0 < 0.3 or g1 > t - 0.5:
+                continue
+            (s0, k0), (s1, k1) = quelle(g0 + 0.11), quelle(g1 - 0.09)
+            if s0 is None or s1 is None or k0 != k1 or s1 - s0 < 0.15:
+                continue                       # Ruhe über einen Schnitt hinweg: dort hat der erste Schnitt schon gekürzt
+            if any(z0 < s1 and z1 > s0 for z0, z1 in zeig) or (re.search(r"zubereit|anleitung|tutorial|rezept|behind", fmt) and not zeig):
+                continue                       # stumme Bild-Strecke bzw. erzählte Zubereitung: Handlung bleibt
+            if any(w["s"] < s1 and w["e"] > s0 and (w["s"] + w["e"]) / 2 > s0 and (w["s"] + w["e"]) / 2 < s1 for w in kept):
+                continue                       # in der „Ruhe“ liegt die Mitte eines behaltenen Wortes → leises Wort, kein Leerlauf
+            weg.append((s0, s1))
+            n_l += 1
+        neu = subtract(ranges, weg) if weg else ranges
+        vor = len(neu)
+        neu = [r for r in neu if r[1] - r[0] >= 0.3 or any(r[0] - 0.05 <= (w["s"] + w["e"]) / 2 < r[1] for w in kept)
+               or any(z0 < r[1] and z1 > r[0] for z0, z1 in zeig)]
+        n_s = vor - len(neu)
+        if not n_l and not n_s:
+            log("Zweiter Schnitt: fertigen Ton nachgemessen – nichts zu korrigieren")
+            STATS["zweiter_schnitt"] = {"leerlauf": 0, "splitter": 0}
+            return None
+        neu = tidy(zeigen_sichern(tidy(neu)))
+        log(f"Zweiter Schnitt: {n_l} Leerstellen (0,5–1,5 s) gekürzt, {n_s} Splitter entfernt – rendert neu")
+        cut, secs = render_cut(n, neu)
+        words_out, _ = align(neu, kept, hear(cut))
+        STATS["zweiter_schnitt"] = {"leerlauf": n_l, "splitter": n_s, "sekunden_vorher": c["secs"], "sekunden_nachher": secs}
+        return {**c, "ranges": neu, "cut": cut, "secs": secs, "words_out": words_out}
+    except Exception as e:  # noqa: BLE001
+        log(f"Zweiter Schnitt nicht möglich ({e}) – die erste Fassung bleibt")
+        return None
+
+
 def caption_round(rev, words_out, secs):
     """Untertitel-Korrekturen und fehlende Untertitel aus einer Abnahme übernehmen."""
     words_out, fixed = apply_caption_fixes(words_out, rev.get("untertitel_korrekturen"))
@@ -4493,6 +4595,13 @@ for n, m in enumerate(MOMENTS, 1):
                     if sc2:
                         STATS["sinn"].update(ok_nach=sc2["ok"], note_nach=sc2.get("note"), probleme_nach=[p["was"][:100] for p in sc2["probleme"]])
                         log(f"Sinn-Check nach Nachschnitt: {'ok' if sc2['ok'] else 'noch Hinweise'} (Note {sc2.get('note')})")
+    step(0.945, "Zweiter Schnitt: hört den fertigen Schnitt nach und zieht nach …")
+    c4 = zweiter_schnitt(n, c)
+    if c4:
+        c = c4
+        QUIZ.pop(n, None)
+        wo4, wieder4 = reapply_fixes(c["words_out"], (revs_done if rev else []))
+        f = burn(n, c["cut"], wo4, card_title, c["ranges"], c["kept"])
     if not A.keep_work and os.path.exists(c["cut"]):
         os.remove(c["cut"])
     words, kept, secs = c["words"], c["kept"], c["secs"]

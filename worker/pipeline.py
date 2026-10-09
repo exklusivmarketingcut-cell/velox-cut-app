@@ -4190,6 +4190,33 @@ def sprachkanten(ranges, kept):
     return out
 
 
+def zeigen_sichern(ranges):
+    """Selbstkontrolle (09.10.: eine eigene Regel schnitt die ganze stumme Zubereitung weg – das Video hatte 13,8 statt 28 s):
+    Jede vom Schnittplan vorgesehene stumme Bild-Strecke muss im Schnitt enthalten sein. Fehlt sie ganz oder teilweise, wird
+    sie wieder eingesetzt und der Vorfall protokolliert."""
+    zeig = [(float(z[0]), float(z[1])) for z in ((PLAN or {}).get("zeigen") or []) if isinstance(z, (list, tuple)) and len(z) >= 2]
+    if not zeig:
+        return ranges
+    out, fehl = [list(r) for r in ranges], 0.0
+    for z0, z1 in zeig:
+        da = sum(max(0.0, min(b, z1) - max(a, z0)) for a, b in out)
+        if da < 0.9 * (z1 - z0) - 0.1:
+            fehl += (z1 - z0) - da
+            out.append([z0 + 0.02, z1 - 0.02])
+    if fehl <= 0:
+        return ranges
+    out.sort()
+    ver = []
+    for a, b in out:
+        if ver and a <= ver[-1][1] + 0.02:
+            ver[-1][1] = max(ver[-1][1], b)
+        else:
+            ver.append([a, b])
+    STATS["zeigen_wiederhergestellt_s"] = round(fehl, 2)
+    log(f"SELBSTKONTROLLE: {fehl:.1f} s der geplanten stummen Bild-Strecke fehlten im Schnitt – wieder eingesetzt")
+    return ver
+
+
 def schnittstellen_pruefung(ranges, kept):
     """Inhaber 09.10.: „Solche kleinen, offensichtlichen Fehler dürfen nicht durchrutschen – auch bei ungewohntem Material.
     Die KI soll alles selbst prüfen wie ein Cutter mit tausenden Stunden Erfahrung, 24/7, ohne dass ich draufschauen muss.“
@@ -4311,7 +4338,7 @@ def make_cut(n, m, step):
     ranges = split_joins(ranges, kept)
     ranges, kept = limit60(ranges, kept)
     ranges = tidy(wortluecken(tidy(sprachkanten(tidy(ranges), kept)), kept))
-    ranges = tidy(schnittstellen_pruefung(ranges, kept))
+    ranges = tidy(zeigen_sichern(tidy(schnittstellen_pruefung(ranges, kept))))
     if os.environ.get("VELOX_DEBUG"):  # Fehlersuche: Wörter (mit „raus“) und Schnittliste ablegen
         kid = {w["i"] for w in kept}
         json.dump({"words": [[w["t"], round(w["s"], 2), round(w["e"], 2), w["i"] in kid] for w in words],
@@ -4331,7 +4358,7 @@ def make_cut(n, m, step):
         # lief zweimal genau dieser Pfad, die Abschnitte gingen dann wieder über Clip-Wechsel hinweg.
         ranges, kept = limit60(split_joins(ranges, kept), kept)
         ranges = tidy(wortluecken(tidy(sprachkanten(tidy(ranges), kept)), kept))
-        ranges = tidy(schnittstellen_pruefung(ranges, kept))
+        ranges = tidy(zeigen_sichern(tidy(schnittstellen_pruefung(ranges, kept))))
         if os.environ.get("VELOX_DEBUG"):  # Fehlersuche: auch die Schnittliste des sicheren Modus ablegen
             kid = {w["i"] for w in kept}
             json.dump({"words": [[w["t"], round(w["s"], 2), round(w["e"], 2), w["i"] in kid] for w in words],

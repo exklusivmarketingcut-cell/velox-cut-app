@@ -2552,8 +2552,12 @@ def align(ranges, kept, heard):
         if (len(g) < 2 and len(norm(g[0]["t"])) < 4) or sum(h["p"] for h in g) / len(g) < 0.6:
             continue  # zu kurz oder unsicher gehört → lieber kein Untertitel als ein falscher
         a, b = g[0]["s"], g[-1]["e"]
-        if any(x[1] < b + 0.15 and x[2] > a - 0.15 for x in words_out):
-            continue  # dort steht schon ein Untertitel
+        # „dort steht schon ein Untertitel“ = ein vorhandener Untertitel deckt mindestens ein Drittel der Stelle ab. (Vorher
+        # reichte Nachbarschaft von 0,15 s – das klar gesprochene Schlusswort „Capri-Sonne“ direkt nach „eine“ blieb deshalb
+        # ohne Untertitel, Lauf 10.10.)
+        deck = sum(max(0.0, min(b, x[2]) - max(a, x[1])) for x in words_out)
+        if deck >= 0.34 * max(0.1, b - a):
+            continue
         at = next((k for k, x in enumerate(words_out) if x[1] > a), len(words_out))  # vorhandene Reihenfolge bleibt unangetastet
         words_out[at:at] = [(h["t"], h["s"], max(h["e"], h["s"] + 0.08)) for h in g]
         added += [h["t"] for h in g]

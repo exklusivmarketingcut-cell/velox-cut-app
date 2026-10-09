@@ -397,3 +397,10 @@ Nach dem Malo's-Test mit durchgehender Erzählung (82 s, Satzfetzen): „Mach wi
 - **Schlussteil höchstens ~12 s**: Fertig-Meldung, höchstens eine Besonderheit, die letzten ein bis zwei Sätze (KI-Auswahl, Rückfall fest).
 - **Puzzle-Prüfung** (Regel 117) nur bei Plänen unter 40 s Sprache.
 - Ergebnis Malo's Junior Box: 28,7 s, dieselben vier Sätze wie sein Schnitt (27,9 s).
+
+## Regel 121 – Gleichlauf, Bildruhe, Musik (Inhaber 09.10.)
+- **Gleichlauf Bild/Ton/Untertitel**: Teilstücke der Montage sind bildgenau (ganze Bilder), Ton unkomprimiert und exakt gleich lang; AAC wird nur EINMAL am Ende erzeugt (vorher lief der Ton je Teilstück 20–40 ms nach, bei 25 Stücken ~0,5 s). Kontrolle nach jedem Zusammensetzen im Protokoll („Gleichlauf Rohschnitt“). Die Ton-Kette (Broadcast + Entrauschung) verzögert um 30 ms – wird ausgeglichen.
+- **Pegel-Messungen ohne digitale Stille**: Stumme Bildfolgen (−120 dB) zählen bei „Ruhe“/„Sprachlautstärke“ nicht mit (sonst wird am Satzanfang nichts gekürzt).
+- **Bildruhe gemessen, nicht geschätzt**: Jeder Clip wird an sechs Stellen vermessen (Kamerabewegung, Schärfe) → „verwackelt/unscharf (gemessen)“ steht in der Planung; solche Clips liefern keinen Satz, wenn derselbe Inhalt woanders liegt, und kein Zwischenbild. Jedes stumme Bild-Stück wird auf das ruhigste, schärfste Fenster in ±0,7 s gelegt; ist auch das verwackelt/unscharf, entfällt es.
+- **Zubereitung**: Regie-Ansagen werden kein Bild; zeigt der Satz nach der Bildfolge das fertige Produkt, entfällt das Hochhalten am Ende der Bildfolge; gestrichene Schlussteil-Sätze mit Handlung bleiben als kurze stumme Bilder (je 0,9 s, höchstens 5).
+- **Musik**: Entscheidung nach Regeln (modern; passend zum Unternehmen; landestypisch nur bei klarer Landesküche, nie das falsche Land; passend zur Videoart; im Zweifel modern-neutral). Eingebrannt wird Musik nur bei stummen Strecken oder wenn der Kunde sie wählt – sonst nur Empfehlung. Neue Stücke: mp3 in `musik/` + Eintrag in `musik/katalog.json`. Nie TikTok-/Chart-Musik einbrennen.

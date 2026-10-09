@@ -255,6 +255,45 @@ for c in clips:
     if c.get("kunde_broll"):
         c["broll_ok"] = True
 
+
+def bild_messung(c):
+    """Inhaber 09.10.: „Manchmal sind Clips drin, die komplett verwackelt oder nicht benutzbar sind.“ Die Qualität eines Clips
+    wird nicht nur von der KI an EINEM Standbild geschätzt, sondern gemessen: an sechs Stellen je vier Bilder im 0,1-s-Takt →
+    Kamerabewegung (Verschiebung des ganzen Bildes) und Schärfe (Kantenstärke). Rückgabe (bewegung, schaerfe) als Mittelwerte
+    der ruhigeren Hälfte bzw. Median – oder None, wenn nicht messbar."""
+    try:
+        import cv2
+        import numpy as np
+        bew, sch = [], []
+        for k in range(6):
+            t0 = c["dur"] * (k + 0.5) / 6
+            fr = graubilder(c, t0, 0.4)
+            if len(fr) < 2:
+                continue
+            win = cv2.createHanningWindow((fr[0].shape[1], fr[0].shape[0]), cv2.CV_32F)
+            d = [cv2.phaseCorrelate(g0, g1, win)[0] for g0, g1 in zip(fr, fr[1:])]
+            bew.append(sum((dx * dx + dy * dy) ** 0.5 for dx, dy in d) / len(d))
+            sch.append(sum(float(cv2.Laplacian(g, cv2.CV_32F).var()) for g in fr) / len(fr))
+        if len(bew) < 3:
+            return None
+        return sorted(bew)[len(bew) // 2], sorted(sch)[len(sch) // 2]
+    except Exception:  # noqa: BLE001
+        return None
+
+
+with ThreadPoolExecutor(4) as ex:
+    for c, m in zip(clips, ex.map(bild_messung, clips)):
+        if not m:
+            continue
+        c["bewegung"], c["schaerfe"] = round(m[0], 1), round(m[1], 1)
+        # verwackelt: das Bild wandert an der Mehrzahl der Stellen > 4 % der Breite je 0,1 s; unscharf: kaum Kanten im Bild
+        mangel = "verwackelt" if m[0] > 10.0 else ("unscharf" if m[1] < 12.0 else "")
+        if mangel:
+            log(f"  {c['id']}: gemessen {mangel} (Bewegung {m[0]:.1f} px je 0,1 s, Schärfe {m[1]:.0f}) – KI-Einschätzung war „{c.get('qualitaet', '?')}“")
+            c["qualitaet"] = f"{mangel} (gemessen) – nicht verwenden, wenn es denselben Inhalt in einem ruhigen, scharfen Clip gibt"
+            c["broll_ok"] = False
+            c["mangel"] = mangel
+
 # B-Roll-Material: Stellen OHNE Sprache (ganze stumme Clips, Pausen in Sprech-Clips ≥ 1,5 s – z. B. wenn jemand den Corndog
 # in die Kamera hält). Je Stelle ein Bild aus der Mitte → die KI sagt, was zu sehen ist und ob es als Zwischenschnitt taugt.
 def windows(c):
@@ -401,7 +440,7 @@ plans = gemini(
     "1) SPRECHTEILE = roter Faden: welche Sätze aus welchen Clips in welcher Reihenfolge (Satz-Nummern wie C3.2). Eine klare "
     "Geschichte: Aufhänger am Anfang, Hauptteil, Auflösung/Aufruf am Ende. Vorgespräche, Absprachen, Fehlversuche, doppelte "
     "Takes (nur den besten/letzten), lange Verabschiedungen, Nebensächliches weglassen (bei Umfragen/Gesprächen darf EIN kurzer "
-    "Abschied – „Dankeschön!“ – „Tschüss!“ – als Schlusspunkt bleiben). Clips mit schlechter Qualität meiden. "
+    "Abschied – „Dankeschön!“ – „Tschüss!“ – als Schlusspunkt bleiben). Clips mit schlechter Qualität meiden – steht bei einem Clip „verwackelt (gemessen)“ oder „unscharf (gemessen)“, kommt daraus KEIN Satz ins Video, sobald derselbe Inhalt (auch als anderer Take) in einem anderen Clip vorkommt; nur wenn ein wichtiger Teil der Geschichte ausschließlich dort liegt, darf er bleiben. "
     + ("Gehören die Clips zu VERSCHIEDENEN Themen/Videos, nimm nur die stärkste zusammenhängende Geschichte. " if A.clips <= 1 else
        f"Gehören die Clips zu VERSCHIEDENEN Themen/Videos (z. B. „neue Sorte“ und „Angebote unter 10 €“), baue je Thema eine "
        f"EIGENE Geschichte – höchstens {A.clips}, die stärkste zuerst, kein Satz in zwei Geschichten. Ist alles EIN Thema, nur "
@@ -508,6 +547,17 @@ def bild_zum_wort(kand):
     return {int(d["nr"]): d for d in (res or {}).get("stellen") or [] if isinstance(d.get("nr"), (int, float))}
 
 
+def graubilder(c, t0, dauer):
+    """Bilder im 0,1-s-Takt als kleine Graustufenbilder (240 px breit) – ein ffmpeg-Aufruf je Fenster (schnell auch bei 4K)."""
+    import numpy as np
+    w = 240
+    h = int(round(w * c["h"] / c["w"] / 2) * 2) if c.get("w") and c.get("h") else 426
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-ss", f"{max(0.0, t0):.3f}", "-t", f"{dauer:.3f}", "-i", c["file"], "-an",
+                          "-vf", f"fps=10,scale={w}:{h},format=gray", "-f", "rawvideo", "-"], capture_output=True).stdout
+    n = len(raw) // (w * h)
+    return [np.frombuffer(raw, np.uint8, w * h, i * w * h).reshape(h, w).astype(np.float32) for i in range(n)]
+
+
 def ruhiges_fenster(c, a, b, links=None, rechts=None):
     """Inhaber 09.10.: „Manchmal sind Clips drin, die komplett verwackelt oder nicht benutzbar sind – das darf nicht passieren.“
     Für ein stummes Bild-Stück (Bildfolge, Zwischenbild) wird gemessen statt geraten: in der Umgebung der gewünschten Stelle
@@ -522,19 +572,8 @@ def ruhiges_fenster(c, a, b, links=None, rechts=None):
         t1 = min(c["dur"] - 0.05, b + 0.7, rechts if rechts is not None else 1e9)
         if t1 - t0 < L:
             t0, t1 = a, b
-        cap = cv2.VideoCapture(c["file"])
-        fr, ts = [], []
-        t = t0
-        while t <= t1 + 1e-6:
-            cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000)
-            ok, im = cap.read()
-            if ok:
-                g = cv2.cvtColor(im, cv2.COLOR_BGR2GRAY)
-                g = cv2.resize(g, (240, int(240 * g.shape[0] / g.shape[1]))).astype(np.float32)
-                fr.append(g)
-                ts.append(t)
-            t += 0.1
-        cap.release()
+        fr = graubilder(c, t0, t1 - t0 + 0.05)
+        ts = [t0 + 0.1 * i for i in range(len(fr))]
         if len(fr) < 4:
             return (a, b)
         scharf = [float(cv2.Laplacian(g, cv2.CV_32F).var()) for g in fr]

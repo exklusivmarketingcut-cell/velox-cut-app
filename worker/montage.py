@@ -921,6 +921,12 @@ def build(plan, odir):
         kueche = {k for k, v in zahl.items() if v >= 3}
         for u in units:
             d, c = bw.get(u["nr"]) or {}, u["c"]
+            # Kontroll-Lauf 09.10.: Ein Satzrest von 0,6 s aus dem Küchenclip („…verständlich“) blieb als „gesprochen“ stehen –
+            # ohne Auskunft der KI (zu kurz für die Bildprüfung). Vor der Bildfolge stand dadurch ein Geister-Untertitel.
+            # Im Arbeits-Clip bleibt ohne Auskunft nur, was ein richtiger Satz ist (≥ 3 Wörter und ≥ 1,5 s).
+            if not d and id(c) in kueche and (len(u["ws"]) < 3 or u["te"] - u["ta"] < 1.5):
+                weg += 1
+                continue
             if not d or d.get("sprecher_im_bild") or id(c) not in kueche:
                 neu_u.append(u)
                 continue

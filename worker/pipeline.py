@@ -4153,13 +4153,17 @@ def sprachkanten(ranges, kept):
         # (Auch der Fall, dass ein Mini-Rest hinter der Grenze beim Glätten wieder angehängt wurde: liegt hinter einer Clip-
         # Grenze im Abschnitt kein behaltenes Wort mehr, endet der Abschnitt an der Grenze.)
         for jn in sorted(_joins):
-            if a + 0.15 < jn < b and not any((w["s"] + w["e"]) / 2 > jn for w in ws):
+            # (nie bei stummen Zeige-Strecken – dort gibt es keine Wörter, die Bildfolge IST der Inhalt; Kontroll-Lauf 09.10.:
+            # die ganze Zubereitung fiel weg, weil vor ihr eine Clip-Grenze im selben Abschnitt lag)
+            if a + 0.15 < jn < b and ws and not any((w["s"] + w["e"]) / 2 > jn for w in ws) \
+                    and not any(z0 < b and z1 > jn for z0, z1 in _zeigen):
                 gek += b - (jn - 0.02)
                 b = jn - 0.02
                 break
         # … und umgekehrt: liegt VOR einer Clip-Grenze im Abschnitt kein behaltenes Wort, beginnt er erst an der Grenze
         for jn in sorted(_joins, reverse=True):
-            if a < jn < b - 0.15 and ws and not any((w["s"] + w["e"]) / 2 < jn for w in ws):
+            if a < jn < b - 0.15 and ws and not any((w["s"] + w["e"]) / 2 < jn for w in ws) \
+                    and not any(z0 < jn and z1 > a for z0, z1 in _zeigen):
                 gek += (jn + 0.02) - a
                 a = jn + 0.02
                 break

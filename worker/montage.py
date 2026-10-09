@@ -1098,6 +1098,55 @@ def build(plan, odir):
             units = [u for u in units if not any(u is x for x in raus)]
             log(f"Schlussteil nach der Bildfolge gekürzt: {len(nach)} → {len(wahl)} Sätze "
                 f"({sum(nach[i]['te'] - nach[i]['ta'] for i in wahl):.0f} s) – " + " | ".join(nach[i]["satz"][:40] for i in wahl))
+    # ── Endkontrolle der stummen Bild-Stücke (Inhaber 09.10.: „Solche kleinen, offensichtlichen Fehler dürfen der Software
+    # nicht entgehen – bei Kundenvideos darf das nicht passieren“). Jedes Bild-Stück wird in GENAU dem Fenster geprüft, das
+    # ins Video kommt: drei Bilder (Anfang, Mitte, Ende). Die KI lehnt ab, was ein Zuschauer als Fehler sieht; abgelehnte
+    # Stücke entfallen. Das ist die letzte Sperre nach Bildruhe-Messung und Moment-Auswahl.
+    zst = [u for u in units if u.get("zeig")]
+    if zst:
+        abgelehnt = []
+        try:
+            for i0 in range(0, len(zst), 8):
+                teil_ = zst[i0:i0 + 8]
+                parts = []
+                for n_k, u in enumerate(teil_):
+                    a_, b_ = u["zeig"]
+                    parts.append({"text": f"Stück {n_k} ({b_ - a_:.1f} s) – Anfang, Mitte, Ende:"})
+                    for tq in (a_ + 0.05, (a_ + b_) / 2, b_ - 0.05):
+                        fpath = os.path.join(A.out, f"ek_{n_k}.jpg")
+                        run(["ffmpeg", "-v", "error", "-y", "-ss", f"{max(0.0, tq):.2f}", "-i", u["c"]["file"], "-frames:v", "1",
+                             "-vf", "scale=300:-2", "-q:v", "6", fpath])
+                        parts.append({"inline_data": {"mime_type": "image/jpeg", "data": base64.b64encode(open(fpath, "rb").read()).decode()}})
+                        os.remove(fpath)
+                r5 = gemini(
+                    "Du bist die Endkontrolle eines Schnittstudios. Jedes Stück ist ein kurzer stummer Ausschnitt (drei Bilder: "
+                    "Anfang, Mitte, Ende) aus einer Bildfolge, die zeigt, wie etwas zubereitet oder eingepackt wird. Lehne ein "
+                    "Stück ab (ok=false), wenn ein Zuschauer es als Fehler empfinden würde: eine ZWEITE Person oder fremde "
+                    "Hand/Arm greift ins Bild, reicht oder schiebt etwas herein; jemand läuft durchs Bild; die Hauptperson "
+                    "schaut wartend zur Seite/zur Kamera oder spricht sichtbar mit jemandem hinter der Kamera; die Handlung ist "
+                    "verdeckt oder gar nicht zu sehen; das Bild ist unscharf, stark verwackelt oder zeigt nur einen Schwenk; "
+                    "etwas geht schief (fällt herunter, wird korrigiert). In Ordnung (ok=true) ist: Hände der arbeitenden "
+                    "Person, das Produkt, ein klarer Arbeitsschritt – auch nah und angeschnitten. Sei streng bei fremden Händen "
+                    "und Personen, großzügig bei allem anderen. Nenne bei Ablehnung den Grund in wenigen Wörtern.",
+                    parts, {"type": "object", "properties": {"stuecke": {"type": "array", "items": {"type": "object", "properties": {
+                        "nr": {"type": "integer"}, "ok": {"type": "boolean"}, "grund": {"type": "string"}}, "required": ["nr", "ok"]}}},
+                            "required": ["stuecke"]}, timeout=120, deep=True)
+                for d5 in (r5 or {}).get("stuecke") or []:
+                    if isinstance(d5.get("nr"), int) and 0 <= d5["nr"] < len(teil_) and d5.get("ok") is False:
+                        abgelehnt.append((teil_[d5["nr"]], str(d5.get("grund") or "")[:60]))
+        except Exception as e:  # noqa: BLE001
+            log(f"Endkontrolle der Bild-Stücke: KI-Schritt ausgefallen ({e})")
+            abgelehnt = []
+        if abgelehnt and len(abgelehnt) <= 0.5 * len(zst):
+            for u, grund in abgelehnt:
+                log(f"  Endkontrolle: Bild-Stück {u['c']['id']} {u['zeig'][0]:.1f}–{u['zeig'][1]:.1f} s entfernt – {grund}")
+            units = [u for u in units if not any(u is x for x, _ in abgelehnt)]
+            log(f"Endkontrolle der Bild-Stücke: {len(abgelehnt)} von {len(zst)} entfernt")
+        elif abgelehnt:
+            log(f"Endkontrolle der Bild-Stücke: {len(abgelehnt)} von {len(zst)} beanstandet – zu viele, Urteil nicht übernommen: "
+                + "; ".join(g for _, g in abgelehnt[:4]))
+        else:
+            log(f"Endkontrolle der Bild-Stücke: {len(zst)} geprüft, nichts beanstandet")
     n_shift, frei = 0, {}
     for k, u in enumerate(units):
         if u.get("zeig"):

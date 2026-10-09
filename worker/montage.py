@@ -1030,6 +1030,12 @@ def build(plan, odir):
                 wahl = sorted({int(i) for i in (r3 or {}).get("nummern") or [] if 0 <= int(i) < len(nach)})
             except Exception as e:  # noqa: BLE001
                 log(f"  Schlussteil kürzen: KI-Schritt ausgefallen ({e})")
+            # Der letzte gesprochene Satz des Videos ist der Schluss und bleibt immer (Kontroll-Lauf 09.10.: Die KI ließ einmal
+            # „So sieht die Junior Box bei Malo's aus …“ weg – das Video endete in der Küche statt an der Theke).
+            if wahl and len(nach) - 1 not in wahl:
+                wahl = sorted(set(wahl) | {len(nach) - 1})
+                while len(wahl) > 2 and sum(nach[i]["te"] - nach[i]["ta"] for i in wahl) > 14.0:
+                    wahl.pop(-2)       # dafür fällt der Satz davor weg, nie die Fertig-Meldung und nie der Schluss
             if not wahl or sum(nach[i]["te"] - nach[i]["ta"] for i in wahl) > 16.0:
                 fertig = next((i for i, u in enumerate(nach) if re.search(r"fertig|ready", u["satz"], re.I)), 0)
                 wahl = sorted({fertig, len(nach) - 2, len(nach) - 1})

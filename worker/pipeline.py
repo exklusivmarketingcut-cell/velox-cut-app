@@ -194,6 +194,31 @@ if len(WORDS) < 3:
 # Wörter und zu frühe/späte Schnitte (Novus-Videos des Inhabers). Ein zweites Modell legt jedes erkannte Wort auf ~20 ms genau
 # in den Ton. Übernommen wird nur, wenn das Ergebnis insgesamt zur Erkennung passt (sonst bleiben die alten Zeiten) und je
 # Wort nur, wenn es nicht weiter als 1,2 s abweicht. Bis zur Abnahme nur mit VELOX_WORTGENAU=1 aktiv (Testläufe).
+if os.environ.get("VELOX_WORTGENAU", "0") == "1" and LANG == "de":
+    # Zweites Hinhören nur auf Füll-Laute: Die Erkennung verschluckt viele „ähm“ (Testlauf 09.10.: 3 von 6 gefunden, vier
+    # blieben im fertigen Clip). Mit einer Vorgabe voller Füll-Laute hört sie mehr davon; was sie dort zusätzlich als
+    # „äh/ähm“ hört und im ersten Text fehlt, wird als Füllwort eingefügt – die wortgenaue Zuordnung legt es dann exakt.
+    try:
+        _FL = {"äh", "ähm", "ähh", "ähmm", "öh", "öhm", "ehm", "hm", "hmm"}
+        _trf = mlx_whisper.transcribe(wav_asr, **ASR, hallucination_silence_threshold=2.0, temperature=0,
+                                      initial_prompt="Äh... ähm... also... äh, ja, genau, ähm.")
+        _nf = 0
+        for _sg in _trf["segments"]:
+            for _w in _sg.get("words", []):
+                _t = re.sub(r"[^\wäöüß]", "", _w["word"].lower())
+                if _t not in _FL:
+                    continue
+                _s, _e = float(_w["start"]), float(_w["end"])
+                if any(re.sub(r"[^\wäöüß]", "", x["t"].lower()) in _FL and abs(x["s"] - _s) < 0.8 for x in WORDS):
+                    continue
+                _k = next((k for k, x in enumerate(WORDS) if x["s"] > _s), len(WORDS))
+                WORDS.insert(_k, {"t": "ähm", "s": _s, "e": max(_e, _s + 0.15), "extra": True})
+                _nf += 1
+        if _nf:
+            STATS["fuell_laute_nachgehoert"] = _nf
+            log(f"Füll-Laute: {_nf} zusätzliche „ähm“ beim zweiten Hinhören gefunden")
+    except Exception as _ef:  # noqa: BLE001
+        log(f"Zweites Hinhören auf Füll-Laute nicht möglich ({_ef})")
 if os.environ.get("VELOX_WORTGENAU", "0") == "1":
     try:
         from wortgenau import wortzeiten
@@ -1145,6 +1170,29 @@ def keep_ranges(words, safe=False, extra_drop=frozenset()):
                 drop |= {w["i"] for w in words[k:j]}
                 getauscht += 1
                 k, ok_ = j, True
+                break
+        if not ok_:
+            k += 1
+    # Kontroll-Lauf 09.10. („Tagspause ohne Foodkoma“): Beide Fassungen von „Willst du eine“ waren gestrichen – die erste als
+    # Wiederholung, die zweite von der KI. Steht ein Satzanfang (2–6 Wörter) zweimal direkt hintereinander da, bleibt IMMER
+    # genau eine Fassung: sind beide gestrichen und geht es danach mit einem behaltenen Wort weiter, kommt die spätere zurück.
+    k = 0
+    while k < len(words):
+        ok_ = False
+        for L in range(6, 1, -1):
+            A_ = words[k:k + L]
+            if len(A_) < L or not all(w["i"] in drop for w in A_) or not all(_n(w) for w in A_):
+                continue
+            j = k + L
+            while j < len(words) and words[j]["i"] in drop and [_n(w) for w in words[j:j + L]] != [_n(w) for w in A_]:
+                j += 1
+            B_ = words[j:j + L]
+            if len(B_) == L and [_n(w) for w in B_] == [_n(w) for w in A_] and all(w["i"] in drop for w in B_) \
+                    and j + L < len(words) and words[j + L]["i"] not in drop and B_[0]["s"] - A_[-1]["e"] < 6.0 \
+                    and not any(w["i"] in fil for w in B_):
+                drop -= {w["i"] for w in B_}
+                getauscht += 1
+                k, ok_ = j + L, True
                 break
         if not ok_:
             k += 1
@@ -2595,7 +2643,10 @@ def pick_music(kept):
         "griechisch, mexikanisch, japanisch …), passt ein Stück mit Klängen dieses Landes – am liebsten modern produziert "
         "(landestypische Instrumente über modernem Beat), traditionell nur, wenn es nichts Modernes gibt. Nie die Musik eines "
         "ANDEREN Landes (kein arabisches Stück für ein Thai-Restaurant).\n"
-        "4) Zum VIDEO: Zubereitung/Bildfolge → gleichmäßiger Beat mit Zug, auf den sich schneiden lässt. Monolog/Erklärung → "
+        "4) Zum VIDEO: Zubereitung/Bildfolge → gleichmäßiger Beat mit Zug, auf den sich schneiden lässt – das geht VOR der "
+        "Zielgruppe: Auch bei einem Kinder- oder Familienprodukt bekommt eine Zubereitung keinen niedlichen Gute-Laune-Pop, "
+        "sondern einen modernen Beat (Hip-Hop, Funk, House), wie ihn Food-Kanäle für Zubereitungen nehmen (Inhaber 09.10. zu "
+        "Malo's: „Die Musik passt nicht zur Zubereitung“ – gewählt war fröhlicher Kinder-Pop). Monolog/Erklärung → "
         "ruhig, drängt sich nicht vor die Stimme. Umfrage/Challenge → verspielt, energisch. Hochwertige Produktbilder → edel, reduziert.\n"
         "5) Gibt es im Bestand kein Stück, das Regel 3 erfüllt, nimm das beste MODERNE, neutrale Stück – lieber neutral als "
         "falsches Land oder falsche Stimmung.\n"
@@ -4135,6 +4186,75 @@ def sprachkanten(ranges, kept):
     return out
 
 
+def schnittstellen_pruefung(ranges, kept):
+    """Inhaber 09.10.: „Solche kleinen, offensichtlichen Fehler dürfen nicht durchrutschen – auch bei ungewohntem Material.
+    Die KI soll alles selbst prüfen wie ein Cutter mit tausenden Stunden Erfahrung, 24/7, ohne dass ich draufschauen muss.“
+    Der Ton entscheidet, WO geschnitten wird – aber ob ein Abschnitt gut AUSSIEHT, sieht man nur im Bild. Vor dem Rendern
+    schaut die KI deshalb jede Schnittstelle an: drei Bilder vom Anfang und drei vom Ende jedes gesprochenen Abschnitts.
+    Sie meldet, was ein Cutter sofort sähe – die Person ist am Anfang noch nicht bereit (richtet sich ein, schaut weg, wartet
+    auf ein Zeichen), am Ende schon „fertig“ (dreht sich weg, greift nach etwas, schaut zum Kameramann), oder eine fremde
+    Hand/Person ist am Rand im Bild. Die Korrektur ist fest begrenzt: Der Rand wird um höchstens 0,6 s gekürzt und nie in ein
+    behaltenes Wort hinein (Anlauf 0,10 s, Ausklang 0,12 s bleiben immer)."""
+    if not GEMINI_KEY or len(ranges) < 1:
+        return ranges
+    import base64
+    zeig = [(float(z[0]), float(z[1])) for z in ((PLAN or {}).get("zeigen") or []) if isinstance(z, (list, tuple)) and len(z) >= 2]
+    idx, parts = [], []
+    tmp = os.path.join(A.out, "sp.jpg")
+    try:
+        for k, (a, b) in enumerate(ranges):
+            ws = [w for w in kept if a - 0.05 <= (w["s"] + w["e"]) / 2 < b]
+            if not ws or b - a < 0.9 or any(z0 < b and z1 > a for z0, z1 in zeig):
+                continue
+            idx.append(k)
+            parts.append({"text": f"Abschnitt {k} ({b - a:.1f} s, Text: „{' '.join(w['t'] for w in ws)[:70]}“). ANFANG (0,0 / 0,2 / 0,5 s), dann ENDE (−0,5 / −0,2 / 0,0 s):"})
+            for tq in (a + 0.02, a + 0.2, a + 0.5, b - 0.5, b - 0.2, b - 0.03):
+                run(["ffmpeg", "-v", "error", "-y", "-ss", f"{max(0.0, tq):.3f}", "-i", A.src, "-frames:v", "1", "-vf", "scale=260:-2", "-q:v", "6", tmp])
+                parts.append({"inline_data": {"mime_type": "image/jpeg", "data": base64.b64encode(open(tmp, "rb").read()).decode()}})
+            if len(idx) >= 14:
+                break
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        if not idx:
+            return ranges
+        res = gemini(
+            "Du bist ein erfahrener Cutter und prüfst die Schnittstellen eines Kurzvideos, bevor es zum Kunden geht. Zu jedem "
+            "Abschnitt siehst du drei Bilder vom ANFANG und drei vom ENDE. Beurteile nur, was man im Bild sieht:\n"
+            "ANFANG – ist die Person schon bereit und beim Sprechen/Handeln? Fehler: Sie richtet sich noch ein, schaut noch weg "
+            "oder nach unten (aufs Handy/Skript), wartet sichtbar, atmet tief ein, bewegt sich erst in Position.\n"
+            "ENDE – hört der Abschnitt auf, solange die Person noch „im Satz“ ist? Fehler: Sie ist sichtbar fertig und dreht "
+            "sich weg, schaut zum Kameramann, greift nach etwas, lässt die Haltung fallen, grinst/lacht nach dem Satz.\n"
+            "STÖRUNG – eine zweite Person oder fremde Hand kommt ins Bild, etwas wird hereingereicht, jemand läuft durch.\n"
+            "Gib je Abschnitt an: anfang_kuerzen und ende_kuerzen in Sekunden (0, wenn alles gut ist; sonst so viel, wie vom "
+            "Rand weg muss, höchstens 0,6), stoerung (anfang / ende / keine) und in wenigen Wörtern den Grund. Im Zweifel 0 – "
+            "kürze nur, wenn der Fehler in den Bildern klar zu sehen ist.",
+            "Prüfe jetzt alle Abschnitte.", {"type": "object", "properties": {"abschnitte": {"type": "array", "items": {"type": "object", "properties": {
+                "nr": {"type": "integer"}, "anfang_kuerzen": {"type": "number"}, "ende_kuerzen": {"type": "number"},
+                "stoerung": {"type": "string"}, "grund": {"type": "string"}}, "required": ["nr", "anfang_kuerzen", "ende_kuerzen"]}}},
+                 "required": ["abschnitte"]}, parts=parts, timeout=120)
+    except Exception as e:  # noqa: BLE001
+        log(f"Schnittstellen-Prüfung nicht möglich ({e})")
+        return ranges
+    out, n_k, s_k = [list(r) for r in ranges], 0, 0.0
+    for d in (res or {}).get("abschnitte") or []:
+        k = d.get("nr")
+        if not isinstance(k, int) or k not in idx:
+            continue
+        a, b = out[k]
+        ws = [w for w in kept if a - 0.05 <= (w["s"] + w["e"]) / 2 < b]
+        ka = min(0.6, max(0.0, float(d.get("anfang_kuerzen") or 0)), max(0.0, ws[0]["s"] - 0.10 - a))
+        kb = min(0.6, max(0.0, float(d.get("ende_kuerzen") or 0)), max(0.0, b - (ws[-1]["e"] + 0.12)))
+        if ka >= 0.08 or kb >= 0.08:
+            ka, kb = (ka if ka >= 0.08 else 0.0), (kb if kb >= 0.08 else 0.0)
+            out[k] = [a + ka, b - kb]
+            n_k += 1
+            s_k += ka + kb
+            log(f"  Schnittstelle {k}: Anfang −{ka:.2f} s, Ende −{kb:.2f} s – {str(d.get('grund') or '')[:70]}")
+    STATS["schnittstellen_pruefung"] = {"geprueft": len(idx), "gekuerzt": n_k, "sekunden": round(s_k, 2)}
+    log(f"Schnittstellen-Prüfung (Bild): {len(idx)} Abschnitte angesehen, {n_k} am Rand gekürzt ({s_k:.2f} s)")
+    return out
+
+
 def split_joins(ranges, kept):
     """Clip-Grenze mitten in einem Abschnitt → dort trennen (eigener Ausschnitt je Clip), danach Regel 109."""
     if not (PLAN and PLAN.get("joins")):
@@ -4149,6 +4269,33 @@ def split_joins(ranges, kept):
     return trim_joins(split, kept, PLAN["joins"])
 
 
+def wortluecken(ranges, kept):
+    """Wortgenau (09.10.2026): Liegt zwischen zwei behaltenen, sauber verorteten Wörtern eine Lücke ≥ 0,45 s, steckt darin
+    etwas, das die Erkennung nicht als Wort gehört hat – meist ein „ähm“, ein Atemzug oder ein Schmatzen. Leise Lücken schneidet
+    der normale Weg schon; laute blieben bisher stehen (Testlauf Novus-Prozess: vier „ähm“ im fertigen Clip). Die Lücke wird
+    bis auf den Ausklang des Wortes davor (0,12 s) und den Anlauf des Wortes danach (0,07 s) herausgenommen. Nur bei
+    Einzelvideos – in Ordner-Videos füllt dort oft eine Handlung das Bild."""
+    if os.environ.get("VELOX_WORTGENAU", "0") != "1" or PLAN:
+        return ranges
+    ks = sorted((w for w in kept if "s0" in w), key=lambda w: w["s"])
+    out, n_ = [], 0
+    for a, b in ranges:
+        cur = a
+        ws = [w for w in ks if a - 0.01 <= w["s"] and w["e"] <= b + 0.01]
+        for w1, w2 in zip(ws, ws[1:]):
+            if w2["i"] == w1["i"] + 1 and w2["s"] - w1["e"] >= 0.45:
+                x, y = w1["e"] + 0.12, w2["s"] - 0.07
+                if y - x >= 0.2 and x - cur >= 0.15:
+                    out.append([cur, x])
+                    cur = y
+                    n_ += 1
+        out.append([cur, b])
+    if n_:
+        STATS["wortluecken"] = n_
+        log(f"Wortgenau: {n_} Lücken zwischen Wörtern herausgenommen (nicht erkannte Laute)")
+    return out
+
+
 def make_cut(n, m, step):
     """Schnitt eines Moments bis zum fertigen Schnitt-Video (ohne Untertitel): Schnittliste, Rendern, Hörprobe
     (sicherer Neuschnitt bei angeschnittenen Wörtern), Fetzen am Anfang/Ende wegschneiden."""
@@ -4159,7 +4306,8 @@ def make_cut(n, m, step):
     choose_speed(kept)
     ranges = split_joins(ranges, kept)
     ranges, kept = limit60(ranges, kept)
-    ranges = tidy(sprachkanten(tidy(ranges), kept))
+    ranges = tidy(wortluecken(tidy(sprachkanten(tidy(ranges), kept)), kept))
+    ranges = tidy(schnittstellen_pruefung(ranges, kept))
     if os.environ.get("VELOX_DEBUG"):  # Fehlersuche: Wörter (mit „raus“) und Schnittliste ablegen
         kid = {w["i"] for w in kept}
         json.dump({"words": [[w["t"], round(w["s"], 2), round(w["e"], 2), w["i"] in kid] for w in words],
@@ -4178,7 +4326,8 @@ def make_cut(n, m, step):
         # Fehler bis 06.10.: im sicheren Modus fehlte die Trennung an den Clip-Grenzen (und damit Regel 109) – bei Malo's
         # lief zweimal genau dieser Pfad, die Abschnitte gingen dann wieder über Clip-Wechsel hinweg.
         ranges, kept = limit60(split_joins(ranges, kept), kept)
-        ranges = tidy(sprachkanten(tidy(ranges), kept))
+        ranges = tidy(wortluecken(tidy(sprachkanten(tidy(ranges), kept)), kept))
+        ranges = tidy(schnittstellen_pruefung(ranges, kept))
         if os.environ.get("VELOX_DEBUG"):  # Fehlersuche: auch die Schnittliste des sicheren Modus ablegen
             kid = {w["i"] for w in kept}
             json.dump({"words": [[w["t"], round(w["s"], 2), round(w["e"], 2), w["i"] in kid] for w in words],

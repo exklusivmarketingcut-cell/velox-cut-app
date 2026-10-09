@@ -101,6 +101,10 @@ for k, f in enumerate(videos):
     clips.append({"id": f"C{len(clips) + 1}", "file": f, **info})
 if not clips:
     sys.exit("Die Videos ließen sich nicht lesen.")
+# Inhaber 09.10.: eigener B-Roll-Bereich im Studio. Was der Kunde dort hochlädt, trägt „broll__“ im Dateinamen und ist
+# sicher KEIN Sprech-Clip – auch wenn im Hintergrund jemand redet. Es dient nur als Zwischenschnitt über der Stimme.
+for c in clips:
+    c["kunde_broll"] = "broll__" in os.path.basename(c["file"]).lower()
 
 # ─────────────────────────────── 2. Was wird gesagt? (Whisper) ───────────────────────────────
 stage(f"Hört sich {len(clips)} Clips an …")
@@ -109,7 +113,8 @@ import mlx_whisper  # noqa: E402
 SENT_END = re.compile(r"[.!?…]$")
 for c in clips:
     c["sents"] = []
-    if not c["audio"]:
+    c["talk"] = False
+    if not c["audio"] or c["kunde_broll"]:
         continue
     wav = os.path.join(A.out, "m.wav")
     run(["ffmpeg", "-v", "error", "-y", "-i", c["file"], "-vn", "-ac", "1", "-ar", "16000", wav])
@@ -246,6 +251,9 @@ with ThreadPoolExecutor(4) as ex:
             if c:
                 c.update(inhalt=d.get("inhalt", ""), einstellung=d.get("einstellung", ""), qualitaet=d.get("qualitaet", ""),
                          broll_ok=bool(d.get("broll")))
+for c in clips:
+    if c.get("kunde_broll"):
+        c["broll_ok"] = True
 
 # B-Roll-Material: Stellen OHNE Sprache (ganze stumme Clips, Pausen in Sprech-Clips ≥ 1,5 s – z. B. wenn jemand den Corndog
 # in die Kamera hält). Je Stelle ein Bild aus der Mitte → die KI sagt, was zu sehen ist und ob es als Zwischenschnitt taugt.
@@ -290,6 +298,9 @@ with ThreadPoolExecutor(4) as ex:
             m = next((m for m in mats if m["id"] == d.get("id")), None)
             if m:
                 m.update(inhalt=d.get("inhalt", ""), ok=bool(d.get("broll")))
+for m in mats:
+    if m["c"].get("kunde_broll"):
+        m["ok"] = True
 mats = [m for m in mats if m.get("ok")]
 
 
@@ -367,7 +378,8 @@ stage("Plant den Schnitt aus allen Clips …")
 lines = []
 for c in clips:
     head = f"### {c['id']} ({c['dur']:.1f} s) – Bild: {c.get('inhalt', '?')} | {c.get('einstellung', '')} | Qualität: {c.get('qualitaet', '?')}"
-    lines.append(head + (" | B-Roll geeignet" if c.get("broll_ok") else ""))
+    lines.append(head + (" | B-Roll geeignet" if c.get("broll_ok") else "")
+                 + (" | VOM KUNDEN ALS B-ROLL HOCHGELADEN – bevorzugt als Zwischenschnitt genau beim passenden Wort verwenden, nie als Sprechteil" if c.get("kunde_broll") else ""))
     for k, st in enumerate(c["sents"]):
         lines.append(f"  {c['id']}.{k} [{st[0]['s']:.1f}–{st[-1]['e']:.1f}s] {' '.join(w['t'] for w in st)}")
 for m in mats:
@@ -1001,23 +1013,31 @@ def build(plan, odir):
         s1 = min(c["dur"], next_s - 0.05, ws[-1]["e"] + (1.3 if n == len(subs) - 1 else 0.6))
         s1 = max(s1, ws[-1]["e"] + 0.05)
         s0, s1 = p.get("s0", s0), p.get("s1", s1)  # Regel 111: die Stücke bringen ihre Grenzen mit
-        out = os.path.join(odir, f"teil_{n:02d}.mp4")
+        # Inhaber 09.10.: „Der Ton kommt verzögert … an der Theke ist er noch nicht bereit zu reden, dann kommt ein Cut.“
+        # Ursache gemessen am Malo's-Rohschnitt: Jedes Teilstück wurde einzeln mit AAC-Ton kodiert; AAC hängt je Datei rund
+        # 20–40 ms an. Bei 25 Teilstücken (Bildfolge) lief der Ton am Ende ~0,5 s hinter dem Bild – „das Gleiche“ war schon
+        # über dem nächsten Clip zu hören. Jetzt hat jedes Teilstück eine exakte Länge in ganzen Bildern, der Ton ist
+        # unkomprimiert und auf die Probe genau gleich lang; komprimiert wird der Ton erst EINMAL am Ende.
+        nfr = max(1, round((s1 - s0) * FPS))
+        D = nfr / FPS
+        s1 = s0 + D
+        out = os.path.join(odir, f"teil_{n:02d}.mkv")
         vf = f"scale={TW}:{TH}:force_original_aspect_ratio=increase,crop={TW}:{TH},fps={FPS:.3f},setsar=1"
-        enc = ["-af", "aresample=48000,afade=t=in:d=0.02", "-ac", "2", "-c:v", "libx264", "-preset", "veryfast", "-crf", "17",
-               "-c:a", "aac", "-b:a", "256k"]
+        af = f"aresample=48000,afade=t=in:d=0.02,apad,atrim=0:{D:.6f}"
+        enc = ["-ac", "2", "-c:v", "libx264", "-preset", "veryfast", "-crf", "17", "-frames:v", str(nfr), "-c:a", "pcm_s16le"]
         if p.get("zeig"):  # Regel 114: stummes Zeige-Stück (Bild der Handlung, kein Ton – die Pipeline legt Musik darunter)
-            run(["ffmpeg", "-v", "error", "-y", "-ss", f"{s0:.3f}", "-to", f"{s1:.3f}", "-i", c["file"], "-f", "lavfi", "-t", f"{s1 - s0:.3f}",
-                 "-i", "anullsrc=r=48000:cl=stereo", "-map", "0:v:0", "-map", "1:a:0", "-vf", vf, "-t", f"{s1 - s0:.3f}"] + enc + [out])
+            run(["ffmpeg", "-v", "error", "-y", "-ss", f"{s0:.3f}", "-t", f"{D + 0.5:.3f}", "-i", c["file"], "-f", "lavfi", "-t", f"{D:.6f}",
+                 "-i", "anullsrc=r=48000:cl=stereo", "-map", "0:v:0", "-map", "1:a:0", "-vf", vf, "-af", f"atrim=0:{D:.6f}"] + enc + [out])
             if zeigen and abs(zeigen[-1][1] - t) < 0.01:
                 zeigen[-1][1] = round(t + s1 - s0, 3)
             else:
                 zeigen.append([round(t, 3), round(t + s1 - s0, 3)])
         elif p.get("shift"):  # Ton des Satzes, Bild aus der Handlung danach (Regel 111)
-            run(["ffmpeg", "-v", "error", "-y", "-ss", f"{s0:.3f}", "-to", f"{s1:.3f}", "-i", c["file"],
-                 "-ss", f"{s0 + p['shift']:.3f}", "-t", f"{s1 - s0:.3f}", "-i", c["file"], "-map", "1:v:0", "-map", "0:a:0",
-                 "-vf", vf, "-t", f"{s1 - s0:.3f}"] + enc + [out])
+            run(["ffmpeg", "-v", "error", "-y", "-ss", f"{s0:.3f}", "-t", f"{D + 0.5:.3f}", "-i", c["file"],
+                 "-ss", f"{s0 + p['shift']:.3f}", "-t", f"{D + 0.5:.3f}", "-i", c["file"], "-map", "1:v:0", "-map", "0:a:0",
+                 "-vf", vf, "-af", af] + enc + [out])
         else:
-            run(["ffmpeg", "-v", "error", "-y", "-ss", f"{s0:.3f}", "-to", f"{s1:.3f}", "-i", c["file"], "-vf", vf] + enc + [out])
+            run(["ffmpeg", "-v", "error", "-y", "-ss", f"{s0:.3f}", "-t", f"{D + 0.5:.3f}", "-i", c["file"], "-vf", vf, "-af", af] + enc + [out])
         for w in ([] if p.get("zeig") else ws):
             ref_s = sent_of[id(w)]
             if id(w) in first_of:
@@ -1030,17 +1050,23 @@ def build(plan, odir):
         t += s1 - s0
         if p.get("extra"):  # die Handlung läuft nach dem Satz noch weiter → stumm anhängen (im Original redet er dort oft schon
             ea, eb = p["extra"]  # weiter); die Pipeline lässt diese Strecke stehen und legt Musik darunter (plan „zeigen“)
-            out2 = os.path.join(odir, f"teil_{n:02d}_h.mp4")
-            run(["ffmpeg", "-v", "error", "-y", "-ss", f"{ea:.3f}", "-to", f"{eb:.3f}", "-i", c["file"], "-f", "lavfi", "-t", f"{eb - ea:.3f}",
-                 "-i", "anullsrc=r=48000:cl=stereo", "-map", "0:v:0", "-map", "1:a:0", "-vf", vf, "-t", f"{eb - ea:.3f}"] + enc + [out2])
+            nf2 = max(1, round((eb - ea) * FPS))
+            D2 = nf2 / FPS
+            eb = ea + D2
+            out2 = os.path.join(odir, f"teil_{n:02d}_h.mkv")
+            run(["ffmpeg", "-v", "error", "-y", "-ss", f"{ea:.3f}", "-t", f"{D2 + 0.5:.3f}", "-i", c["file"], "-f", "lavfi", "-t", f"{D2:.6f}",
+                 "-i", "anullsrc=r=48000:cl=stereo", "-map", "0:v:0", "-map", "1:a:0", "-vf", vf, "-af", f"atrim=0:{D2:.6f}",
+                 "-ac", "2", "-c:v", "libx264", "-preset", "veryfast", "-crf", "17", "-frames:v", str(nf2), "-c:a", "pcm_s16le", out2])
             files_c.append(out2)
             zeigen.append([round(t, 3), round(t + eb - ea, 3)])
             t += eb - ea  # bewusst KEINE Clip-Grenze in „joins“: Bild läuft nahtlos weiter, die Pipeline soll hier nicht trennen
     lst = os.path.join(odir, "teile.txt")
     open(lst, "w").write("".join(f"file '{f}'\n" for f in files_c))
     src = os.path.join(odir, "montage.mp4")
-    run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", src])
-    for f in files_c + [lst]:
+    roh = os.path.join(odir, "montage_roh.mkv")
+    run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", roh])
+    run(["ffmpeg", "-v", "error", "-y", "-i", roh, "-c:v", "copy", "-c:a", "aac", "-b:a", "256k", src])
+    for f in files_c + [lst, roh]:
         os.remove(f)
 
     # B-Roll-Stücke vorbereiten (9:16, ohne Ton) und an die Satz-Zeiten in der zusammengesetzten Datei hängen

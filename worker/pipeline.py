@@ -194,51 +194,43 @@ if len(WORDS) < 3:
 # Wörter und zu frühe/späte Schnitte (Novus-Videos des Inhabers). Ein zweites Modell legt jedes erkannte Wort auf ~20 ms genau
 # in den Ton. Übernommen wird nur, wenn das Ergebnis insgesamt zur Erkennung passt (sonst bleiben die alten Zeiten) und je
 # Wort nur, wenn es nicht weiter als 1,2 s abweicht. Bis zur Abnahme nur mit VELOX_WORTGENAU=1 aktiv (Testläufe).
-if os.environ.get("VELOX_WORTGENAU", "0") == "1" and LANG == "de":
-    # Zweites Hinhören nur auf Füll-Laute: Die Erkennung verschluckt viele „ähm“ (Testlauf 09.10.: 3 von 6 gefunden, vier
-    # blieben im fertigen Clip). Mit einer Vorgabe voller Füll-Laute hört sie mehr davon; was sie dort zusätzlich als
-    # „äh/ähm“ hört und im ersten Text fehlt, wird als Füllwort eingefügt – die wortgenaue Zuordnung legt es dann exakt.
-    try:
-        _FL = {"äh", "ähm", "ähh", "ähmm", "öh", "öhm", "ehm", "hm", "hmm"}
-        _trf = mlx_whisper.transcribe(wav_asr, **ASR, hallucination_silence_threshold=2.0, temperature=0,
-                                      initial_prompt="Äh... ähm... also... äh, ja, genau, ähm.")
-        _nf = 0
-        for _sg in _trf["segments"]:
-            for _w in _sg.get("words", []):
-                _t = re.sub(r"[^\wäöüß]", "", _w["word"].lower())
-                if _t not in _FL:
-                    continue
-                _s, _e = float(_w["start"]), float(_w["end"])
-                if any(re.sub(r"[^\wäöüß]", "", x["t"].lower()) in _FL and abs(x["s"] - _s) < 0.8 for x in WORDS):
-                    continue
-                _k = next((k for k, x in enumerate(WORDS) if x["s"] > _s), len(WORDS))
-                WORDS.insert(_k, {"t": "ähm", "s": _s, "e": max(_e, _s + 0.15), "extra": True})
-                _nf += 1
-        if _nf:
-            STATS["fuell_laute_nachgehoert"] = _nf
-            log(f"Füll-Laute: {_nf} zusätzliche „ähm“ beim zweiten Hinhören gefunden")
-    except Exception as _ef:  # noqa: BLE001
-        log(f"Zweites Hinhören auf Füll-Laute nicht möglich ({_ef})")
+WG_EXTRA = []   # zusätzlich gehörte Füll-Laute (wortgenaue Zeiten) – werden beim Schnitt herausgenommen
 if os.environ.get("VELOX_WORTGENAU", "0") == "1":
+    # Wichtig (Testläufe 09./10.10.): Die Satzauswahl (Story, Anläufe, Satzgrenzen) ist an den Wortzeiten der Erkennung geeicht.
+    # Als die genauen Zeiten und die zusätzlichen „ähm“ schon dort galten, fielen Satzanfänge weg („Willst du eine“ vor
+    # „Mittagspause“; „Ich würde eher erstmal gucken …“). Deshalb: Die genauen Zeiten werden hier nur AUSGERECHNET
+    # (w["sa"], w["ea"]) und erst beim Schneiden eingesetzt (make_cut → wg_einsetzen). Bis dahin sieht alles die alten Zeiten.
     try:
+        _ex = []
+        if LANG == "de":
+            # Zweites Hinhören nur auf Füll-Laute: Die Erkennung verschluckt viele „ähm“. Mit einer Vorgabe voller Füll-Laute
+            # hört sie mehr davon; was im ersten Text fehlt, wird beim Schnitt als eigenes Stück herausgenommen.
+            _FL = {"äh", "ähm", "ähh", "ähmm", "öh", "öhm", "ehm", "hm", "hmm"}
+            _trf = mlx_whisper.transcribe(wav_asr, **ASR, hallucination_silence_threshold=2.0, temperature=0,
+                                          initial_prompt="Äh... ähm... also... äh, ja, genau, ähm.")
+            for _sg in _trf["segments"]:
+                for _w in _sg.get("words", []):
+                    _t = re.sub(r"[^\wäöüß]", "", _w["word"].lower())
+                    _s, _e = float(_w["start"]), float(_w["end"])
+                    if _t in _FL and not any(re.sub(r"[^\wäöüß]", "", x["t"].lower()) in _FL and abs(x["s"] - _s) < 0.8 for x in WORDS):
+                        _ex.append({"t": "ähm", "s": _s, "e": max(_e, _s + 0.15), "extra": True})
         from wortgenau import wortzeiten
-        _wz = wortzeiten(wav, [w["t"] for w in WORDS])
+        _alle = sorted(WORDS + _ex, key=lambda x: x["s"])
+        _wz = wortzeiten(wav, [x["t"] for x in _alle])
         if _wz:
-            _dev = sorted(abs(z[0] - w["s"]) for z, w in zip(_wz, WORDS))
-            if _dev[int(len(_dev) * 0.9)] < 1.0:
+            _dev = sorted(abs(z[0] - x["s"]) for z, x in zip(_wz, _alle) if not x.get("extra"))
+            if _dev and _dev[int(len(_dev) * 0.9)] < 1.0:
                 _n = 0
-                for z, w in zip(_wz, WORDS):
-                    if abs(z[0] - w["s"]) < 1.2 and z[1] > z[0]:
-                        w["s0"], w["e0"] = w["s"], w["e"]
-                        w["s"], w["e"] = float(z[0]), float(z[1])
-                        _n += 1
-                for a_, b_ in zip(WORDS, WORDS[1:]):   # Reihenfolge und Abstände bleiben gültig
-                    if b_["s"] < a_["e"]:
-                        b_["s"] = a_["e"]
-                    if b_["e"] < b_["s"] + 0.02:
-                        b_["e"] = b_["s"] + 0.02
-                STATS["wortgenau"] = {"woerter": _n, "von": len(WORDS), "abw_median": round(_dev[len(_dev) // 2], 2)}
-                log(f"Wortgenau: {_n} von {len(WORDS)} Wörtern neu verortet (mittlere Verschiebung {_dev[len(_dev) // 2]:.2f} s)")
+                for z, x in zip(_wz, _alle):
+                    if abs(z[0] - x["s"]) < 1.2 and z[1] > z[0]:
+                        if x.get("extra"):
+                            WG_EXTRA.append((float(z[0]), float(z[1])))
+                        else:
+                            x["sa"], x["ea"] = float(z[0]), float(z[1])
+                            _n += 1
+                STATS["wortgenau"] = {"woerter": _n, "von": len(WORDS), "abw_median": round(_dev[len(_dev) // 2], 2), "fuell_extra": len(WG_EXTRA)}
+                log(f"Wortgenau: {_n} von {len(WORDS)} Wörtern neu verortet (mittlere Verschiebung {_dev[len(_dev) // 2]:.2f} s), "
+                    f"{len(WG_EXTRA)} zusätzliche Füll-Laute gehört")
             else:
                 log("Wortgenau: Ergebnis passt nicht zur Erkennung – alte Wortzeiten bleiben")
     except Exception as _ew:  # noqa: BLE001
@@ -343,6 +335,17 @@ def recover_swallowed():
         if len(ws) < 2 or _looks_hallucinated(ws):
             continue
         new = [{"t": x["word"].strip(), "s": x0 + x["start"], "e": x0 + x["end"]} for x in ws if x0 + x["end"] > a - 0.05]
+        # Golden Thai, 08.–09.10. (fünfmal derselbe Fehler „Mittagspause ohne Foodkoma“ ohne „Willst du eine“): Das Nachhören
+        # ERFAND aus dem gedehnten Wort „Mittagspause“ ein zweites „Willst du eine Mittagspause?“ – die drei Wörter lagen in
+        # der Stille davor. Danach gab es den Satzanfang doppelt, und mal wurde die echte, mal die erfundene Fassung
+        # gestrichen. Nachgehörte Wörter zählen nur, wenn dort wirklich gesprochen wird, und nie, wenn sie bloß die Wörter
+        # direkt davor wiederholen.
+        new = [x for x in new if speech_frac(x["s"], x["e"]) >= 0.35]
+        davor = [norm(x["t"]) for x in WORDS[max(0, k0 - 6):k0]]
+        for L in range(min(len(new), 6), 0, -1):
+            if davor[-L:] == [norm(x["t"]) for x in new[:L]] and all(davor[-L:]):
+                new = new[L:]
+                break
         if k1 >= k0:  # langes Wort ersetzen – nur wenn das Wort selbst wieder vorkommt (sonst eher Fehlhörer)
             if len(new) < 2 or norm(WORDS[k0]["t"]) not in {norm(x["t"]) for x in new}:
                 continue
@@ -468,7 +471,7 @@ def sentences(words):
     Stück eines kaputten Anlaufs im Video, und die saubere letzte Fassung flog raus.)"""
     out, cur = [], []
     for w in words:
-        if cur and w["s"] - cur[-1]["e"] >= 1.2:
+        if cur and w.get("s0", w["s"]) - cur[-1].get("e0", cur[-1]["e"]) >= 1.2:   # s0/e0 = Zeiten der Erkennung (nach wg_einsetzen)
             out.append(cur)
             cur = []
         cur.append(w)
@@ -2449,8 +2452,17 @@ def hear(path):
                                initial_prompt=((BRAND + ". ") if BRAND else "") + ("Ähm, äh." if LANG == "de" else ""))
     os.remove(tmp)
     STATS["fillers_heard"] = len(re.findall(r"\b(ähm|äh|öhm|ähh)\b", r.get("text", "").lower()))
-    return [{"t": x["word"].strip(), "s": float(x["start"]), "e": float(x["end"]), "p": float(x.get("probability", 1.0))}
-            for sg in r["segments"] for x in sg.get("words", []) if x["word"].strip()]
+    roh = [{"t": x["word"].strip(), "s": float(x["start"]), "e": float(x["end"]), "p": float(x.get("probability", 1.0))}
+           for sg in r["segments"] for x in sg.get("words", []) if x["word"].strip()]
+    # Bindestrich-Teile sind EIN Wort – wie in der ersten Erkennung (Lauf 09.10. nachts: Im Text stand „Capri-Sonne“, die
+    # Hörprobe lieferte „Capri“ + „-Sonne.“; das „-Sonne.“ galt als Wortfetzen am Ende und wurde abgeschnitten – Note 4/10).
+    out = []
+    for h in roh:
+        if out and re.match(r"-\w", h["t"]) and h["s"] - out[-1]["e"] < 0.5:
+            out[-1] = {**out[-1], "t": out[-1]["t"] + h["t"], "e": h["e"]}
+        else:
+            out.append(h)
+    return out
 
 
 OUT_TIME = {}  # Wort-Nummer → Zeitpunkt im fertigen Clip
@@ -3323,9 +3335,10 @@ def burn(idx, cut, words_out, title, ranges=None, kept=None):
     out = os.path.join(A.out, f"clip-{idx}.mp4")
     ass = os.path.join(A.out, f"clip-{idx}.ass")
     # Premium-Grafiken neu (09.10.2026, premium2.py): KI wählt Bausteine aus den Vorbildern des Inhabers (Vollbild-Karte, Sprecher
-    # als Karte, Text hinter der Person, Zähler, Listen …), gezeichnet mit dem Remotion-Baukasten. Bis zur Abnahme nur mit
-    # VELOX_PREMIUM2=1. B-Roll und Bilder aus dem Schnittplan gehen mit (Vollbild, Karte unter dem Sprecher oder Handy-Mockup).
-    if PREM and os.environ.get("VELOX_PREMIUM2", "0") == "1":
+    # als Karte, Text hinter der Person, Zähler, Listen …), gezeichnet mit dem Remotion-Baukasten. B-Roll und Bilder aus dem Schnittplan gehen mit (Vollbild, Karte unter dem Sprecher oder Handy-Mockup).
+    # Seit 10.10.2026 Standard für Premium (Inhaber: „soll rein“); VELOX_PREMIUM2=0 schaltet auf den alten Weg zurück. Mit
+    # gewünschter Hintergrundmusik läuft vorerst der alte Weg – der neue mischt noch keine Musik.
+    if PREM and os.environ.get("VELOX_PREMIUM2", "1") != "0" and A.music in ("", "none"):
         try:
             import premium2
             _br = [dict(file=b_["file"], t=out_at(b_["t_src"]), dur=b_.get("dur", 2.4)) for b_ in (PLAN or {}).get("broll") or []]
@@ -4333,13 +4346,44 @@ def split_joins(ranges, kept):
     return trim_joins(split, kept, PLAN["joins"])
 
 
+def wg_einsetzen():
+    """Wortgenaue Zeiten gelten ab dem Schnitt (einmalig für alle Wörter). Davor – bei der Satzauswahl – gelten die alten."""
+    if STATS.get("wg_eingesetzt"):
+        return
+    n_ = 0
+    for w in WORDS:
+        if "sa" in w and "s0" not in w:
+            w["s0"], w["e0"] = w["s"], w["e"]
+            w["s"], w["e"] = w["sa"], w["ea"]
+            n_ += 1
+    for a_, b_ in zip(WORDS, WORDS[1:]):   # Reihenfolge und Abstände bleiben gültig
+        if b_["s"] < a_["e"]:
+            b_["s"] = a_["e"]
+        if b_["e"] < b_["s"] + 0.02:
+            b_["e"] = b_["s"] + 0.02
+    STATS["wg_eingesetzt"] = n_
+
+
 def wortluecken(ranges, kept):
     """Wortgenau (09.10.2026): Liegt zwischen zwei behaltenen, sauber verorteten Wörtern eine Lücke ≥ 0,45 s, steckt darin
     etwas, das die Erkennung nicht als Wort gehört hat – meist ein „ähm“, ein Atemzug oder ein Schmatzen. Leise Lücken schneidet
     der normale Weg schon; laute blieben bisher stehen (Testlauf Novus-Prozess: vier „ähm“ im fertigen Clip). Die Lücke wird
     bis auf den Ausklang des Wortes davor (0,12 s) und den Anlauf des Wortes danach (0,07 s) herausgenommen. Nur bei
     Einzelvideos – in Ordner-Videos füllt dort oft eine Handlung das Bild."""
-    if os.environ.get("VELOX_WORTGENAU", "0") != "1" or PLAN:
+    if os.environ.get("VELOX_WORTGENAU", "0") != "1":
+        return ranges
+    if WG_EXTRA:   # zusätzlich gehörte „ähm“: als eigenes Stück herausnehmen (nie in ein behaltenes Wort hinein)
+        _o = []
+        for a, b in ranges:
+            cur = a
+            for fs, fe in sorted(WG_EXTRA):
+                lo = max([w["e"] for w in kept if w["e"] <= fs + 0.05] + [a]); hi = min([w["s"] for w in kept if w["s"] >= fe - 0.05] + [b])
+                x, y = max(fs - 0.02, lo + 0.03, cur), min(fe + 0.02, hi - 0.03, b)
+                if a <= fs and fe <= b and y - x >= 0.12 and x - cur >= 0.1 and b - y >= 0.1:
+                    _o.append([cur, x]); cur = y
+            _o.append([cur, b])
+        ranges = _o
+    if PLAN:
         return ranges
     ks = sorted((w for w in kept if "s0" in w), key=lambda w: w["s"])
     out, n_ = [], 0
@@ -4363,6 +4407,7 @@ def wortluecken(ranges, kept):
 def make_cut(n, m, step):
     """Schnitt eines Moments bis zum fertigen Schnitt-Video (ohne Untertitel): Schnittliste, Rendern, Hörprobe
     (sicherer Neuschnitt bei angeschnittenen Wörtern), Fetzen am Anfang/Ende wegschneiden."""
+    wg_einsetzen()
     words = WORDS[m["start"]:m["end"] + 1]
     ranges, kept = keep_ranges(words, extra_drop=m.get("drop") or set())
     if not ranges:

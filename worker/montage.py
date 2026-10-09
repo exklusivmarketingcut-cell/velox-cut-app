@@ -1039,6 +1039,9 @@ def build(plan, odir):
             # Der letzte gesprochene Satz des Videos ist der Schluss und bleibt immer (Kontroll-Lauf 09.10.: Die KI ließ einmal
             # „So sieht die Junior Box bei Malo's aus …“ weg – das Video endete in der Küche statt an der Theke).
             if wahl and len(nach) - 1 not in wahl:
+                # hat die KI stattdessen eine frühere Verabschiedung gewählt („Und das war's mit der Junior Box“), fällt die weg –
+                # sonst verabschiedet er sich und präsentiert danach noch einmal (Lauf 10.10.: „unlogische Reihenfolge am Ende“)
+                wahl = [i for i in wahl if not re.search(r"das war.?s\b|das wars\b|tschüss|bis zum nächsten", nach[i]["satz"], re.I)] or wahl[:1]
                 wahl = sorted(set(wahl) | {len(nach) - 1})
                 while len(wahl) > 2 and sum(nach[i]["te"] - nach[i]["ta"] for i in wahl) > 14.0:
                     wahl.pop(-2)       # dafür fällt der Satz davor weg, nie die Fertig-Meldung und nie der Schluss

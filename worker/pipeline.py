@@ -4320,7 +4320,10 @@ def schnittstellen_pruefung(ranges, kept):
         a, b = out[k]
         ws = [w for w in kept if a - 0.05 <= (w["s"] + w["e"]) / 2 < b]
         ka = min(0.6, max(0.0, float(d.get("anfang_kuerzen") or 0)), max(0.0, ws[0]["s"] - 0.10 - a))
-        kb = min(0.6, max(0.0, float(d.get("ende_kuerzen") or 0)), max(0.0, b - (ws[-1]["e"] + 0.12)))
+        # Am ENDE DES VIDEOS bleibt mehr Ausklang (0,35 s): dort blendet der Ton aus – mit 0,12 s klang „Capri-Sonne“ für die
+        # Abnahme „mitten im Wort abgeschnitten“ (Lauf 10.10.).
+        aus = 0.35 if k == len(out) - 1 else 0.12
+        kb = min(0.6, max(0.0, float(d.get("ende_kuerzen") or 0)), max(0.0, b - (ws[-1]["e"] + aus)))
         if ka >= 0.08 or kb >= 0.08:
             ka, kb = (ka if ka >= 0.08 else 0.0), (kb if kb >= 0.08 else 0.0)
             out[k] = [a + ka, b - kb]

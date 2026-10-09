@@ -225,6 +225,10 @@ for w in WORDS:
             _m[-1]["t"].endswith(".") and re.fullmatch(r"\d{1,4}\.?[,!?]?", w["t"]))) \
             and w["s"] - _m[-1]["e"] < 0.35:
         _m[-1] = {**_m[-1], "t": _m[-1]["t"] + w["t"].lstrip("."), "e": w["e"]}
+    elif _m and re.match(r"-\w", w["t"]) and w["s"] - _m[-1]["e"] < 0.5:
+        # Bindestrich-Wörter, die die Erkennung trennt („Capri“ „-Sonne“, „Thai“ „-Küche“): im Untertitel stand sonst
+        # „-SONNE“ allein (Malo's 09.10.). Sie sind EIN Wort.
+        _m[-1] = {**_m[-1], "t": _m[-1]["t"] + w["t"], "e": w["e"]}
     else:
         _m.append(w)
 WORDS = _m

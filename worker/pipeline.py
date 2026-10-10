@@ -32,6 +32,7 @@ ap.add_argument("--words", default="", help="Namen & Marken des Kunden (z. B. �
 A = ap.parse_args()
 PLAN = json.load(open(A.plan)) if A.plan and os.path.exists(A.plan) else None
 BRAND = re.sub(r"\s+", " ", A.words).strip()[:300]  # Namen/Marken, die im Video vorkommen (Kunde trägt sie im Studio ein)
+VIRAL = A.style == "viral"
 LOUD = A.style in ("viral", "premium")  # Viral und Premium: harte Zoom-Schnitte, Punches, Sounds, Hook-Titel
 PREM = A.style == "premium"             # Premium zusätzlich: 3D-Titel, Motion Graphics (Schlüsselwörter), Zähler, Kino-Look
 
@@ -347,6 +348,13 @@ def recover_swallowed():
                 new = new[L:]
                 break
         if k1 >= k0:  # langes Wort ersetzen – nur wenn das Wort selbst wieder vorkommt (sonst eher Fehlhörer)
+            # Lauf 10.10.: Aus „Mittagspause [ohne Foodkoma]“ wurde beim Nachhören „Mittagspause umgehen?“ – der Ausschnitt
+            # endete mitten in den FOLGE-Wörtern, die Erkennung dichtete daraus ein Wort. Was NACH dem gesuchten Wort
+            # kommt, gehört schon zu den nächsten Wörtern des Textes und wird nie eingefügt.
+            ziel = norm(WORDS[k0]["t"])
+            letzt = max((i_ for i_, x in enumerate(new) if norm(x["t"]) == ziel), default=None)
+            if letzt is not None:
+                new = new[:letzt + 1]
             if len(new) < 2 or norm(WORDS[k0]["t"]) not in {norm(x["t"]) for x in new}:
                 continue
             WORDS[k0:k1 + 1] = new
@@ -1502,8 +1510,23 @@ def plan_crops(ranges, zs=1.0, shift=None, pad=None):
     for k, (s, e) in enumerate(ranges):
         gap = s - ranges[k - 1][1] if k else 0.0
         t_a, t_out = t_out, t_out + olen(s, e)
-        if viral:
-            # Schnitt-Zooms etwas dezenter als früher – die großen Punches sitzen jetzt gezielt auf den Pointen (zoom_punches)
+        if viral and not PREM:
+            # Inhaber 10.10.: „Mal zoomt er rein, mal raus, dann zweimal kurz rein – ohne Verständnis.“ Bisher wechselte die Stufe
+            # an JEDEM Schnitt reihum durch vier Stufen. Jetzt hat der Zoom einen Grund: Die Stufe wechselt nur, wenn ein neuer
+            # Satz beginnt (neuer Gedanke = neue Einstellung: normal ↔ nah), frühestens nach 2 s. Schnitte MITTEN im Satz
+            # bleiben in derselben Einstellung; nur bei einem größeren Zeitsprung rückt das Bild ein kleines Stück (3 %),
+            # damit der Schnitt gewollt aussieht.
+            if k == 0:
+                _zl, _zs, _zt = 0, 0, 0.0
+            else:
+                _wp = next((w_ for w_ in reversed(WORDS) if w_["s"] < ranges[k - 1][1]), None)
+                if _wp and SENT_END.search(_wp["t"]) and t_a - _zt >= 2.0:
+                    _zl, _zs, _zt = 1 - _zl, 0, t_a
+                elif gap >= 0.4:
+                    _zs = 1 - _zs
+            zoom = ((1.0, 1.10)[_zl] + 0.03 * _zs) if closeup else (1.0, 1.05)[_zl]
+        elif viral:
+            # Premium (alter Weg): unverändert – der Inhaber ist mit den Premium-Zooms zufrieden
             zoom = [1.0, 1.1, 1.04, 1.14][k % 4] if closeup else [1.0, 1.06][k % 2]
         else:
             if closeup and gap >= BIG_JUMP:
@@ -2108,7 +2131,9 @@ def build_ass(words_out, path, hook=None, extra=(), hide=()):
                                "\\t(110,180,\\fscx105\\fscy105)"
                 elif j > k and dim:  # kommt gleich – schon sichtbar, leicht gedimmt
                     tag += "\\alpha&H55&"
-                elif j < k and is_emph(g[j][0]) and A.caption in ("rise", "neon", "comic", "serif"):
+                elif j < k and is_emph(g[j][0]):
+                    # Inhaber 10.10. („Clean ist zu wenig“): Zahlen, Preise und Namen bleiben nach dem Sprechen farbig – in
+                    # JEDER Untertitel-Schrift (vorher nur bei vier von zehn). Kostet nichts an Ruhe, hebt aber das Wichtige.
                     tag += "\\1c" + ACC
                 ev.append(f"Dialogue: 0,{ass_time(s)},{ass_time(e_show)},Cap,,0,0,0,,{{{tag}}}{t}")
     if hook:
@@ -2202,6 +2227,20 @@ def zoom_punches(idx, ranges):
         if w["i"] in ZOOM_WORDS and t > 1.0 and all(abs(t - p) >= 1.8 for p in pts):
             pts.append(t)
     pts.sort()
+    if not PREM:
+        # Inhaber 10.10.: Die zusätzlichen Zooms „alle 3 s“ machten zusammen mit den Schnitt-Zooms den Durchmix. Bei Viral
+        # zoomt das Bild jetzt nur noch kurz rein, wenn es etwas zu betonen gibt (Pointe, Zahl, Produkt) – mit mindestens
+        # 2,5 s Abstand. Für Bewegung dazwischen sorgt der Wechsel der Einstellung am Satzanfang (plan_crops).
+        _p2 = []
+        for t in pts:
+            if not _p2 or t - _p2[-1] >= 2.5:
+                _p2.append(t)
+        pts = _p2
+        if not any(t < 5.0 for t in pts):
+            first = next((times[w["i"]] for w in kept_ws if 1.0 <= times[w["i"]] <= 4.5 and is_emph(w["t"])), None)
+            if first is not None and all(abs(first - p) >= 2.5 for p in pts):
+                pts.insert(0, first)
+        return sorted(pts)
     # TikTok-Standard: spätestens alle ~3 s ein Zoom-Wechsel – an Satzanfängen/betonten Wörtern ergänzen
     prev_t = None
     for w in sorted(kept_ws, key=lambda w: times[w["i"]]):
@@ -3124,7 +3163,9 @@ def premium_events(fx, words_out, title, voll=True):
                     ev += text3d(f"{pre} {sv} {post}".strip(), 540, py, a, t0 + 2.0, fs, color=GRUEN, anim=True, fade=(0, 200))
             HIDE.append((t0 - 0.05, t0 + 2.0))
             f["sfx"] = "kaching" if re.search(r"€|euro|eur\b", txt, re.I) else f.get("sfx")
-        elif voll:  # Stichwort/Produkt → Karte mit Symbol, erscheint beim gesprochenen Wort (Stil-Muster vom Inhaber bestätigt 07.10.)
+        elif voll or VIRAL:  # Stichwort/Produkt → Karte mit Symbol, erscheint beim gesprochenen Wort (Stil-Muster vom Inhaber bestätigt 07.10.)
+            # Seit 10.10. auch bei Viral (Inhaber: Clean bekommt etwas dazu, also muss Viral sich wieder abheben; Premium hat
+            # inzwischen den neuen Baukasten). Bei Viral trägt die Karte das Emoji – es erscheint dann nicht noch einmal einzeln.
             ktxt = " ".join((f.get("text") or "").split())[:26]
             if not re.search(r"\d", ktxt):  # Inhaber 07.10.: sagt er „drei Cheesecakes“, steht „3 Cheesecakes“ auf der Karte
                 zw = dict(ein="1", eine="1", einen="1", zwei="2", drei="3", vier="4", fünf="5", sechs="6", sieben="7", acht="8", neun="9", zehn="10")
@@ -3352,7 +3393,8 @@ def burn(idx, cut, words_out, title, ranges=None, kept=None):
             for _rs, _re in (ranges or [])[:-1]:
                 _t0 += olen(_rs, _re)
                 _ct.append(round(_t0, 3))
-            _r = premium2.render(cut, words_out, title, out, lambda sy, us, sc: gemini(sy, us, sc, timeout=120, deep=True), cut_times=_ct,
+            _r = premium2.render(cut, words_out, title, out, lambda sy, us, sc: gemini(sy, us, sc, timeout=120, deep=True),
+                                 cut_times=(),   # Zoom-Stufen bringt der Schnitt schon mit (Inhaber: Premium-Zooms passen) – kein zweiter Zoom obendrauf
                                  logo=A.logo if A.logo and os.path.exists(A.logo) else None,
                                  accent=A.color if A.color.lower() != "#f6e27f" else None, seed_text=os.path.basename(A.src) + str(idx), log=log,
                                  brolls=_br, bilder=_bi)
@@ -3510,6 +3552,8 @@ def burn(idx, cut, words_out, title, ranges=None, kept=None):
         fx = [{**f, "t": OUT_TIME[f["i"]]} for f in FX[idx] if f["i"] in OUT_TIME]  # exakte Zeit im fertigen Clip
         snd = viral_sounds(ranges, fx)
         emo = [] if PREM else [f for f in fx if f["emoji"] and os.path.exists(os.path.join(EMOJI_DIR, f"{EMOJIS[f['emoji']]}.png"))]
+        if VIRAL:   # steht das Stichwort schon als Karte (mit Emoji) im Bild, kommt das Emoji nicht zusätzlich einzeln
+            emo = [f for f in emo if not any(abs(c["t"] - f["t"]) < 1.0 for c in CARDS)]
         STATS.update(sfx=len(snd), fx=[(round(f["t"], 1), f["emoji"], f["sfx"]) for f in fx])
         # Emojis UNTER den Untertiteln, dezent (140 px), gleiten abwechselnd von links/rechts/unten/oben herein und wieder weg
         # Regel 112: jedes Emoji bekommt seinen Platz aus der gemeinsamen Platzvergabe (nie auf Untertitel, Titel, Logo, Gesicht,
@@ -3533,7 +3577,7 @@ def burn(idx, cut, words_out, title, ranges=None, kept=None):
             vin, ni = f"vo{k}", ni + 1
     else:
         snd = []
-    if PREM and CARDS:  # Premium-Karten: gleiten beim gesprochenen Wort von unten herein, Stapel blendet gemeinsam aus
+    if (PREM or VIRAL) and CARDS:  # Stichwort-Karten: gleiten beim gesprochenen Wort von unten herein, Stapel blendet gemeinsam aus
         for k, c in enumerate(CARDS):
             try:
                 png, pad = card_png(c["text"], c.get("emoji"), os.path.join(A.out, f"karte-{idx}-{k}.png"), nr=c.get("nr"), art=c.get("art"))
@@ -4420,14 +4464,14 @@ def make_cut(n, m, step):
     (sicherer Neuschnitt bei angeschnittenen Wörtern), Fetzen am Anfang/Ende wegschneiden."""
     wg_einsetzen()
     words = WORDS[m["start"]:m["end"] + 1]
-    ranges, kept = keep_ranges(words, extra_drop=m.get("drop") or set())
+    ranges, kept = keep_ranges(words, safe=KONSERVATIV[0], extra_drop=m.get("drop") or set())
     if not ranges:
         return None
     choose_speed(kept)
     ranges = split_joins(ranges, kept)
     ranges, kept = limit60(ranges, kept)
     ranges = tidy(wortluecken(tidy(sprachkanten(tidy(ranges), kept)), kept))
-    ranges = tidy(zeigen_sichern(tidy(schnittstellen_pruefung(ranges, kept))))
+    ranges = tidy(zeigen_sichern(tidy(ranges if KONSERVATIV[0] else schnittstellen_pruefung(ranges, kept))))
     if os.environ.get("VELOX_DEBUG"):  # Fehlersuche: Wörter (mit „raus“) und Schnittliste ablegen
         kid = {w["i"] for w in kept}
         json.dump({"words": [[w["t"], round(w["s"], 2), round(w["e"], 2), w["i"] in kid] for w in words],
@@ -4447,7 +4491,7 @@ def make_cut(n, m, step):
         # lief zweimal genau dieser Pfad, die Abschnitte gingen dann wieder über Clip-Wechsel hinweg.
         ranges, kept = limit60(split_joins(ranges, kept), kept)
         ranges = tidy(wortluecken(tidy(sprachkanten(tidy(ranges), kept)), kept))
-        ranges = tidy(zeigen_sichern(tidy(schnittstellen_pruefung(ranges, kept))))
+        ranges = tidy(zeigen_sichern(tidy(ranges if KONSERVATIV[0] else schnittstellen_pruefung(ranges, kept))))
         if os.environ.get("VELOX_DEBUG"):  # Fehlersuche: auch die Schnittliste des sicheren Modus ablegen
             kid = {w["i"] for w in kept}
             json.dump({"words": [[w["t"], round(w["s"], 2), round(w["e"], 2), w["i"] in kid] for w in words],
@@ -4459,6 +4503,8 @@ def make_cut(n, m, step):
         words_out, miss = align(ranges, kept, heard)
         STATS["safe_mode"] = True
     ca, cb = edge_junk(heard, words_out, secs)
+    if KONSERVATIV[0]:
+        ca = cb = 0.0   # die Sicherheits-Fassung schneidet an Anfang und Ende nichts nach
     if (ca > 0.05 and ranges[0][1] - ranges[0][0] - ca > 0.4) or (cb > 0.05 and ranges[-1][1] - ranges[-1][0] - cb > 0.4):
         log(f"Hörprobe: Wortfetzen am {'Anfang' if ca else 'Ende'} ({', '.join(STATS.get('edge_junk', []))}) – wird weggeschnitten")
         if ca > 0.05 and ranges[0][1] - ranges[0][0] - ca > 0.4:
@@ -4470,6 +4516,9 @@ def make_cut(n, m, step):
         words_out, miss = align(ranges, kept, hear(cut))
     STATS["missing"] = miss[:20]
     return {"m": m, "words": words, "ranges": ranges, "kept": kept, "cut": cut, "secs": secs, "words_out": words_out}
+
+
+KONSERVATIV = [False]   # Sicherheits-Fassung: vorsichtig schneiden, ohne die optionalen Kürzungen (siehe Schluss-Abnahme)
 
 
 def zweiter_schnitt(n, c):
@@ -4583,6 +4632,7 @@ for n, m in enumerate(MOMENTS, 1):
         title = " ".join(w["t"] for w in first[:7]).rstrip(",.;:")
     step(0.8, "Setzt die Untertitel …")
     f = burn(n, c["cut"], c["words_out"], card_title, c["ranges"], c["kept"])
+    wfin = c["words_out"]
     step(0.9, "KI-Abnahme: schaut sich den fertigen Clip an …")
     rev = None if A.no_review else gemini_review(f, c["words_out"], card_title)
     if rev:
@@ -4599,6 +4649,7 @@ for n, m in enumerate(MOMENTS, 1):
                 c = c2
                 QUIZ.pop(n, None)  # Quiz-Zeiten neu (Effekte hängen an Wort-Nummern und bleiben gültig)
                 f = burn(n, c["cut"], c["words_out"], card_title, c["ranges"], c["kept"])
+                wfin = c["words_out"]
                 STATS["abnahme"]["nachschnitt"] = [p.get("was", "")[:100] for p in cutp][:4]
                 rev = gemini_review(f, c["words_out"], card_title) or rev
                 STATS["abnahme"]["note_nachschnitt"] = rev.get("note")
@@ -4609,6 +4660,7 @@ for n, m in enumerate(MOMENTS, 1):
             STATS["abnahme"]["korrigiert"] = fixed
             log(f"KI-Abnahme: {len(fixed)} Untertitel korrigiert ({'; '.join(fixed[:4])}) – brennt neu ein")
             f = burn(n, c["cut"], words_out, card_title, c["ranges"], c["kept"])
+            wfin = words_out
             rev2 = gemini_review(f, words_out, card_title)  # Endnote nach den Korrekturen
             if rev2:
                 STATS["abnahme"].update(note_nach=rev2.get("note"), probleme_nach=probs_of(rev2)[:8])
@@ -4619,6 +4671,7 @@ for n, m in enumerate(MOMENTS, 1):
                     STATS["abnahme"]["korrigiert"] += fixed2
                     log(f"KI-Abnahme Runde 2: {len(fixed2)} weitere Korrekturen – brennt neu ein")
                     f = burn(n, c["cut"], words_out, card_title, c["ranges"], c["kept"])
+                    wfin = words_out
     if not A.no_review:  # Regel 87: fertiges Video abhören, Sinn gegen das Rohmaterial prüfen, bei Bedarf nachschneiden
         step(0.93, "Hört das fertige Video ab und prüft, ob alles Sinn ergibt …")
         sc = sense_check(f, c)
@@ -4647,6 +4700,7 @@ for n, m in enumerate(MOMENTS, 1):
                         log(f"Nachschnitt: {len(wieder)} Untertitel-Korrekturen der Abnahme erneut eingesetzt ({'; '.join(wieder[:4])})")
                     STATS["sinn"]["korrekturen_erneut"] = wieder
                     f = burn(n, c["cut"], wo3, card_title, c["ranges"], c["kept"])
+                    wfin = wo3
                     sc2 = sense_check(f, c)
                     if sc2:
                         STATS["sinn"].update(ok_nach=sc2["ok"], note_nach=sc2.get("note"), probleme_nach=[p["was"][:100] for p in sc2["probleme"]])
@@ -4658,6 +4712,68 @@ for n, m in enumerate(MOMENTS, 1):
         QUIZ.pop(n, None)
         wo4, wieder4 = reapply_fixes(c["words_out"], (revs_done if rev else []))
         f = burn(n, c["cut"], wo4, card_title, c["ranges"], c["kept"])
+        wfin = wo4
+    # ── Schluss-Abnahme (Inhaber 10.10.: „Das Endvideo muss wirklich fehlerfrei sein“ – in der Nacht davor ging ein Video
+    # mit Note 4 trotzdem raus). Das Video, das wirklich ausgeliefert würde, wird noch einmal abgenommen. Bei Zweifeln
+    # (Note ≤ 6, oder Note ≤ 7 mit einem Schnittfehler) schneidet die Software eine zweite, vorsichtige Fassung: Wörter
+    # mit mehr Luft, ohne die optionalen Kürzungen an Rändern, Anfang und Ende. Beide Fassungen werden benotet, die
+    # bessere wird ausgeliefert. Bleibt auch die bessere bei Note ≤ 6, steht „zweifel“ im Ergebnis – für die Nachricht an
+    # den Inhaber; der Kunde bekommt sein Video trotzdem sofort.
+    pruefung = None
+    if not A.no_review:
+        try:
+            step(0.947, "Schluss-Abnahme: prüft das Video, das ausgeliefert wird …")
+            end = gemini_review(f, wfin, card_title)
+            if end and isinstance(end.get("note"), (int, float)):
+                note_a = float(end["note"])
+                schwer = [p_ for p_ in end.get("probleme") or [] if p_.get("art") in CUT_KINDS]
+                log(f"Schluss-Abnahme: Note {note_a:.0f}/10" + (f" – {len(schwer)} Schnittfehler: " + "; ".join(str(p_.get('was', ''))[:70] for p_ in schwer[:2]) if schwer else ""))
+                pruefung = {"note": note_a, "fassung": "erste", "probleme": probs_of(end)[:6]}
+                if note_a <= 6 or (note_a <= 7 and schwer) or os.environ.get("VELOX_TEST_ZWEIFEL"):  # (Schalter nur zum Testen des Wegs)
+                    import shutil
+                    step(0.95, "Schneidet eine zweite, vorsichtige Fassung und vergleicht …")
+                    f_a = f[:-4] + "_A.mp4"
+                    shutil.copyfile(f, f_a)
+                    stats_a = {k_: STATS.get(k_) for k_ in ("sprachkanten", "schnittstellen_pruefung", "zweiter_schnitt", "safe_mode")}
+                    KONSERVATIV[0] = True
+                    try:
+                        c_b = make_cut(n, fix_bounds(c["m"]), step)
+                    finally:
+                        KONSERVATIV[0] = False
+                    note_b, f_b, w_b = None, None, None
+                    if c_b:
+                        QUIZ.pop(n, None)
+                        w_b, _ = reapply_fixes(c_b["words_out"], (revs_done if rev else []))
+                        f_b = burn(n, c_b["cut"], w_b, card_title, c_b["ranges"], c_b["kept"])
+                        end_b = gemini_review(f_b, w_b, card_title)
+                        if end_b and isinstance(end_b.get("note"), (int, float)):
+                            note_b = float(end_b["note"])
+                            w_b2, fix_b = caption_round(end_b, w_b, c_b["secs"])
+                            if fix_b:
+                                w_b = w_b2
+                                f_b = burn(n, c_b["cut"], w_b, card_title, c_b["ranges"], c_b["kept"])
+                    if note_b is not None and note_b > note_a:
+                        log(f"Schluss-Abnahme: zweite Fassung Note {note_b:.0f}/10 (erste {note_a:.0f}) – die zweite wird ausgeliefert")
+                        c, f, wfin = c_b, f_b, w_b
+                        pruefung = {"note": note_b, "fassung": "zweite", "note_erste": note_a, "probleme": probs_of(end_b)[:6]}
+                        os.remove(f_a)
+                    else:
+                        log(f"Schluss-Abnahme: zweite Fassung " + (f"Note {note_b:.0f}/10" if note_b is not None else "nicht prüfbar")
+                            + f" – nicht besser als die erste ({note_a:.0f}); die erste bleibt")
+                        os.replace(f_a, f)
+                        for k_, v_ in stats_a.items():
+                            if v_ is None:
+                                STATS.pop(k_, None)
+                            else:
+                                STATS[k_] = v_
+                        pruefung["note_zweite"] = note_b
+                pruefung["zweifel"] = pruefung["note"] <= 6
+                STATS["schluss_abnahme"] = pruefung
+                if pruefung["zweifel"]:
+                    log(f"ZWEIFEL: Auch die bessere Fassung hat nur Note {pruefung['note']:.0f}/10 – Video wird ausgeliefert, Inhaber sollte nachsehen")
+        except Exception as e_:  # noqa: BLE001
+            KONSERVATIV[0] = False
+            log(f"Schluss-Abnahme nicht möglich ({e_}) – das Video bleibt, wie es ist")
     if not A.keep_work and os.path.exists(c["cut"]):
         os.remove(c["cut"])
     words, kept, secs = c["words"], c["kept"], c["secs"]
@@ -4666,7 +4782,7 @@ for n, m in enumerate(MOMENTS, 1):
     step(0.95, "Letzter Qualitäts-Check …")
     quality_check(f, words, kept, orig, secs)
     results.append({"file": f, "title": title[:80], "seconds": secs, "songs": suggest_songs(kept, card_title),
-                    "post": post_text(kept, card_title)})
+                    "post": post_text(kept, card_title), "pruefung": pruefung})
 
 if not A.keep_work:
     os.remove(wav)

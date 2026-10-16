@@ -117,7 +117,8 @@ for c in clips:
     if not c["audio"] or c["kunde_broll"]:
         continue
     wav = os.path.join(A.out, "m.wav")
-    run(["ffmpeg", "-v", "error", "-y", "-i", c["file"], "-vn", "-ac", "1", "-ar", "16000", wav])
+    # „first_pts=0“ (11.10.): iPhone-Ton beginnt 0,1–0,26 s nach dem Bild; ohne das lagen alle Wortzeiten um diesen Betrag zu früh
+    run(["ffmpeg", "-v", "error", "-y", "-i", c["file"], "-vn", "-ac", "1", "-ar", "16000", "-af", "aresample=async=1:first_pts=0", wav])
     r = mlx_whisper.transcribe(wav, path_or_hf_repo=os.environ.get("VELOX_WHISPER", "mlx-community/whisper-large-v3-turbo"),
                                word_timestamps=True, condition_on_previous_text=False, language="de",
                                hallucination_silence_threshold=2.0,
@@ -489,6 +490,171 @@ plans = gemini(
 
 
 ki.require_or_exit("Schnittplan")
+
+# ── Gegenlesen (Inhaber 11.10.: „Schau nochmal drüber, damit das Video von vorne bis hinten einen Sinn ergibt“) ──
+# Der Schnittplan entstand bisher in EINEM Wurf, niemand las das Ergebnis. Jetzt liest ein zweiter, frischer Durchgang jede
+# Geschichte so, wie der Zuschauer sie hört (nur die gewählten Sätze, in der gewählten Reihenfolge) und prüft: fehlt der
+# Anfang eines Gedankens, hängt ein Satz in der Luft, ist etwas doppelt, stimmt die Reihenfolge, endet es sauber? Er darf nur
+# vorhandene Sätze derselben Clips hinzunehmen, streichen oder umstellen. Ein unplausibles Ergebnis wird verworfen.
+if os.environ.get("VELOX_GEGENLESEN", "1") != "0":
+    _satz = {f"{c['id']}.{k}": " ".join(w["t"] for w in st) for c in clips for k, st in enumerate(c["sents"])}
+    for _g in (plans or {}).get("geschichten") or []:
+        try:
+            _alt = [x.strip() for x in _g.get("sprechteile") or [] if isinstance(x, str) and x.strip() in _satz]
+            if len(_alt) < 2:
+                continue
+            _cl = {x.split(".")[0] for x in _alt} | set(_g.get("clips") or [])
+            _rest = [k for k in _satz if k.split(".")[0] in _cl and k not in _alt]
+            _r = gemini(
+                "Du bist Schlussredakteur für Kurzvideos. Unten steht ein Video so, wie der Zuschauer es hören wird: nur die "
+                "ausgewählten Sätze, in dieser Reihenfolge. Der Zuschauer kennt NICHTS davor. Lies von vorn bis hinten und prüfe: "
+                "(1) Versteht man den ersten Satz ohne Vorwissen, und ist er ein vollständiger Satz (kein fehlender Satzanfang)? "
+                "(2) Bezieht sich ein Satz auf etwas, das im Video noch nicht gesagt wurde („das“, „dann“, „deswegen“, eine "
+                "Antwort ohne Frage, eine Bedingung ohne Angebot)? (3) Ist etwas doppelt (derselbe Inhalt zweimal, zwei Fassungen "
+                "desselben Satzes)? (4) Stimmt die Reihenfolge (Ablauf, Frage vor Antwort, Aufhänger vorn, Aufruf hinten)? "
+                "(5) Bricht ein Gedanke mitten ab oder endet das Video ohne Abschluss? (6) Passt ein Satz gar nicht zum Thema? "
+                "Ist alles in Ordnung: ok = true und die Liste unverändert zurückgeben. Sonst ok = false, die Mängel kurz "
+                "nennen und in „sprechteile“ die berichtigte Liste liefern. Du darfst NUR Satz-Nummern verwenden, die unten "
+                "vorkommen (gewählte oder „nicht gewählt“), Sätze hinzunehmen, streichen oder umstellen – nichts umformulieren. "
+                "Ändere so wenig wie möglich; streiche keinen Arbeitsschritt einer Zubereitung und kürze nicht ohne Mangel.",
+                [{"text": "GEWÄHLT (in dieser Reihenfolge):\n" + "\n".join(f"{x}: {_satz[x]}" for x in _alt)
+                  + "\n\nNICHT GEWÄHLT (aus denselben Clips, zum Ergänzen):\n" + ("\n".join(f"{x}: {_satz[x]}" for x in _rest[:120]) or "–")}],
+                {"type": "object", "properties": {"ok": {"type": "boolean"}, "maengel": {"type": "array", "items": {"type": "string"}},
+                                                  "sprechteile": {"type": "array", "items": {"type": "string"}}},
+                 "required": ["ok", "sprechteile"]}, timeout=120, deep=True)
+            if not _r or _r.get("ok"):
+                log("Gegenlesen: Geschichte ergibt von vorn bis hinten Sinn" if _r else "Gegenlesen: keine KI-Antwort – Plan bleibt")
+                continue
+            _neu = [x.strip() for x in _r.get("sprechteile") or [] if isinstance(x, str) and x.strip() in _satz and x.strip().split(".")[0] in _cl]
+            _neu = [x for i_, x in enumerate(_neu) if x not in _neu[:i_]]
+            _wa, _wn = sum(len(_satz[x].split()) for x in _alt), sum(len(_satz[x].split()) for x in _neu)
+            if len(_neu) >= 2 and 0.6 * _wa <= _wn <= 1.5 * _wa and _neu != _alt:
+                log(f"Gegenlesen: {len(_r.get('maengel') or [])} Mängel – " + "; ".join(str(m_)[:90] for m_ in (_r.get("maengel") or [])[:4]))
+                log(f"Gegenlesen: Plan berichtigt (+{len([x for x in _neu if x not in _alt])} Sätze, −{len([x for x in _alt if x not in _neu])} Sätze"
+                    + (", Reihenfolge geändert" if [x for x in _neu if x in _alt] != [x for x in _alt if x in _neu] else "") + ")")
+                # Zwischenschnitte/Bilder, deren Satz gestrichen wurde, entfallen mit
+                _g["broll"] = [b_ for b_ in _g.get("broll") or [] if str(b_.get("ueber") or "").strip() in _neu]
+                _g["bilder"] = [b_ for b_ in _g.get("bilder") or [] if str(b_.get("bei") or "").strip() in _neu]
+                _g["sprechteile"] = _neu
+            else:
+                log("Gegenlesen: Vorschlag unplausibel (zu kurz/zu lang/leer) – Plan bleibt")
+        except Exception as _e:  # noqa: BLE001
+            log(f"Gegenlesen ausgefallen ({_e}) – Plan bleibt")
+
+# Halber Satz als Baustein (Testlauf 12.10., Cheesecake Erdbeerbecher: Das Video begann mit „More.“ – gewählt war nur der
+# zweite Teil von „Cheesecake, Matcha and more.“, weil die Erkennung den Satz am Komma geteilt hatte). Endet der Satz DAVOR
+# im selben Clip ohne Punkt/Frage-/Ausrufezeichen, gehört er dazu und wird mitgenommen (höchstens 2 Teile, höchstens 12 Wörter).
+_txt = {f"{c['id']}.{k}": " ".join(w["t"] for w in st).strip() for c in clips for k, st in enumerate(c["sents"])}
+for _g in (plans or {}).get("geschichten") or []:
+    _teile, _aus = [x.strip() for x in _g.get("sprechteile") or [] if isinstance(x, str)], []
+    for x in _teile:
+        m_ = re.fullmatch(r"(C\d+)\.(\d+)", x)
+        vor = []
+        if m_:
+            k_ = int(m_.group(2))
+            while k_ > 0 and len(vor) < 2:
+                p_ = f"{m_.group(1)}.{k_ - 1}"
+                t_ = _txt.get(p_, "")
+                if not t_ or re.search(r"[.!?…]\W*$", t_) or p_ in _teile or p_ in _aus or len(t_.split()) > 12:
+                    break
+                vor.insert(0, p_)
+                k_ -= 1
+        if vor:
+            log(f"Halber Satz ergänzt: {' + '.join(vor)} gehört vor {x} („{' '.join(_txt[v] for v in vor)[:60]} | {_txt.get(x, '')[:40]}“)")
+        _aus += vor + [x]
+    if _aus != _teile:
+        _g["sprechteile"] = _aus
+
+# FREMDE TEILE (Inhaber 13.10., nach dem Ansehen aller Testvideos: „bei manchen Videos sind Teilvideos drin, die gar nicht zu dem
+# Video gehören“ und „immer die gleichen Fehler“). Die Regel „Clips eines anderen Themas nie anhängen“ stand seit 06.10. nur als
+# Bitte an die KI im Schnittplan – sie hielt sich nicht immer daran (Umfrage + angehängter Werbesatz „Und auch für unter 10 Euro
+# bekommt ihr …“ aus einem anderen Dreh). Jetzt wird sie nach dem Plan ERZWUNGEN, in zwei Schritten:
+#   1. Fest: Nach einem Abschied („Tschüss“, „Ciao“ …) kommt nichts mehr aus einem ANDEREN Clip.
+#   2. Eigene Prüfung nur zu dieser einen Frage: Welcher verwendete Clip gehört zu einem anderen Thema/Dreh/Gespräch als der Rest?
+#      Dessen Sätze fallen weg – außer es bliebe dann zu wenig übrig (unter 2 Sätzen oder unter 55 % der Wörter).
+_ABSCHIED = re.compile(r"\b(tschüss|tschüs|tschau|ciao|bye|bis bald|bis dann|schönen tag|mach's gut|machs gut)\b", re.I)
+_cinfo = {c["id"]: c for c in clips}
+def fremde_teile(_g):
+    """Entfernt Sätze aus Clips, die nicht zum Thema der Geschichte gehören (siehe oben). Läuft nach dem Schnittplan UND noch
+    einmal ganz am Schluss – die Puzzle-Prüfung hängte sonst nachträglich einen fremden Satz an (Test 13.10.: Umfrage mit zwei
+    jungen Frauen auf der Straße + „Und auch für unter 10 Euro bekommt ihr …“ vom Mann hinter der Theke)."""
+    try:
+        _t = [x.strip() for x in _g.get("sprechteile") or [] if isinstance(x, str) and x.strip() in _txt]
+        if len(_t) < 3:
+            return
+        _raus = set()
+        _li = max((i for i, x in enumerate(_t) if _ABSCHIED.search(_txt[x])), default=None)
+        if _li is not None and _li >= 2:
+            _fremd_nach = [x for x in _t[_li + 1:] if x.split(".")[0] != _t[_li].split(".")[0] and not _ABSCHIED.search(_txt[x])]
+            if _fremd_nach:
+                _raus |= set(_fremd_nach)
+                log(f"Fremder Teil nach dem Abschied entfernt: {', '.join(_fremd_nach)} („{_txt[_fremd_nach[0]][:60]}“)")
+        _rest = [x for x in _t if x not in _raus]
+        _benutzt = list(dict.fromkeys(x.split(".")[0] for x in _rest))
+        _pz = {str(x).strip() for x in _g.get("_puzzle") or []}   # was die Puzzle-Prüfung nachträglich eingefügt hat
+        if len(_benutzt) >= 2:
+            _wc = {c_: sum(len(_txt[x].split()) for x in _rest if x.split(".")[0] == c_) for c_ in _benutzt}
+            _haupt = max(_wc, key=_wc.get)
+            _parts = []
+            for c_ in _benutzt:
+                _parts.append({"text": f"Clip {c_}{' (HAUPT-Clip des Videos)' if c_ == _haupt else ''} – zu sehen: "
+                                       f"{str(_cinfo.get(c_, {}).get('inhalt') or '?')[:220]}\nVerwendete Sätze: "
+                                       + " | ".join(_txt[x] for x in _rest if x.split(".")[0] == c_) + "\nStandbild:"})
+                try:
+                    _fb = frames(_cinfo[c_])
+                    if _fb:
+                        _parts.append({"inline_data": {"mime_type": "image/jpeg", "data": _fb[len(_fb) // 2]}})
+                except Exception:  # noqa: BLE001
+                    pass
+            _r = gemini(
+                "Ein Kurzvideo für TikTok/Reels soll EIN Thema haben. Unten stehen die Clips, aus denen ein Video geschnitten wird: "
+                "je Clip, was man sieht, die daraus verwendeten Sätze und ein Standbild. Beurteile JEDEN Clip im Vergleich zum "
+                "HAUPT-Clip: gleiche_person = spricht dort dieselbe Person bzw. dieselbe Gesprächsrunde wie im Haupt-Clip (am "
+                "Standbild prüfen: Gesicht, Kleidung, Ort)? gleiches_thema = gehören die Sätze zum selben Thema, Angebot und "
+                "Gespräch – oder merkt ein Zuschauer „das gehört hier nicht hin“? Fremd sind z. B.: eine Straßenumfrage mit "
+                "Passanten und dazwischen ein Werbesatz eines Mitarbeiters aus dem Laden zu einem anderen Produkt; zwei verschiedene "
+                "Umfragen; ein Satz über „Angebote unter 10 Euro“ in einem Video über etwas anderes. Nicht fremd: dieselbe Person "
+                "an anderer Stelle im Laden, Schritte einer Zubereitung, Begrüßung + Hauptteil + Aufruf zum selben Thema.",
+                _parts,
+                {"type": "object", "properties": {"clips": {"type": "array", "items": {"type": "object", "properties": {
+                    "id": {"type": "string"}, "gleiche_person": {"type": "boolean"}, "gleiches_thema": {"type": "boolean"}},
+                    "required": ["id", "gleiche_person", "gleiches_thema"]}}, "grund": {"type": "string"}},
+                 "required": ["clips", "grund"]}, timeout=120, deep=True)
+            _urteil = {str(u_.get("id") or "").strip(): u_ for u_ in ((_r or {}).get("clips") or [])}
+            _gespraech = bool(re.search(r"umfrage|interview|gespräch|strasse|straße|test", str(_g.get("format") or ""), re.I))
+            _fr = []
+            for c_ in _benutzt:
+                if c_ == _haupt:
+                    continue
+                u_ = _urteil.get(c_)
+                nur_pz = all(x in _pz for x in _rest if x.split(".")[0] == c_)
+                if u_ is None:
+                    if nur_pz:   # nicht prüfbar (KI nicht erreichbar) → nachträglich Eingefügtes lieber weglassen als riskieren
+                        _fr.append(c_)
+                elif not u_.get("gleiches_thema") or (not u_.get("gleiche_person") and (_gespraech or nur_pz) and _wc[c_] <= 0.35 * sum(_wc.values())):
+                    _fr.append(c_)   # anderes Thema – oder: andere Person mit kleinem Anteil in einem Gespräch bzw. nachträglich eingefügt
+            _bleibt = [x for x in _rest if x.split(".")[0] not in _fr]
+            if _fr and len(_bleibt) >= 2 and sum(len(_txt[x].split()) for x in _bleibt) >= 0.55 * sum(_wc.values()):
+                _raus |= {x for x in _rest if x.split(".")[0] in _fr}
+                log(f"Fremder Clip entfernt: {', '.join(_fr)} – " + (str((_r or {}).get('grund') or '')[:160] if _r else "Themen-Prüfung nicht erreichbar, nachträglich Eingefügtes bleibt draußen"))
+            elif _fr:
+                log(f"Themen-Prüfung: {', '.join(_fr)} wirkt fremd, bleibt aber (sonst zu wenig Video) – {str((_r or {}).get('grund') or '')[:120]}")
+            elif _r:
+                log(f"Themen-Prüfung: alle Clips gehören zusammen – {str(_r.get('grund') or '')[:140]}")
+            else:
+                log("Themen-Prüfung: KI nicht erreichbar – Plan bleibt (nichts nachträglich Eingefügtes aus anderen Clips vorhanden)")
+        if _raus:
+            _neu = [x for x in _g["sprechteile"] if isinstance(x, str) and x.strip() not in _raus]
+            _ok = {x.strip() for x in _neu}
+            _g["broll"] = [b_ for b_ in _g.get("broll") or [] if str(b_.get("ueber") or "").strip() in _ok]
+            _g["bilder"] = [b_ for b_ in _g.get("bilder") or [] if str(b_.get("bei") or "").strip() in _ok]
+            _g["sprechteile"] = _neu
+    except Exception as _e:  # noqa: BLE001
+        log(f"Themen-Prüfung ausgefallen ({_e}) – Plan bleibt")
+
+
+for _g in (plans or {}).get("geschichten") or []:
+    fremde_teile(_g)
 
 
 def ref(s):
@@ -1494,6 +1660,7 @@ def puzzle(g):
             dazu = [x for x in dazu if x not in gew] + folge
             log(f"Puzzle-Prüfung: Gedanke aus {cid} vervollständigt ({', '.join(gew)} → {', '.join(folge)})")
     g["sprechteile"] = neu
+    g["_puzzle"] = list(dazu)   # merken, was nachträglich dazukam – die Themen-Prüfung schaut sich genau das noch einmal an
     g["clips"] = sorted({str(c).strip() for c in g.get("clips") or []} | {x.split(".")[0] for x in dazu})
     log(f"Puzzle-Prüfung: {len(dazu)} Sätze aus bisher ungenutzten Clips ergänzt ({', '.join(dazu)}) – {str(res.get('grund'))[:160]}")
     for x in dazu:
@@ -1505,6 +1672,53 @@ if stories[0] and len(stories) == 1:   # ein Ordner = ein Video: fehlende Puzzle
         puzzle(stories[0])
     except Exception as e:
         log(f"Puzzle-Prüfung übersprungen: {e}")
+for g in stories:   # letzte Kontrolle vor dem Zusammensetzen: nichts Fremdes im Video – auch nicht aus der Puzzle-Prüfung
+    if g:
+        fremde_teile(g)
+
+
+def aufhaenger(g):
+    """AUFHÄNGER ZUERST (13.10., Vergleich mit dem von Hand geschnittenen Eröffnungs-Video: dort beginnt das Video mit „Nein Leute,
+    wir sind nicht in London, denn jetzt gibt es die viralen Erdbeerbecher auch in Mannheim!“ – die Software begann mit
+    „Cheesecake hat endlich geöffnet“ und brachte den London-Satz erst kurz vor Schluss). Eine eigene Prüfung nur für die
+    Reihenfolge: Welcher Satz packt in den ersten drei Sekunden am meisten? Er kommt nach vorn, wenn die Geschichte danach noch
+    stimmt. Nicht bei Formaten mit fester Reihenfolge (Zubereitung, Anleitung, Umfrage, Gespräch)."""
+    t_ = [x.strip() for x in g.get("sprechteile") or [] if isinstance(x, str) and x.strip() in _txt]
+    if len(t_) < 3 or re.search(r"zubereit|anleitung|tutorial|rezept|umfrage|interview|gespräch|test|quiz", str(g.get("format") or ""), re.I):
+        return
+    r_ = gemini(
+        "Du bist Cutter für TikTok/Reels. Unten stehen die Sätze eines Kurzvideos in der geplanten Reihenfolge. Die ersten drei "
+        "Sekunden entscheiden, ob jemand weiterschaut. Deine einzige Aufgabe: Steht der stärkste AUFHÄNGER am Anfang? Ein guter "
+        "Aufhänger überrascht, macht neugierig oder nennt sofort das Besondere („Nein Leute, wir sind nicht in London, denn jetzt "
+        "gibt es die viralen Erdbeerbecher auch in Mannheim!“). Er muss für sich allein verständlich sein – also NICHT mit „Und“, "
+        "„Oder“, „Aber“, „Auch“, „Natürlich auch“, „Wie zum Beispiel“, „Dann“ beginnen und sich nicht auf etwas davor beziehen. "
+        "Gib die Reihenfolge ALLER Sätze zurück (dieselben Nummern, keiner fehlt, keiner doppelt): Wenn ein anderer Satz der "
+        "bessere Einstieg ist, stelle ihn (und falls nötig den direkt zugehörigen Folgesatz) nach vorn und ordne den Rest so, "
+        "dass die Geschichte weiter Sinn ergibt und mit dem Aufruf/Ort endet. Ist der Anfang schon der beste, gib die Reihenfolge "
+        "unverändert zurück. Im Zweifel unverändert.",
+        [{"text": "\n".join(f"{x}: {_txt[x]}" for x in t_)}],
+        {"type": "object", "properties": {"reihenfolge": {"type": "array", "items": {"type": "string"}}, "grund": {"type": "string"}},
+         "required": ["reihenfolge", "grund"]}, timeout=90, deep=True)
+    neu_ = [str(x).strip() for x in ((r_ or {}).get("reihenfolge") or [])]
+    if not r_ or sorted(neu_) != sorted(t_):
+        log("Aufhänger-Prüfung: keine brauchbare Antwort – Reihenfolge bleibt")
+        return
+    if neu_ == t_:
+        log(f"Aufhänger-Prüfung: der Anfang ist schon der stärkste Einstieg – {str(r_.get('grund') or '')[:120]}")
+        return
+    if re.match(r"\s*(und|oder|aber|auch|denn|dann|also|natürlich auch|wie zum beispiel|zum beispiel|sondern)\b", _txt[neu_[0]], re.I):
+        log(f"Aufhänger-Prüfung: Vorschlag beginnt mit einem Anschluss-Wort („{_txt[neu_[0]][:40]}“) – Reihenfolge bleibt")
+        return
+    g["sprechteile"] = neu_
+    log(f"Aufhänger nach vorn: „{_txt[neu_[0]][:80]}“ (vorher begann das Video mit „{_txt[t_[0]][:50]}“) – {str(r_.get('grund') or '')[:120]}")
+
+
+for g in stories:
+    if g:
+        try:
+            aufhaenger(g)
+        except Exception as _ea:  # noqa: BLE001
+            log(f"Aufhänger-Prüfung übersprungen ({_ea})")
 for n, g in enumerate(stories):
     if len(stories) > 1:
         stage(f"Setzt Video {n + 1} von {len(stories)} zusammen …")

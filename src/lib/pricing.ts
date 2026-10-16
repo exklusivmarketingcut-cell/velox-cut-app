@@ -19,15 +19,22 @@ export const PACKS: Record<PackId, { credits: number; price: number }> = {
   p600: { credits: 600, price: 4990 },
 };
 
-// Credits pro fertigem Kurzvideo (bis 60 Sek.) je Stil. Premium kommt später.
+// Credits pro fertigem Kurzvideo (bis 60 Sek.) je Stil.
 export const STYLES: Record<StyleId, { name: string; credits: number; desc: string }> = {
   clean: { name: 'Clean', credits: 10, desc: 'Sauberer Schnitt, Untertitel, leichte Zooms' },
   viral: { name: 'Viral', credits: 20, desc: 'Zoom-Punches, Sounds, Emojis, Hook-Titel' },
-  premium: { name: 'Premium', credits: 40, desc: '3D-Titel, Motion Graphics, Karten & Zähler, Kino-Look' },
+  premium: { name: 'Premium', credits: 40, desc: 'Motion Graphics, Vollbild-Karten, Zähler, B-Roll-Einblendungen' },
 };
 
 /** Premium im Studio wählbar? Erst auf true stellen, wenn supabase/einmal-ausfuehren-0009.sql gelaufen ist (sonst lehnt die Datenbank den Auftrag ab). */
-export const PREMIUM_AKTIV = false;
+export const PREMIUM_AKTIV = true;
+
+/** Änderungswunsch zu einem fertigen Video wählbar? Erst auf true, wenn supabase/einmal-ausfuehren-0012.sql gelaufen ist und die Schnitt-Maschine neu gestartet wurde. */
+export const REVISION_AKTIV = false;
+/** Credits für den n-ten Änderungswunsch: der erste ist gratis, jeder weitere kostet ein Viertel des Stil-Preises (aufgerundet) je Clip. */
+export function revisionCost(style: StyleId, clips: number, nr: number): number {
+  return nr <= 1 ? 0 : clips * Math.ceil(STYLES[style].credits / 4);
+}
 
 export const EXTRA_MINUTE_CREDITS = 5;
 /** Einmaliger Bonus nach dem Hinterlegen der Karte (10 Free-Credits + 10 = ein Viral-Video zum Testen) */

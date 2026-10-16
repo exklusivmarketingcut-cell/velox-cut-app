@@ -40,6 +40,16 @@ def call(system, parts, schema, deep=False, timeout=90, temperature=0.2, models=
     """Gemini mit JSON-Antwort. None, wenn kein Schlüssel/Modell erreichbar ist (dann gelten die Regeln ohne KI)."""
     if not KEYS:
         return None
+    # Änderungswunsch des Kunden (Revision): gilt für JEDE KI-Entscheidung dieses Laufs – aber nur, soweit er die jeweilige
+    # Aufgabe betrifft. Alles andere soll so bleiben wie in der früheren Fassung („gezielt verbessern, nicht neu schneiden“).
+    _wunsch = os.environ.get("VELOX_KUNDENWUNSCH", "").strip()
+    if _wunsch:
+        _vor = os.environ.get("VELOX_VORHER", "").strip()
+        system = (system + "\n\nÄNDERUNGSWUNSCH DES KUNDEN: Der Kunde hat dieses Video schon einmal bekommen und möchte genau "
+                  f"Folgendes geändert haben: „{_wunsch}“. Dieser Wunsch hat Vorrang vor den Regeln oben, SOWEIT er diese Aufgabe "
+                  "betrifft (z. B. ein Satz soll raus/rein, anderer Titel, anderer Anfang/Schluss, keine Musik, weniger Effekte). "
+                  "Betrifft er diese Aufgabe nicht, ignoriere ihn. Ändere NUR, was gewünscht ist – alles andere bleibt so wie in "
+                  "der früheren Fassung." + (f" Text der früheren Fassung: „{_vor}“" if _vor else ""))
     order = models or (DEEP if deep else LIGHT)
     # Reihenfolge (Inhaber 07.10.: „erst kostenlos, und sobald das weg ist, auf den bezahlten wechseln“): je MODELL erst der
     # Gratis-Schlüssel, dann sofort der bezahlte – so entscheidet immer das beste Modell. Vorher wurden mit dem Gratis-Schlüssel
@@ -50,7 +60,11 @@ def call(system, parts, schema, deep=False, timeout=90, temperature=0.2, models=
                 continue
             think = True
             for attempt in range(4):
-                cfg = {"temperature": temperature, "responseMimeType": "application/json", "responseSchema": schema}
+                # Obergrenze für die Antwort (10.10.): Bei der Premium-Planung lief das Modell in eine Endlosschleife und schrieb
+                # 65.000 Token (3–4 Minuten, bezahlt, am Ende unbrauchbar). Keine echte Antwort der Software ist auch nur
+                # annähernd so lang – die Grenze kappt nur Ausreißer.
+                cfg = {"temperature": temperature, "responseMimeType": "application/json", "responseSchema": schema,
+                       "maxOutputTokens": int(os.environ.get("VELOX_KI_MAXTOKEN", "24000"))}
                 if think:
                     cfg["thinkingConfig"] = _think(model, deep)
                 body = json.dumps({"systemInstruction": {"parts": [{"text": system}]}, "contents": [{"role": "user", "parts": parts}],

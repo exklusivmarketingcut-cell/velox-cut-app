@@ -407,7 +407,83 @@ Nach dem Malo's-Test mit durchgehender Erzählung (82 s, Satzfetzen): „Mach wi
 
 ## Regel 122 – Selbstkontrolle bis zur Auslieferung (Inhaber 09./10.10.: „Das Endvideo muss wirklich fehlerfrei sein“, ohne dass er freigeben muss)
 Reihenfolge je Video: Clips messen → Bild-Stücke prüfen (Bildruhe, Moment ohne fremde Hand, Endkontrolle im exakten Fenster) → Schnittstellen im Bild prüfen (Rand ≤ 0,6 s kürzen, nie ins Wort; am Videoende 0,35 s Ausklang) → schneiden → Abnahme + Sinn-Check (mit Nachschnitt) → **zweiter Schnitt** (fertigen Ton nachmessen: Leerstellen 0,5–1,5 s kürzen, Splitter weg) → **Schluss-Abnahme** des auszuliefernden Videos.
-- Schluss-Abnahme: Note ≤ 6 (oder ≤ 7 mit Schnittfehler) → zweite, vorsichtige Fassung (`KONSERVATIV`: Wörter mit mehr Luft, ohne optionale Rand-/Anfang-/Ende-Kürzungen); beide benotet, die bessere wird ausgeliefert. Bleibt Note ≤ 6: `pruefung.zweifel = true` im Ergebnis (für die Nachricht an den Inhaber – Versand noch nicht gebaut). Der Kunde bekommt immer sofort.
+- Schluss-Abnahme als Korrektur-Schleife (Inhaber 10.10.: keine Nachricht an ihn, kein Warten auf Freigabe; „nur die Sachen verbessern, die nicht passen“): bestanden nur mit Note ≥ 8 (`VELOX_ABNAHME_NOTE`) UND ohne Schnittfehler UND ohne offene Untertitel-Korrektur. Sonst `gezielt_reparieren` – nur die bemängelte Schnittstelle (abgehackt → mehr Luft, nie in ein gestrichenes Wort oder über einen Clip-Wechsel; Pause → bis ans Wort kürzen, nie in stummen Strecken; Doppeltes/Panne → nur diese Wörter heraus), der Rest bleibt Bild für Bild. Dann neu einbrennen und wieder abnehmen, bis zu 3 Runden (`VELOX_ABNAHME_RUNDEN`). Die beste Fassung bleibt liegen; wird eine Runde nicht besser, gilt wieder die beste. Letzter Versuch: vorsichtige Sicherheits-Fassung (`KONSERVATIV`). Ausgeliefert wird immer die beste abgenommene Fassung; `pruefung.bestanden` und der Verlauf stehen im Ergebnis.
 - Selbstkontrollen: geplante stumme Strecken müssen im Schnitt sein (`zeigen_sichern`); Gleichlauf Rohschnitt; ein doppelter Satzanfang behält genau eine Fassung.
 - Nachhören verschluckter Wörter (`recover_swallowed`) erfindet nichts mehr: nur wo wirklich gesprochen wird, keine Doppelung der Wörter davor, nichts hinter dem gesuchten Wort. (Ursache des tagelangen „Willst du eine“-Fehlers; danach 3 von 3 Läufen identisch richtig.)
 - Bindestrich-Wörter sind im Text UND in der Hörprobe ein Wort; am Videoende zählt leiser Ausklang als Stimme (0,40 s); gehörte Wörter ohne Untertitel werden nachgetragen, wenn sie nicht zu ≥ 1/3 überdeckt sind.
+
+## Regel 123 – DaVinci Resolve als Farb-Stufe, Farbe je Aufnahme (Inhaber 12.10.: „die Software mit DaVinci verbinden“)
+- Mit `VELOX_RESOLVE=1` (und nur wenn Resolve offen ist, Brücke angeklickt) rechnet `render_cut` ohne ffmpeg-Farbe; der fertige Schnitt läuft durch Resolve (`worker/resolve.py`). Scheitert irgendetwas, gibt es die gewohnte ffmpeg-Farbe – ein Auftrag scheitert nie an Resolve. Ist Resolve belegt, wird bis 150 s gewartet.
+- Gemessene Grundkorrektur als CDL, jeder Wert begrenzt: Weißpunkt nur 60 % des Weges und höchstens +18 % (dunkel gedrehtes Restaurant bleibt stimmungsvoll), Helligkeit am GESICHT gemessen (Haut 0,40–0,60 bleibt, wie sie ist; ein schwarzes Hemd in der Bildmitte hatte das Bild zu hell gemacht), Weißabgleich nur bei ≥ 5 % farbloser Fläche und höchstens 4 %.
+- Video aus mehreren Rohclips: jede Aufnahme (Clip-Wechsel aus dem Schnittplan) bekommt ihre eigene Korrektur; gleich aussehende Stücke werden zusammen gemessen. Zwischenbilder (B-Roll) gehen ebenfalls durch Resolve.
+
+## Regel 124 – Hörprobe: gleiche Wörter erkennen, Untertitel sauber (Testläufe 12.10.)
+- Kein „fehlendes Wort“ mehr bei: „gibt's“/„gibt es“, anders gebeugt oder geschrieben („einen“/„eine“, „Malus“/„Malos“, Ähnlichkeit ≥ 0,75 in der Lücke), Umlaut („Burger“/„Bürger“), zusammengesetzt („Junior Burger“/„Junior-Burger“/„Juniorburger“). Vorher löste das grundlos den groben Neuschnitt im sicheren Modus aus (Golden Thai Halal: 2,5 → 0 Fehler).
+- Bindestrich-Wörter werden Teil für Teil verglichen; ein gehörter Wortteil wird nicht mehr als „fehlender Untertitel“ nachgetragen („Junior Junior-Box“).
+- Namen & Marken des Kunden stehen im ganzen Video gleich („Malus“/„Marlos“ → „Malo's“; nur Namen ab 5 Buchstaben, gleicher Anfangsbuchstabe, Ähnlichkeit ≥ 0,8).
+- Satzanfang im Untertitel immer groß (auch wenn das Wort davor herausgeschnitten wurde).
+
+## Regel 125 – Nichts überlappt (Inhaber 12.10., zum zweiten Mal): Karten nie auf Untertiteln
+- Stichwort-Karten: JEDER mögliche Platz wird gegen die Untertitel-Zeile geprüft (mind. 10 px Abstand), auch der Platz „oben“. Kein freier Platz → keine Karte. Weiter gilt: nichts auf dem Gesicht, nichts in den Randbereichen von TikTok/Instagram (Profil, Likes, Beschreibung).
+
+## Regel 126 – Anlauf-Wort am Anfang einer Aufnahme (Inhaber 12.10., Cheesecake „unter 10 Euro“: „Er sagt ‚So.‘ – erst ab ‚Ihr bekommt‘“)
+- Der Anfang jeder Aufnahme (Clip-Wechsel) wird einzeln neu abgehört (`take_anlauf`). Steht vor dem ersten Wort des Satzes ein Anlauf-Wort („So“, „Ja“, „Okay“, „Also“ …), das nicht im Text steht, beginnt der Schnitt erst danach – an der leisesten Stelle dazwischen. Nur wenn das Wort danach zum Text passt.
+
+## Regel 127 – Einblendungen prüfen sich gegenseitig (Nacht 12./13.10., zu Regel 125)
+- Gemeinsames Register `BELEGT` je Clip: Karten haben Vorrang; Logo, Sticker und Emoji entfallen, wenn an ihrer Stelle zur selben Zeit schon etwas steht (12 px Rand). Vorher prüfte jede Einblendung nur gegen Gesicht, Titel und Untertitel.
+- Eine Karte endet auch, wenn ein Zwischenbild (B-Roll) kommt oder geht – es ist ein Bildwechsel wie ein Schnitt.
+- Karten nur für echte Stichwörter: Hauptwort/Name (groß), Zahl oder mehrere Wörter. Einzelne klein geschriebene Wörter („frisch“, „ein“, „verlosen“, „folgen“) bekommen keine Karte.
+
+## Regel 128 – Anfang und Ende einer Aufnahme, Satzreste (Nacht 12./13.10., zu Regel 126)
+- `take_anlauf` prüft den ERSTEN Abschnitt nach jedem Clip-Wechsel (er beginnt oft 0,3–0,8 s hinter dem Wechsel – die erste Fassung mit 0,3 s Toleranz griff nie). Protokoll je Aufnahme: was gehört wurde, womit der Text beginnt.
+- Gegenstück am Ende jeder Aufnahme: Folgen nach dem letzten Satzwort nur Regie-/Abschlusswörter („Ja“, „Okay“, „nochmal“, „passt“ …, deutlich gehört), endet der Schnitt davor. Andere Wörter bleiben immer stehen – sie können ein überhörtes Satzende sein.
+- Ein Video beginnt nie mit einem Satzrest: Sind die ersten ein, zwei Wörter ein eigener „Satz“ mit Punkt (keine Begrüßung, kein Ausruf, keine Frage), fällt er weg (`kurz_anfang`; Erdbeerbecher begann mit „More.“).
+- Montage: Endet der Satz vor einem gewählten Satz im selben Clip ohne Satzzeichen, gehört er dazu und wird mitgenommen (höchstens 2 Teile, 12 Wörter).
+
+## Regel 129 – Umfragen mit mehreren Sprechern, Füll-Laute, Preise (Nacht 13.10., Testläufe neu2/runde3)
+- Preise, die die Erkennung zerlegt („1“ „,99..“), sind EIN Wort „1,99.“ (höchstens ein Satzzeichen am Ende).
+- Zweiter Schnitt hört den FERTIGEN Ton zweimal auf Füll-Laute ab (normal und mit Füll-Laut-Vorgabe). Ein „äh/ähm“, das nicht auf einem Untertitel-Wort liegt und wirklich Stimme hat, wird herausgenommen. Ein Füll-Laut wird nie als Untertitel nachgetragen.
+- Sicherer Neuschnitt nur noch, wenn nicht gehörte Wörter AM SCHNITT liegen (≤ 0,3 s vom Rand eines Abschnitts). Nicht gehörte Wörter mitten im Abschnitt sind Verhörer (Passanten: „Hallo“, „Ja.“, „Natürlich.“) – kein Schnittschaden. Vorher machte der grobe Neuschnitt gestrichene Wörter wieder hörbar (doppeltes „Okay“).
+- Ein Video endet nie mit einer Begrüßung („… Tschüss. Hallo.“ – das Hallo gehört zum nächsten Gespräch); wird wiederholt geprüft.
+- Ordner-Videos: Die KI darf beim Feinschnitt keinen GANZEN geplanten Satz (ab 4 Wörtern) streichen, außer er kommt doppelt vor (Malo's verlor in einem Lauf „Und jetzt ist unser Junior Burger fertig.“).
+- Resolve-Farbe wird erst beim endgültigen Schnitt gerechnet (`RESOLVE_OFFEN`), nicht bei jedem Zwischenschnitt (vorher bis zu dreimal je Auftrag).
+
+## Regel 130 – Gegenprobe, Wortendungen, Einzelwort-Rest (Nacht 13.10., Runden 4–5)
+- Vor dem groben Neuschnitt (sicherer Modus) werden die fraglichen Wörter im ROHMATERIAL nachgehört. Versteht die Hörprobe ein Wort auch dort nicht, ist es ein Verhörer und zählt nicht. Nur Wörter, die im Rohmaterial zu hören sind und im Schnitt nicht, gelten als Schnittschaden.
+- Das Lektorat ändert keine Wortendungen (s, n, e, en, es): „fünf Classic Cheesecakes“ bleibt Mehrzahl, auch wenn der Kunden-Name „Cheesecake“ heißt.
+- Bleibt von einem Satzteil (bis Komma/Punkt, mind. 3 Wörter) nur ein einziges Wort übrig und ist sein Ende gestrichen („…anders, nicht [immer das Gleiche.]“, „Ich [höre, ja.]“), fällt das Wort mit weg.
+
+## Regel 131 – Nichts Fremdes im Video (Inhaber 13.10.: „Teilvideos, die gar nicht zu dem Video gehören“ / „immer die gleichen Fehler“)
+- Ursache gefunden: Die Puzzle-Prüfung (08.10., „es fehlt ein Stück“) hängte nachträglich Sätze aus ungenutzten Clips an – auch von anderen Personen an anderen Orten (Umfrage mit zwei Frauen auf der Straße + Werbesatz vom Mann hinter der Theke). Danach prüfte niemand mehr.
+- `fremde_teile()` in montage.py läuft nach dem Schnittplan UND als letzte Kontrolle nach der Puzzle-Prüfung: (1) fest – nach einem Abschied kommt nichts mehr aus einem anderen Clip; (2) eigene KI-Frage nur dazu, welcher verwendete Clip ein anderes Thema/Gespräch ist; dessen Sätze fallen weg, solange ≥ 2 Sätze und ≥ 55 % der Wörter bleiben.
+- Grundsatz ab jetzt: Eine Regel, die nur als Satz im KI-Auftrag steht, gilt als NICHT umgesetzt. Jede Regel braucht eine Kontrolle im Code, die das Ergebnis prüft.
+
+## Regel 132 – Das richtige Ende (Inhaber 13.10.: „endet viel zu spät oder zu früh – das musst du selber einschätzen können“)
+- Zu früh: Der letzte Satz läuft immer bis zu SEINEM Satzende; gestrichene Wörter bis dahin (höchstens 6, 3,5 s) kommen zurück (Golden Thai Veggie endete mitten im Namen „Pad Pak Ruam [Mit, mit Tofu.]“, weil „mit Tofu“ als Doppelung galt).
+- Zu spät: `schluss_pruefung()` – eine eigene KI-Frage nur dazu, nach welchem Satz das Video zu Ende ist. Was danach kommt, fällt weg (höchstens die letzten 3 Sätze, höchstens 30 % des Videos).
+
+## Regel 133 – Look je Kunde (Inhaber 13.10.: „alle Videos sehen gleich aus – auf das Restaurant oder Unternehmen anpassen“)
+- `--color auto` / `--caption auto`: Die kräftigen Farben im Logo und im Material werden gemessen; die KI wählt daraus die Markenfarbe (sonst eine zur Branche), `lesbar()` bringt sie auf gute Lesbarkeit. Der Untertitel-Stil kommt aus den 11 vorhandenen, passend zu Branche, Tonfall und Schnitt-Stil. Karten, Titel und Premium-Thema übernehmen die Farbe.
+- Webseite: Haken „Look automatisch an dein Video anpassen“ (Standard an) schickt `auto`; ohne Haken wählt der Kunde wie bisher selbst. Im Code fertig, live erst nach `zsh scripts/deploy.sh` (Inhaber).
+
+## Regel 134 – Was der Handschnitt besser macht (13.10., Vergleich mit dem von Claude direkt geschnittenen Eröffnungs-Video)
+- Vorbild: `schnitt-maschine/test/handschnitt/eroeffnung/edit/` (bauen.py, final.mp4) und das Video des Kollegen. Unterschiede zur Software: Aufhänger zuerst, Produkt-Nahaufnahme genau beim genannten Wort, Schluss-Montage im Takt mit Schild, kleine Untertitel mit groß gesetztem Schlüsselwort, Einblendungen zum Inhalt (Preiskarte, Ortskarte).
+- `aufhaenger()` in montage.py: eigene KI-Frage nur zur Reihenfolge – der stärkste, allein verständliche Satz kommt nach vorn (nicht bei Zubereitung/Umfrage; nie ein Satz, der mit „Und/Oder/Natürlich auch/Wie zum Beispiel“ beginnt).
+- Untertitel-Stil `akzent`: kleine weiße Zeile, Wort für Wort; das Schlüsselwort am Ende eines Satzteils (≥ 6 Buchstaben, höchstens alle 1,8 s) steht allein, groß und kursiv. Über `--caption auto` wählbar.
+- Ein fairer Ordner-Test braucht den GANZEN Ordner des Kunden (Sprech-Clips UND Produktbilder) – Test-Ordner nur aus Sprech-Clips können keine Zwischenbilder zeigen.
+- Offen (Entscheidung des Inhabers): Schluss-Montage aus Produktbildern für Sprech-Videos – braucht Musik, die bei Sprech-Videos bisher standardmäßig AUS ist.
+
+## Regel 135 – Claude-Schnitt: jede Fassung so abhören, wie der Zuschauer sie hört (13.10., Papaya-Video aus unbekanntem Material)
+- Blick: Vor der Wahl einer Fassung ein Bild daraus ansehen – schaut die Person in die Kamera oder liest sie vom Handy ab? Nur Fassungen mit Blick in die Kamera.
+- Verständlichkeit: Nicht die flüssigste, sondern die am klarsten gesprochene Fassung nehmen. `bauen` hört jeden geschnittenen Sprechteil einzeln ab (ohne Zusammenhang) und warnt unter 0,85 („⚠ UNDEUTLICH“). Bei Warnung: Gehörtes mit dem Plan vergleichen – steht dort ein Wort mehr oder ein anderes, stimmt der Schnitt nicht.
+- Verschluckte Wörter: Eine Pause ≥ 0,7 s mitten im Satz, in der es nicht still ist, enthält oft Wörter, die die Erkennung ausgelassen hat („…die eine Frucht, [die in 24 Stunden] deine Verdauung…“). `hoeren` hört solche Lücken jetzt von selbst nach. Trotzdem gilt: ergibt ein Satz im Transkript grammatisch keinen Sinn, die Stelle einzeln abhören, bevor geschnitten wird.
+- Ein Satz bleibt ein Sprechteil: Zwei Sprechteile, die im Rohclip direkt hintereinander liegen, werden als EINER geplant – sonst fällt weg, was dazwischen gesprochen wurde.
+
+## Regel 136 – Claude-Schnitt: drei Stufen, die man unterscheidet – und eine Grundqualität, die alle haben (Inhaber 13.10.)
+- JEDE Stufe: letzte saubere Fassung, Schnittkanten in der Ruhe, Farbe je Rohclip gemessen (`farbe()`), Stabilisierung wo das Bild zittert (`stabilisieren()`), Untertitel neben dem Gesicht, Ausschnitt-Wechsel am Schnitt innerhalb derselben Aufnahme, −14 LUFS.
+- `"stufe": "clean"` – ruhig: kleine weiße Untertitel, Schlagwort kursiv (88), Wechsel 6 %, keine Karten/Emojis (nur „ort“ am Schluss), keine Töne.
+- `"stufe": "viral"` – Wechsel 12 %, Heranfahren im Aufhänger, Glas-Karten + Emojis, Töne, Schlagwort groß (112) in Akzentfarbe.
+- `"stufe": "premium"` – wie viral, dazu Heranfahren in jedem Sprechteil, Kino-Farbe mit leichter Randabdunklung, Fortschrittslinie oben in Akzentfarbe.
+- Akzentfarbe nur, wo sie lesbar ist: Das Werkzeug misst die Fläche hinter dem Untertitel; ist die Farbe ihr zu ähnlich (Gold auf beigem Hemd), bleibt das Schlagwort weiß.
+- Stabilisierung wird nachgemessen: Bringt sie nicht mindestens 30 % weniger Zittern (wilde Handy-Schwenks), bleibt das Original. Stativ-Aufnahmen werden nie angefasst.
+- `"logo": <Pfad>` – Kundenlogo klein oben links. `"musik"` – Name aus `schnitt-maschine/musik/` oder voller Pfad aus `material/MUSIK/<Kategorie>/`.

@@ -4,8 +4,8 @@
 import { createClient } from '@supabase/supabase-js';
 import { AwsClient } from 'aws4fetch';
 import { spawn } from 'node:child_process';
-import { createWriteStream, existsSync } from 'node:fs';
-import { mkdir, readFile, rm, stat } from 'node:fs/promises';
+import { createWriteStream, existsSync, readFileSync, readdirSync } from 'node:fs';
+import { cp, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir, hostname } from 'node:os';
 import { join } from 'node:path';
 import { pipeline as streamPipeline } from 'node:stream/promises';
@@ -20,6 +20,72 @@ const MASCHINE = process.env.VELOX_MASCHINE || join(import.meta.dirname, '..', '
 const PYTHON = process.env.PYTHON || join(MASCHINE, 'venv', 'bin', 'python');
 const TMP = process.env.WORKER_TMP || (existsSync(MASCHINE) ? join(MASCHINE, 'tmp') : join(tmpdir(), 'velox-worker'));
 const POLL_MS = 8000;
+// Lernmaterial: Aufträge von Test-Konten (haben diesen Code eingelöst) bleiben mit Rohvideo und Ergebnis auf der SSD
+// (…/schnitt-maschine/lern/<Datum>_<Auftrag>), statt nach dem Schnitt gelöscht zu werden. Alle anderen Kunden: wie bisher löschen.
+const LERN_CODE = process.env.LERN_CODE || 'TEST-F7LF3Y4H';
+const CLAUDE_SCHNITT = ['lern', 'alle'].includes(process.env.CLAUDE_SCHNITT) ? process.env.CLAUDE_SCHNITT : ''; // '' = aus (Standard)
+// AUSWEICHEN (Launch-Vorbereitung 16.10.: „nichts darf hängen bleiben“). Wird ein Auftrag, der an den Claude-Schnitt gegangen
+// ist, nicht innerhalb von CLAUDE_FRIST_MIN Minuten (Standard 45) angefasst – Claude-App zu, geplante Aufgabe nicht freigegeben,
+// Rechner war aus –, schneidet die Maschine ihn selbst auf dem bewährten Weg (pipeline/montage) aus dem abgelegten Rohmaterial.
+// Der Kunde bekommt also immer ein Video. Merkliste: schnitt-maschine/claude_ausweich.json.
+const CLAUDE_FRIST_MIN = Number(process.env.CLAUDE_FRIST_MIN || 45);
+const AUSWEICH_DATEI = join(MASCHINE, 'claude_ausweich.json');
+function ausweichListe() { try { return new Set(JSON.parse(readFileSync(AUSWEICH_DATEI, 'utf8'))); } catch { return new Set(); } }
+function claudeAblagen() {   // [{ordner, f, j}] aller abgelegten Claude-Aufträge
+  const lern = join(MASCHINE, 'lern');
+  if (!existsSync(lern)) return [];
+  const r = [];
+  for (const d of readdirSync(lern)) {
+    const f = join(lern, d, 'freigabe.json');
+    if (!existsSync(f)) continue;
+    try { const j = JSON.parse(readFileSync(f, 'utf8')); if (j.claude) r.push({ ordner: join(lern, d), f, j }); } catch { /* unlesbar */ }
+  }
+  return r;
+}
+async function claudeFristPruefen() {
+  if (!CLAUDE_SCHNITT) return;
+  const liste = ausweichListe();
+  for (const { ordner, f, j } of claudeAblagen()) {
+    if (j.erledigt || Date.now() - Date.parse(j.wartet_seit) < CLAUDE_FRIST_MIN * 60e3) continue;
+    const ed = join(ordner, 'edit');   // Claude arbeitet gerade daran (in den letzten 20 Min. etwas geschrieben) → nicht dazwischenfunken
+    if (existsSync(ed) && Date.now() - (await stat(ed)).mtimeMs < 20 * 60e3) continue;
+    const { data: z } = await sb.from('jobs').update({ status: 'queued', stage: 'Dein Video wird gerade geschnitten …' }).eq('id', j.id).eq('status', 'review').select('id');
+    j.erledigt = z?.length ? 'ausweich' : 'nicht-mehr-offen'; j.erledigt_am = new Date().toISOString();
+    await writeFile(f, JSON.stringify(j, null, 1));
+    if (!z?.length) continue;
+    liste.add(j.id);
+    await writeFile(AUSWEICH_DATEI, JSON.stringify([...liste]));
+    log('⏱', j.id, `wartete über ${CLAUDE_FRIST_MIN} Min. auf den Claude-Schnitt – die Maschine schneidet ihn jetzt selbst`);
+  }
+}
+function ausweichRoh(jobId) {   // Rohmaterial eines Ausweich-Auftrags aus der Ablage
+  for (const { ordner, j } of claudeAblagen()) {
+    if (j.id === jobId && j.erledigt === 'ausweich' && j.roh) {
+      const p = j.roh.startsWith('/') ? j.roh : join(ordner, j.roh);
+      if (existsSync(p)) return p;
+    }
+  }
+  return null;
+}
+async function istLernkonto(userId) {
+  if (!LERN_CODE) return false;
+  const { data } = await sb.from('code_uses').select('code').eq('code', LERN_CODE).eq('user_id', userId).limit(1);
+  return !!data?.length;
+}
+// wartet = { outputs } → der Auftrag steht auf „review“ (Inhaber 10.10., Weg B): Das Video geht erst an den Kunden, wenn es
+// geprüft ist. Freigeben/ersetzen/ablehnen: node --env-file=worker/.env worker/freigeben.mjs (liest freigabe.json).
+async function lernablage(job, dir, wartet = null) {
+  if (!existsSync(dir) || !(wartet?.claude || await istLernkonto(job.user_id))) return false;
+  const { data: j } = await sb.from('jobs').select('status, error, style, clips, outputs, created_at').eq('id', job.id).single();
+  const ziel = join(MASCHINE, 'lern', `${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')}_${job.id}`);
+  await mkdir(join(MASCHINE, 'lern'), { recursive: true });
+  await rename(dir, ziel);
+  await writeFile(join(ziel, 'auftrag.json'), JSON.stringify({ id: job.id, ...j, user_id: job.user_id, source_kind: job.source_kind, source_name: job.source_name, caption_style: job.caption_style, caption_color: job.caption_color, music: job.music }, null, 1));
+  if (wartet) await writeFile(join(ziel, 'freigabe.json'), JSON.stringify({ id: job.id, user_id: job.user_id, wartet_seit: new Date().toISOString(), outputs: wartet.outputs,
+    ...(wartet.claude ? { claude: true, roh: wartet.roh, marke: wartet.marke, stil: job.style, logo: wartet.logo, lernkonto: wartet.lernkonto } : {}) }, null, 1));
+  log('📚', job.id, 'als Lernmaterial abgelegt');
+  return true;
+}
 
 // Video-Speicher Cloudflare R2 (S3-kompatibel): uploads/<pfad> und outputs/<pfad>
 const r2 = new AwsClient({ accessKeyId: process.env.R2_ACCESS_KEY_ID, secretAccessKey: process.env.R2_SECRET_ACCESS_KEY, service: 's3', region: 'auto' });
@@ -121,8 +187,19 @@ function youtubeId(url) {
   } catch { return null; }
 }
 
-/** YouTube-Video herunterladen (yt-dlp, höchstens 1080p und 3 Stunden) */
-function ytDownload(job, id, file) {
+/** YouTube-Video herunterladen (yt-dlp, höchstens 1080p und 3 Stunden).
+ *  Test 14.10.: Ein Abruf brach nach 20 MB ab, derselbe Link lief von Hand sofort durch – YouTube bricht Downloads ab und zu
+ *  ab. Deshalb bis zu drei Versuche (yt-dlp setzt die angefangene Datei fort); der echte Fehler kommt ins Protokoll. */
+async function ytDownload(job, id, file) {
+  for (let v = 1; ; v++) {
+    try { return await ytDownloadEinmal(job, id, file); } catch (e) {
+      log('YouTube-Abruf', job.id, `Versuch ${v}:`, (e.detail || e.message).slice(-400).replace(/\s+/g, ' '));
+      if (v >= 3 || e.endgueltig) throw e;
+      await new Promise((r) => setTimeout(r, 5000 * v));
+    }
+  }
+}
+function ytDownloadEinmal(job, id, file) {
   const bin = process.env.YTDLP || ['/opt/homebrew/bin/yt-dlp', '/usr/local/bin/yt-dlp'].find((p) => existsSync(p)) || 'yt-dlp';
   return new Promise((resolve, reject) => {
     const p = spawn(bin, ['--no-playlist', '--no-progress', '--match-filter', 'duration<=10800 & !is_live',
@@ -132,9 +209,15 @@ function ytDownload(job, id, file) {
     p.stdout.on('data', () => { beat.last_output = new Date().toISOString(); });
     p.stderr.on('data', (b) => { beat.last_output = new Date().toISOString(); err = (err + b).slice(-1500); });
     p.on('error', () => reject(new Error('YouTube-Download ist auf der Schnitt-Maschine nicht eingerichtet.')));
-    p.on('close', (code) => (code === 0 && existsSync(file) ? resolve()
-      : reject(new Error(/Private video|Sign in|members-only|age/i.test(err) ? 'Dieses YouTube-Video ist privat oder nur mit Anmeldung abrufbar.'
-        : 'YouTube-Video nicht abrufbar – stimmt der Link? (Live-Übertragungen und Videos über 3 Stunden gehen nicht.)'))));
+    p.on('close', (code) => {
+      if (code === 0 && existsSync(file)) return resolve();
+      const privat = /Private video|Sign in|members-only|age/i.test(err);
+      const zuLang = /does not pass filter/i.test(err);
+      const e = new Error(privat ? 'Dieses YouTube-Video ist privat oder nur mit Anmeldung abrufbar.'
+        : 'YouTube-Video nicht abrufbar – stimmt der Link? (Live-Übertragungen und Videos über 3 Stunden gehen nicht.)');
+      e.detail = err; e.endgueltig = privat || zuLang;
+      reject(e);
+    });
   });
 }
 
@@ -146,6 +229,12 @@ function driveDirect(url) {
 }
 
 async function download(job, dir) {
+  const ausweich = ausweichRoh(job.id);
+  if (ausweich) {   // Uploads sind bei der Übergabe an Claude schon gelöscht → Rohmaterial aus der Ablage nehmen
+    const ziel = join(dir, ausweich.split('/').pop());
+    await cp(ausweich, ziel, { recursive: true });
+    return ziel;
+  }
   if (job.source_kind === 'folder') { // mehrere Clips + Bilder → eigener Eingangsordner
     const inDir = join(dir, 'eingang');
     await mkdir(inDir, { recursive: true });
@@ -209,7 +298,7 @@ function runMontage(job, inDir, dir, words = '') {
   return new Promise((resolve, reject) => {
     const args = [join(import.meta.dirname, 'montage.py'), '--out', join(dir, 'montage'), '--style', job.style, '--clips', '1', // ein Ordner = ein Video (Inhaber 06.10.)
       ...(words ? ['--words', words.slice(0, 300)] : []), inDir];
-    const p = spawn(PYTHON, args, { stdio: ['ignore', 'pipe', 'pipe'], env: { VELOX_MASCHINE: MASCHINE, ...process.env, PYTHONUNBUFFERED: '1' } });
+    const p = spawn(PYTHON, args, { stdio: ['ignore', 'pipe', 'pipe'], env: { VELOX_MASCHINE: MASCHINE, ...process.env, ...jobEnv, PYTHONUNBUFFERED: '1' } });
     let last = '';
     let errTxt = '';
     p.stdout.on('data', (b) => {
@@ -249,7 +338,7 @@ function runMusikschnitt(job, inDir, dir, logo, words = '') {
 
 function runPy(job, args) {
   return new Promise((resolve, reject) => {
-    const p = spawn(PYTHON, args, { stdio: ['ignore', 'pipe', 'pipe'], env: { VELOX_MASCHINE: MASCHINE, ...process.env, PYTHONUNBUFFERED: '1' } });
+    const p = spawn(PYTHON, args, { stdio: ['ignore', 'pipe', 'pipe'], env: { VELOX_MASCHINE: MASCHINE, ...process.env, ...jobEnv, PYTHONUNBUFFERED: '1' } });
     let last = '';
     let errTxt = '';
     let lastOut = Date.now();
@@ -277,7 +366,16 @@ function runPy(job, args) {
   });
 }
 
+// Änderungswunsch (Revision, Inhaber 11.10.): Der Wunsch des Kunden und der Text der bisherigen Fassung gehen als
+// Umgebungsvariablen an die Schnitt-Programme; ki.py hängt sie an jede KI-Anweisung („nur das Gewünschte ändern“).
+let jobEnv = {};
+const ROH_STUNDEN = 24; // so lange bleibt das Rohmaterial nach dem Schnitt für Änderungswünsche liegen
+
 async function processJob(job) {
+  let wartet = null;
+  const rev = !!job.revision_note && (job.revisions ?? 0) > 0 && Array.isArray(job.outputs) && job.outputs.length > 0;
+  jobEnv = rev ? { VELOX_KUNDENWUNSCH: String(job.revision_note).slice(0, 600), VELOX_VORHER: job.outputs.map((o) => o.text || '').filter(Boolean).join('\n\n').slice(0, 6000) } : {};
+  if (rev) log('✏️', job.id, `Änderungswunsch Nr. ${job.revisions}: ${String(job.revision_note).slice(0, 80)}`);
   const dir = join(TMP, job.id);
   await mkdir(dir, { recursive: true });
   log('▶', job.id, job.style, `${job.clips} Clip(s)`, job.source_name ?? '');
@@ -289,6 +387,26 @@ async function processJob(job) {
     const logo = job.use_logo ? await downloadLogo(job, dir).catch(() => null) : null;
     // Namen & Marken des Kunden (Spalte fehlt evtl. noch → einfach ohne)
     const { data: pw } = await sb.from('profiles').select('brand_words').eq('id', job.user_id).single();
+    // CLAUDE-SCHNITT (Inhaber 13.10.2026: „Claude soll Augen, Ohren und der Analysator für die Videos sein – nicht mehr Google
+    // AI Studio“). Mit CLAUDE_SCHNITT=lern (nur Lernkonto) oder CLAUDE_SCHNITT=alle schneidet die Maschine nicht selbst: Sie legt
+    // das Rohmaterial ab und stellt den Auftrag auf „review“. Die geplante Aufgabe in der Claude-App schneidet ihn nach
+    // notizen/claude-schnitt.md (claude_schnitt.py) und gibt ihn mit freigeben.mjs frei. Ohne die Variable bleibt alles wie bisher.
+    const ausweichen = ausweichListe().has(job.id);
+    if (CLAUDE_SCHNITT && !rev && !ausweichen) {
+      const lk = await istLernkonto(job.user_id).catch(() => false);
+      if (CLAUDE_SCHNITT === 'alle' || lk) {
+        const outputs = [{ path: `${job.user_id}/${job.id}/clip-1.mp4`, title: job.source_name || 'Dein Video', seconds: 0, songs: [], post: null }];
+        const { data: rv, error: re } = await setJob(job.id, { status: 'review', progress: 40, stage: 'Dein Video wird gerade geschnitten – du bekommst eine E-Mail, sobald es fertig ist' }).eq('status', 'processing').select('id');
+        if (!re && rv?.length) {
+          wartet = { outputs, claude: true, roh: src.startsWith(dir) ? src.slice(dir.length + 1) : src, marke: pw?.brand_words || '', logo: logo ? (logo.startsWith(dir) ? logo.slice(dir.length + 1) : logo) : null, lernkonto: lk };
+          if (job.source_path) { await r2del(`uploads/${job.source_path}`); await setJob(job.id, { source_path: null }); }
+          if (job.source_paths?.length) { for (const p of job.source_paths) await r2del(`uploads/${p}`); await setJob(job.id, { source_paths: [] }); }
+          log('🎬', job.id, 'wartet auf den Claude-Schnitt');
+          return;
+        }
+        if (re) log('Claude-Schnitt: Prüf-Status nicht möglich (0011.sql ausgeführt?) – schneide wie bisher:', re.message);
+      }
+    }
     let plan = null;
     let result = null; // { clips: [{file, title, seconds, songs}] }
     const many = job.source_kind === 'folder' || (await stat(src)).isDirectory(); // Ordner-Upload oder Drive-Ordner
@@ -330,12 +448,27 @@ async function processJob(job) {
       const path = `${job.user_id}/${job.id}/clip-${i + 1}.mp4`;
       const up = await r2put(`outputs/${path}`, await readFile(c.file));
       if (!up.ok) throw new Error('Hochladen des Clips fehlgeschlagen.');
-      outputs.push({ path, title: c.title || `Clip ${i + 1}`, seconds: c.seconds, songs: c.songs ?? [], post: c.post ?? null });
+      // Text der fertigen Fassung merken – ein späterer Änderungswunsch baut darauf auf
+      const text = await readFile(c.file.replace(/\.mp4$/, '.woerter.json'), 'utf8').then((t) => JSON.parse(t).map((w) => w[0]).join(' ').slice(0, 4000)).catch(() => '');
+      outputs.push({ path, title: c.title || `Clip ${i + 1}`, seconds: c.seconds, songs: c.songs ?? [], post: c.post ?? null, ...(text ? { text } : {}) });
     }
     // weniger Clips als bezahlt → Differenz erstatten
-    if (outputs.length < job.clips) {
+    if (outputs.length < job.clips && !rev) {
       const per = Math.round(job.credits_charged / job.clips);
       await sb.rpc('refund_credits', { p_user: job.user_id, p_amount: per * (job.clips - outputs.length), p_ref: `${job.id}-teil` });
+    }
+    // Lernkonto: nicht ausliefern, sondern auf „review“ stellen (Clips liegen schon im Speicher, stehen aber noch nicht am
+    // Auftrag). Kennt die Datenbank den Status noch nicht (0011.sql fehlt), wird wie gewohnt ausgeliefert.
+    if (!ausweichen && await istLernkonto(job.user_id).catch(() => false)) {
+      const { data: rv, error: re } = await setJob(job.id, { status: 'review', progress: 99, stage: 'Letzte Qualitätsprüfung – du bekommst eine E-Mail, sobald dein Video freigegeben ist' }).eq('status', 'processing').select('id');
+      if (!re && rv?.length) {
+        wartet = { outputs };
+        if (job.source_path) { await r2del(`uploads/${job.source_path}`); await setJob(job.id, { source_path: null }); }
+        if (job.source_paths?.length) { for (const p of job.source_paths) await r2del(`uploads/${p}`); await setJob(job.id, { source_paths: [] }); }
+        log('⏳', job.id, `${outputs.length} Clip(s) – wartet auf Prüfung`);
+        return;
+      }
+      if (re) log('Prüf-Status nicht möglich (0011.sql ausgeführt?):', re.message);
     }
     // nur abschließen, wenn der Wächter den Auftrag nicht schon beendet (und erstattet) hat
     const { data: fin } = await setJob(job.id, { status: 'done', progress: 100, outputs, finished_at: new Date().toISOString() }).eq('status', 'processing').select('id');
@@ -345,8 +478,13 @@ async function processJob(job) {
       return;
     }
     // Rohvideo sofort löschen – wird nicht mehr gebraucht (Datenschutz, Speicherplatz)
-    if (job.source_path) { await r2del(`uploads/${job.source_path}`); await setJob(job.id, { source_path: null }); }
-    if (job.source_paths?.length) { for (const p of job.source_paths) await r2del(`uploads/${p}`); await setJob(job.id, { source_paths: [] }); }
+    // Rohvideo noch 24 Stunden behalten (für einen Änderungswunsch), dann löscht cleanup() es. Kennt die Datenbank die Spalte
+    // noch nicht (0012.sql fehlt), wird wie früher sofort gelöscht (Datenschutz, Speicherplatz).
+    const { error: ke } = await setJob(job.id, { keep_until: new Date(Date.now() + ROH_STUNDEN * 3600e3).toISOString(), revision_note: null });
+    if (ke) {
+      if (job.source_path) { await r2del(`uploads/${job.source_path}`); await setJob(job.id, { source_path: null }); }
+      if (job.source_paths?.length) { for (const p of job.source_paths) await r2del(`uploads/${p}`); await setJob(job.id, { source_paths: [] }); }
+    }
     log('✓', job.id, `${outputs.length} Clip(s)`);
     await mail({ art: 'fertig', job: job.id }); // „Dein Video ist fertig“ – Kunde muss das Studio nicht offen lassen
   } catch (e) {
@@ -357,11 +495,16 @@ async function processJob(job) {
       return;
     }
     log('✗', job.id, e.message);
+    if (rev) { // Änderung gescheitert: Das bisherige Video bleibt, nur die Credits dieser Änderung gehen zurück
+      await setJob(job.id, { status: 'done', progress: 100, revision_note: null, stage: 'Die Änderung hat nicht geklappt – dein bisheriges Video ist unverändert' }).eq('status', 'processing');
+      if (job.revision_cost > 0) await sb.rpc('refund_credits', { p_user: job.user_id, p_amount: job.revision_cost, p_ref: `${job.id}-rev${job.revisions}` });
+      return;
+    }
     await setJob(job.id, { status: 'failed', error: friendly(String(e.message)).slice(0, 300), finished_at: new Date().toISOString() }).eq('status', 'processing');
     await sb.rpc('refund_job', { p_job: job.id });
   } finally {
     await heartbeat({ busy_job: null, last_output: null }).catch(() => null);
-    await rm(dir, { recursive: true, force: true });
+    if (!(await lernablage(job, dir, wartet).catch((e) => { log('Lernablage:', e.message); return false; }))) await rm(dir, { recursive: true, force: true });
   }
 }
 
@@ -379,6 +522,13 @@ async function cleanup() {
     for (const o of j.outputs) await r2del(`outputs/${o.path}`);
     await setJob(j.id, { outputs: [], error: 'Clips nach 90 Tagen gelöscht' });
   }
+  // Rohmaterial, das für Änderungswünsche aufgehoben wurde, nach Ablauf der 24 Stunden löschen
+  const { data: abg } = await sb.from('jobs').select('id, source_path, source_paths').lt('keep_until', new Date().toISOString()).eq('status', 'done').limit(200);
+  for (const j of abg ?? []) {
+    if (j.source_path) await r2del(`uploads/${j.source_path}`);
+    for (const p of j.source_paths ?? []) await r2del(`uploads/${p}`);
+    await setJob(j.id, { source_path: null, source_paths: [], keep_until: null });
+  }
   if ((olds?.length || 0) + (outs?.length || 0)) log('🧹 aufgeräumt', olds?.length || 0, 'Uploads,', outs?.length || 0, 'Aufträge mit Clips');
 }
 
@@ -387,11 +537,24 @@ await sb.from('jobs').update({ status: 'queued', progress: 0 }).eq('status', 'pr
 await heartbeat({ busy_job: null, last_output: null }).catch(() => null);
 log(`Schnitt-Maschine „${WORKER}“ läuft. Warte auf Aufträge …`);
 let lastCleanup = 0;
+let lastFrist = 0;
 for (;;) {
   try {
-    if (Date.now() - lastCleanup > 6 * 3600e3) { await cleanup(); await refreshTrends().catch(() => null); lastCleanup = Date.now(); }
+    if (Date.now() - lastCleanup > 1 * 3600e3) { await cleanup(); await refreshTrends().catch(() => null); lastCleanup = Date.now(); }
+    if (Date.now() - lastFrist > 2 * 60e3) { await claudeFristPruefen().catch((e) => log('Frist-Prüfung:', e.message)); lastFrist = Date.now(); }
     const { count } = await sb.from('jobs').select('id', { count: 'exact', head: true }).eq('status', 'queued');
-    if (count && !(await aiReady())) {
+    // Claude-Schnitt für alle: Die Maschine braucht für diese Aufträge keine KI von Google – der Wächter hält sie dann nicht auf
+    // (Test 13.10.: Prepaid leer + Gratis-Limit erreicht → der Auftrag blieb in der Schlange, obwohl Claude ihn schneiden sollte).
+    let claudeDran = CLAUDE_SCHNITT === 'alle';
+    if (count && claudeDran) {   // Ausweich-Aufträge schneidet die Maschine selbst – dafür braucht sie die KI wie früher
+      const { data: nx } = await sb.from('jobs').select('id').eq('status', 'queued').order('created_at', { ascending: true }).limit(1);
+      if (nx?.[0] && ausweichListe().has(nx[0].id)) claudeDran = false;
+    }
+    if (count && CLAUDE_SCHNITT === 'lern') {   // der nächste Auftrag gehört einem Lernkonto → Claude schneidet, Google wird nicht gebraucht
+      const { data: nx } = await sb.from('jobs').select('user_id').eq('status', 'queued').order('created_at', { ascending: true }).limit(1);
+      claudeDran = !!nx?.[0] && await istLernkonto(nx[0].user_id).catch(() => false);
+    }
+    if (count && !claudeDran && !(await aiReady())) {
       await sb.from('jobs').update({ stage: 'Gerade viel los – startet automatisch, du bekommst eine E-Mail, sobald dein Video fertig ist' }).eq('status', 'queued');
       await new Promise((r) => setTimeout(r, 30_000));
       continue;

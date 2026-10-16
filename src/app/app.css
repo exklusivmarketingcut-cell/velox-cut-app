@@ -81,6 +81,7 @@ label.f { display: grid; gap: 6px; font-size: 14px; font-weight: 600; color: #c9
 .badge { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; }
 .badge.queued { background: rgba(255,255,255,.08); color: #c9cbd6; }
 .badge.processing { background: rgba(79,158,255,.16); color: #9cc8ff; }
+.badge.review { background: rgba(246,226,127,.14); color: #f6e27f; }
 .badge.done { background: rgba(46,204,113,.14); color: #7ee2a8; }
 .badge.failed { background: rgba(255,107,139,.14); color: #ff9db2; }
 .dl { display: flex; gap: 8px; flex-wrap: wrap; grid-column: 1 / -1; }

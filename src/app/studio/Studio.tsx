@@ -4,13 +4,13 @@ import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import CaptionPreview from './CaptionPreview';
 import Results from './Results';
-import { jobCost, MAX_CLIPS_PER_JOB, MAX_UPLOAD_BYTES, STYLES, type StyleId, PREMIUM_AKTIV } from '@/lib/pricing';
+import { jobCost, MAX_CLIPS_PER_JOB, MAX_UPLOAD_BYTES, STYLES, type StyleId, PREMIUM_AKTIV, REVISION_AKTIV, revisionCost } from '@/lib/pricing';
 
 type Job = {
-  id: string; status: 'queued' | 'processing' | 'done' | 'failed'; style: StyleId; clips: number; source_name: string | null;
+  id: string; status: 'queued' | 'processing' | 'review' | 'done' | 'failed'; style: StyleId; clips: number; source_name: string | null;
   source_kind: string; credits_charged: number; progress: number; error: string | null; created_at: string;
   outputs: { title?: string; songs?: { song: string; artist: string; warum?: string }[]; post?: { text: string; hashtags: string[] } | null }[];
-  started_at?: string | null; stage?: string | null;
+  started_at?: string | null; stage?: string | null; revisions?: number; keep_until?: string | null; finished_at?: string | null;
 };
 
 const CAPTIONS = [
@@ -30,7 +30,7 @@ function eta(j: Job): string {
   return left < 60 ? 'noch ca. 1 Min.' : `noch ca. ${Math.round(left / 60)} Min.`;
 }
 
-const STATUS: Record<Job['status'], string> = { queued: 'In der Warteschlange', processing: 'Wird geschnitten', done: 'Fertig', failed: 'Fehlgeschlagen' };
+const STATUS: Record<Job['status'], string> = { queued: 'In der Warteschlange', processing: 'Wird geschnitten', review: 'Wird geprüft', done: 'Fertig', failed: 'Fehlgeschlagen' };
 
 /** Datei direkt in den Speicher hochladen (signierter Link, mit Fortschritt) */
 function putFile(signedUrl: string, file: File, onProgress: (p: number) => void) {
@@ -79,6 +79,9 @@ const DRIVE_RE = /^https:\/\/((drive|docs)\.google\.com|(www\.|m\.)?youtube\.com
 export default function Studio({ credits, initialJobs }: { credits: number; initialJobs: Job[] }) {
   const [tab, setTab] = useState<'upload' | 'drive'>('upload');
   const [files, setFiles] = useState<File[]>([]);
+  const [brolls, setBrolls] = useState<File[]>([]); // eigener B-Roll-Bereich: Zwischenschnitte und Bilder, nie Sprech-Clips
+  const brollInput = useRef<HTMLInputElement>(null);
+  const [overB, setOverB] = useState(false);
   const file = files.find((f) => f.type.startsWith('video/') || /\.(mp4|mov|m4v)$/i.test(f.name)) ?? null; // Vorschau: erstes Video
   const [drive, setDrive] = useState('');
   const [style, setStyle] = useState<StyleId>('clean');
@@ -87,6 +90,8 @@ export default function Studio({ credits, initialJobs }: { credits: number; init
   // Anzahl Clips gibt es nur bei einem YouTube-Link (Inhaber 07.10.) – alles andere wird zu genau einem Video
   const istYoutube = tab === 'drive' && /^https:\/\/((www\.|m\.)?youtube\.com|youtu\.be)\//.test(drive.trim());
   const [color, setColor] = useState(COLORS[0]);
+  // Look automatisch (Inhaber 13.10.: „Alle Videos sehen gleich aus – das sollte auf das Restaurant oder Unternehmen angepasst sein“)
+  const [autoLook, setAutoLook] = useState(true);
   const [clips, setClips] = useState(1);
   const [useLogo, setUseLogo] = useState(false);
   const [logoUrl, setLogoUrl] = useState<string | null>(null);
@@ -132,7 +137,21 @@ export default function Studio({ credits, initialJobs }: { credits: number; init
     fresh.forEach((j) => failedSeen.current.add(j.id));
     if (fresh.length) router.refresh();
   }, [router]);
-  const active = jobs.some((j) => j.status === 'queued' || j.status === 'processing');
+  const active = jobs.some((j) => j.status === 'queued' || j.status === 'processing' || j.status === 'review');
+  // Änderungswunsch zu einem fertigen Video: Notiz schreiben, Video wird gezielt verbessert (1. Mal gratis, danach ¼ Stil-Preis)
+  const [revFor, setRevFor] = useState<string | null>(null);
+  const [revNote, setRevNote] = useState('');
+  const [revBusy, setRevBusy] = useState(false);
+  const sendRevision = async (id: string) => {
+    if (revNote.trim().length < 5) { setErr('Bitte beschreibe kurz, was geändert werden soll.'); return; }
+    setRevBusy(true);
+    const r = await fetch(`/api/jobs/${id}/revision`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ note: revNote.trim() }) });
+    const d = await r.json().catch(() => ({}));
+    setRevBusy(false);
+    if (!r.ok) { setErr(d.error === 'credits' ? `Dafür fehlen dir Credits (nötig: ${d.need}).` : d.error || 'Der Änderungswunsch konnte nicht angelegt werden.'); return; }
+    setRevFor(null); setRevNote(''); if (open === id) setOpen(null);
+    await reload(); router.refresh();
+  };
   // Fertiges Video aus der Liste löschen (mit Rückfrage – die Clip-Dateien werden mit gelöscht)
   const removeJob = async (id: string) => {
     if (!window.confirm('Dieses Video endgültig löschen? Lade es vorher herunter, wenn du es noch brauchst.')) return;
@@ -189,6 +208,14 @@ export default function Studio({ credits, initialJobs }: { credits: number; init
     setFiles(all);
   }
 
+  function pickBroll(list?: FileList | File[] | null) {
+    setErr('');
+    const all = Array.from(list ?? []).filter((f) => !f.name.startsWith('.') && MEDIA(f));
+    if (!all.length) return;
+    if (all.some((f) => f.size > MAX_UPLOAD_BYTES)) return setErr('Eine Datei ist größer als 4 GB – bitte kleiner hochladen.');
+    setBrolls((old) => [...old, ...all].slice(0, 100));
+  }
+
   async function start() {
     setErr('');
     if (cost > balance)
@@ -200,25 +227,26 @@ export default function Studio({ credits, initialJobs }: { credits: number; init
     setBusy(true);
     try {
       let sourcePaths: string[] | undefined;
-      if (tab === 'upload' && files.length > 1) {
+      if (tab === 'upload' && files.length && files.length + brolls.length > 1) {
         // mehrere Clips (Ordner) → gemeinsamer Stapel, Gesamtfortschritt über alle Bytes
         const batch = crypto.randomUUID();
-        const total = files.reduce((a, f) => a + f.size, 0);
+        const alle = [...files.map((f) => ({ f, broll: false })), ...brolls.map((f) => ({ f, broll: true }))];
+        const total = alle.reduce((a, x) => a + x.f.size, 0);
         let done = 0;
         sourcePaths = [];
         setUp(0);
-        for (const f of files) {
+        for (const { f, broll } of alle) {
           const type = f.type || (/\.(jpe?g)$/i.test(f.name) ? 'image/jpeg' : /\.png$/i.test(f.name) ? 'image/png' : 'video/mp4');
           const s = await fetch('/api/uploads/sign', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name: f.name, size: f.size, type, batch }),
+            body: JSON.stringify({ name: f.name, size: f.size, type, batch, broll }),
           }).then((r) => r.json());
           if (!s.signedUrl) throw new Error(s.error || `${f.name} konnte nicht hochgeladen werden.`);
           await putFile(s.signedUrl, f, (p) => setUp(Math.round(((done + (f.size * p) / 100) / total) * 100)));
           done += f.size;
           sourcePaths.push(s.path);
         }
-        sourceName = `${files.length} Dateien`;
+        sourceName = brolls.length ? `${files.length} ${files.length === 1 ? 'Video' : 'Dateien'} + ${brolls.length} B-Roll` : `${files.length} Dateien`;
       } else if (tab === 'upload') {
         if (!file) throw new Error('Bitte wähle zuerst ein Video aus.');
         const s = await fetch('/api/uploads/sign', {
@@ -235,7 +263,7 @@ export default function Studio({ credits, initialJobs }: { credits: number; init
       } else sourceName = /youtu\.?be/.test(drive) ? 'YouTube-Video' : /\/folders\//.test(drive) ? 'Google-Drive-Ordner' : 'Google Drive';
       const r = await fetch('/api/jobs', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sourceKind: sourcePaths ? 'folder' : tab, sourcePath, sourcePaths, driveUrl: tab === 'drive' ? drive.trim() : undefined, sourceName, style, captionStyle: caption, captionColor: color, clips: istYoutube ? clips : 1, useLogo, music }),
+        body: JSON.stringify({ sourceKind: sourcePaths ? 'folder' : tab, sourcePath, sourcePaths, driveUrl: tab === 'drive' ? drive.trim() : undefined, sourceName, style, captionStyle: autoLook ? 'auto' : caption, captionColor: autoLook ? 'auto' : color, clips: istYoutube ? clips : 1, useLogo, music }),
       });
       const d = await r.json();
       if (!r.ok) {
@@ -245,6 +273,7 @@ export default function Studio({ credits, initialJobs }: { credits: number; init
       setBalance((b) => b - d.cost);
       router.refresh(); // Credit-Anzeige oben aktualisieren
       setFiles([]);
+      setBrolls([]);
       setDrive('');
       await reload();
     } catch (e) {
@@ -302,6 +331,30 @@ export default function Studio({ credits, initialJobs }: { credits: number; init
           <p className="note" style={{ margin: '-4px 0 0' }}>📁 <b>Ein Ordner = ein Video.</b> Lade pro Ordner bitte nur das Rohmaterial für <b>ein</b> Video hoch. Für mehrere Videos: je Video einen eigenen Ordner.</p>
         ) : null}
         {tab === 'upload' ? (
+          <div>
+            <p className="f" style={{ marginBottom: 6 }}>B-Roll &amp; Bilder <span className="note">(optional)</span></p>
+            <div
+              className={`drop${overB ? ' over' : ''}`}
+              style={{ padding: '14px 16px' }}
+              onClick={() => brollInput.current?.click()}
+              onDragOver={(e) => { e.preventDefault(); setOverB(true); }}
+              onDragLeave={() => setOverB(false)}
+              onDrop={async (e) => { e.preventDefault(); setOverB(false); pickBroll(await droppedFiles(e.dataTransfer)); }}
+            >
+              <input ref={brollInput} type="file" accept="video/*,image/*" multiple hidden onChange={(e) => pickBroll(e.target.files)} />
+              <b>{brolls.length ? `🎞️ ${brolls.length} B-Roll-${brolls.length === 1 ? 'Datei' : 'Dateien'}` : 'B-Roll-Clips und Bilder hierher ziehen'}</b>
+              <small>
+                {brolls.length
+                  ? `${(brolls.reduce((a, f) => a + f.size, 0) / 1024 / 1024).toFixed(0)} MB · ${brolls.filter((f) => f.type.startsWith('image/')).length} Bilder`
+                  : 'Aufnahmen ohne Sprechen: Produkt, Laden, Objekt, Arbeit. Wir blenden sie passend zum Gesagten ein.'}
+              </small>
+            </div>
+            {brolls.length ? (
+              <button type="button" className="btn" style={{ padding: '4px 10px', fontSize: 12, marginTop: 6 }} onClick={() => setBrolls([])}>B-Roll entfernen</button>
+            ) : null}
+          </div>
+        ) : null}
+        {tab === 'upload' ? (
           <div className="row" style={{ gap: 8, marginTop: -6 }}>
             <button type="button" className="btn" style={{ padding: '6px 12px', fontSize: 13 }} onClick={() => input.current?.click()}>Dateien wählen</button>
             <button type="button" className="btn" style={{ padding: '6px 12px', fontSize: 13 }} onClick={() => folderInput.current?.click()}>Ordner wählen</button>
@@ -330,7 +383,11 @@ export default function Studio({ credits, initialJobs }: { credits: number; init
           </div>
         </div>
 
-        <div>
+        <label className="check">
+          <input type="checkbox" checked={autoLook} onChange={(e) => setAutoLook(e.target.checked)} />
+          <span><b>Look automatisch an dein Video anpassen</b> – Schrift und Akzentfarbe passend zu deinem Unternehmen (aus deinem Logo und deinem Material). Haken raus, wenn du Schrift und Farbe selbst festlegen willst.</span>
+        </label>
+        <div style={autoLook ? { display: 'none' } : undefined}>
           <p className="f" style={{ marginBottom: 6 }}>Untertitel</p>
           <div className="capgrid" role="radiogroup" aria-label="Untertitel-Stil">
             {CAPTIONS.filter(([v], i) => alleStile || i < 5 || v === caption).map(([v, n]) => (
@@ -356,8 +413,8 @@ export default function Studio({ credits, initialJobs }: { credits: number; init
           ) : null}
           <p className="note" style={{ flex: 1, margin: 0 }}>{istYoutube ? 'Aus dem YouTube-Video schneiden wir so viele Clips, wie du wählst – die besten Momente zuerst. ' : 'Aus deinem Upload wird ein fertiges Video. Ein Ordner wird zu einem Video – lade pro Ordner nur das Rohmaterial für ein Video hoch. '}Zu viel gebuchte Credits bekommst du automatisch zurück.</p>
         </div>
-        <p className="f" style={{ marginBottom: -6 }}>Akzentfarbe</p>
-        <div className="row" aria-label="Akzentfarbe">
+        <p className="f" style={autoLook ? { display: 'none' } : { marginBottom: -6 }}>Akzentfarbe</p>
+        <div className="row" aria-label="Akzentfarbe" style={autoLook ? { display: 'none' } : undefined}>
           {COLORS.map((c) => (
             <button key={c} type="button" onClick={() => setColor(c)} aria-label={`Farbe ${c}`}
               style={{ width: 30, height: 30, borderRadius: '50%', background: c, border: color === c ? '3px solid #fff' : '2px solid rgba(255,255,255,.2)' }} />
@@ -437,6 +494,9 @@ export default function Studio({ credits, initialJobs }: { credits: number; init
                   <p className="m"><b>{Math.max(1, j.progress)} %</b> · {eta(j)}{j.stage ? <> · {j.stage}</> : null}</p>
                 </div>
               ) : null}
+              {j.status === 'review' ? (
+                <p className="m" style={{ gridColumn: '1 / -1' }}>Dein Video ist geschnitten und geht gerade durch die letzte Qualitätsprüfung. Du bekommst eine E-Mail, sobald es freigegeben ist.</p>
+              ) : null}
               {j.status === 'queued' ? (
                 <p className="m" style={{ gridColumn: '1 / -1' }}>
                   {online === false
@@ -462,6 +522,21 @@ export default function Studio({ credits, initialJobs }: { credits: number; init
                     {open === j.id ? 'Schließen' : `▶ Ansehen & posten`}
                   </button>
                   <button className="btn" style={{ padding: '7px 14px', fontSize: 14 }} onClick={() => download(j.id)}>⬇ {j.outputs?.length > 1 ? 'Alle herunterladen' : 'Herunterladen'}</button>
+                  {REVISION_AKTIV && (!j.keep_until || new Date(j.keep_until) > new Date()) && j.keep_until ? (
+                    <button className="btn" style={{ padding: '7px 14px', fontSize: 14 }} onClick={() => { setRevFor((x) => (x === j.id ? null : j.id)); setRevNote(''); }}>✏️ Änderung wünschen</button>
+                  ) : null}
+                </div>
+              ) : null}
+              {j.status === 'done' && revFor === j.id ? (
+                <div style={{ gridColumn: '1 / -1', display: 'grid', gap: 8 }}>
+                  <textarea className="inp" rows={3} maxLength={600} value={revNote} onChange={(e) => setRevNote(e.target.value)}
+                    placeholder="Was soll anders sein? Z. B. „Den Satz über die Preise rausnehmen“, „Titel ändern in …“, „ohne Musik“, „am Ende fehlt der letzte Satz“." />
+                  <div className="row" style={{ gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <button className="btn btn-acc" style={{ padding: '7px 14px', fontSize: 14 }} disabled={revBusy} onClick={() => sendRevision(j.id)}>
+                      {revBusy ? 'Wird gesendet …' : revisionCost(j.style, j.clips, (j.revisions ?? 0) + 1) === 0 ? 'Änderung senden (gratis)' : `Änderung senden (${revisionCost(j.style, j.clips, (j.revisions ?? 0) + 1)} Credits)`}
+                    </button>
+                    <span className="note">Die erste Änderung ist kostenlos, jede weitere kostet ein Viertel. Möglich bis 24 Stunden nach dem Schnitt.</span>
+                  </div>
                 </div>
               ) : null}
               {j.status === 'done' && open === j.id ? <Results jobId={j.id} /> : null}

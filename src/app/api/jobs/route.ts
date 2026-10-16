@@ -11,8 +11,9 @@ const Body = z.object({
   driveUrl: z.string().max(600).optional(),
   sourceName: z.string().max(200).optional(),
   style: z.enum(['clean', 'viral', 'premium']),
-  captionStyle: z.enum(['rise', 'hormozi', 'clean', 'neon', 'comic', 'serif', 'bold', 'box', 'impact', 'mini', 'wide']),
-  captionColor: z.string().regex(/^#[0-9a-fA-F]{6}$/),
+  // 'auto' (seit 13.10.): die Schnitt-Maschine wählt Schrift und Akzentfarbe passend zum Video des Kunden (pipeline.py „Look je Kunde“)
+  captionStyle: z.enum(['auto', 'akzent', 'rise', 'hormozi', 'clean', 'neon', 'comic', 'serif', 'bold', 'box', 'impact', 'mini', 'wide']),
+  captionColor: z.string().regex(/^(auto|#[0-9a-fA-F]{6})$/),
   clips: z.number().int().min(1).max(MAX_CLIPS_PER_JOB),
   useLogo: z.boolean().optional(),
   music: z.enum(['none', 'auto']).optional(),

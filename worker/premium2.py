@@ -25,6 +25,71 @@ def _kurz(s, n):
     return s if len(s) <= n else ""
 
 
+def _zahlen(res):
+    """zahl/zahl2 kommen als Text (10.10.: beim Typ „number“ schrieb das Modell endlose Nachkommastellen – 65.000 Token,
+    Minuten Wartezeit, unbrauchbar). Hier werden sie wieder Zahlen: „1.500“, „1500 €“, „12,5“ → 1500 / 1500 / 12.5."""
+    for g in (res or {}).get("grafiken") or []:
+        for k in ("zahl", "zahl2"):
+            v = g.get(k)
+            if isinstance(v, str):
+                m = re.search(r"\d[\d.\s]*(?:,\d+)?", v)
+                z = None
+                if m:
+                    t = m.group(0).strip()
+                    t = t.replace(" ", "")
+                    if re.fullmatch(r"\d{1,3}(\.\d{3})+(,\d+)?", t) or "," in t:
+                        t = t.replace(".", "").replace(",", ".")
+                    try:
+                        z = float(t)
+                        z = int(z) if z == int(z) else round(z, 2)
+                    except ValueError:
+                        z = None
+                if z is None:
+                    g.pop(k, None)
+                else:
+                    g[k] = z
+
+
+_ZW = {"null": 0, "ein": 1, "eins": 1, "eine": 1, "einen": 1, "einem": 1, "zwei": 2, "drei": 3, "vier": 4, "fünf": 5, "sechs": 6, "sieben": 7,
+       "acht": 8, "neun": 9, "zehn": 10, "elf": 11, "zwölf": 12, "zwanzig": 20, "dreißig": 30, "vierzig": 40, "fünfzig": 50,
+       "sechzig": 60, "siebzig": 70, "achtzig": 80, "neunzig": 90, "hundert": 100, "tausend": 1000, "million": 1000000}
+
+
+def _nur_gesagtes(res, T, log=print):
+    """Zähler dürfen nur Zahlen zeigen, die im Video GESAGT werden (Test 12.10.: Zähler „4 – 2.024“ in einem Video, in dem nur
+    „drei oder vier“ fiel). Eine Zahl-Grafik, deren Zahl nicht im Text vorkommt, entfällt; ein erfundenes zahl2 wird entfernt."""
+    gesagt = set()
+    for w, _, _ in T:
+        for z in re.findall(r"\d+(?:[.,]\d+)?", w.replace(".", "") if re.fullmatch(r"\d{1,3}(\.\d{3})+\D*", w) else w):
+            try:
+                gesagt.add(float(z.replace(",", ".")))
+            except ValueError:
+                pass
+        k = re.sub(r"[^a-zäöüß]", "", w.lower())
+        if k in _ZW:
+            gesagt.add(float(_ZW[k]))
+        for a_, b_ in ((k[:-7], 100), (k[:-7], 1000)):   # „fünfhundert“, „dreitausend“
+            if (k.endswith("hundert") and b_ == 100 or k.endswith("tausend") and b_ == 1000) and a_ in _ZW:
+                gesagt.add(float(_ZW[a_] * b_))
+    # zusammengesetzt gesprochene Zahlen („tausend fünfhundert“, „drei- vierhundert“) lassen sich so nicht sicher prüfen →
+    # Summen/Produkte benachbarter Zahlwörter zulassen
+    einzel = sorted(gesagt)
+    for x in einzel:
+        for y in einzel:
+            gesagt.update({x + y, x * y})
+    out = []
+    for g in (res or {}).get("grafiken") or []:
+        if g.get("art") in ("zahl", "voll_zahl"):
+            if isinstance(g.get("zahl2"), (int, float)) and float(g["zahl2"]) not in gesagt:
+                g.pop("zahl2", None)
+            if not isinstance(g.get("zahl"), (int, float)) or float(g["zahl"]) not in gesagt:
+                log(f"Premium-Grafiken: Zähler „{g.get('zahl')}“ entfällt – diese Zahl wird im Video nicht gesagt")
+                continue
+        out.append(g)
+    if res is not None:
+        res["grafiken"] = out
+
+
 def plane(T, ki_call, title, seed, log=print):
     """KI wählt die Grafiken. T = [(wort, start, ende)]. Rückgabe: dict mit hook, betont, grafiken, schluss – oder None."""
     rnd = random.Random(seed)
@@ -48,7 +113,7 @@ def plane(T, ki_call, title, seed, log=print):
         "sub, icon, wort, optional ok true/false für Haken/Kreuz); zahl = Zähler (zahl, optional zahl2 für eine Spanne, einheit, "
         "gross = Beschriftung); schritte = Ablauf mit 2–5 Stationen (kicker = Überschrift, texte mit wort); haken = Liste mit "
         "bis zu 3 Punkten (texte: text, wort, ok); trichter = bis zu 3 Stufen von groß nach klein (texte: text = Beschriftung, "
-        "sub = Zahl als Text, wort); nummer = nummerierter Punkt (zahl = 1/2/3, gross = Titel, akzent = kurze Erklärung); "
+        "sub = Zahl als Text, wort); zahl und zahl2 immer als kurze Ziffernfolge ohne Einheit, z. B. „1500“ oder „12,5“; nummer = nummerierter Punkt (zahl = 1/2/3, gross = Titel, akzent = kurze Erklärung); "
         "wort = ein großes Schlagwort auf der Bühne (gross, kicker); voll_wort = Vollbild-Karte mit Schlagzeile (gross in "
         "Großbuchstaben, höchstens 2 Zeilen mit \\n, akzent = ein Wort in Schreibschrift, kicker); voll_zahl = Vollbild-Karte "
         "mit Zahl (zahl, zahl2, einheit, gross = Beschriftung, kicker); chat = 1–2 kurze Chat-Nachrichten (texte: text); suche = "
@@ -59,21 +124,42 @@ def plane(T, ki_call, title, seed, log=print):
         "'schluss': kurze Zeile für den Abspann (zeile + ein hervorgehobenes wort), z. B. 'Folg uns für' + 'mehr'.")
     schema = {"type": "object", "properties": {
         "hook": {"type": "object", "properties": {"art": {"type": "string"}, "gross": {"type": "string"}, "klein": {"type": "string"}, "bis": {"type": "integer"}}, "required": ["art", "gross", "bis"]},
-        "betont": {"type": "array", "items": {"type": "integer"}},
-        "grafiken": {"type": "array", "items": {"type": "object", "properties": {
+        "betont": {"type": "array", "maxItems": "24", "items": {"type": "integer"}},
+        "grafiken": {"type": "array", "maxItems": "14", "items": {"type": "object", "properties": {
             "art": {"type": "string"}, "von": {"type": "integer"}, "bis": {"type": "integer"}, "karte": {"type": "boolean"},
             "kicker": {"type": "string"}, "gross": {"type": "string"}, "akzent": {"type": "string"},
-            "zahl": {"type": "number"}, "zahl2": {"type": "number"}, "einheit": {"type": "string"},
+            "zahl": {"type": "string"}, "zahl2": {"type": "string"}, "einheit": {"type": "string"},
             "texte": {"type": "array", "items": {"type": "object", "properties": {
                 "text": {"type": "string"}, "sub": {"type": "string"}, "icon": {"type": "string"}, "wort": {"type": "integer"}, "ok": {"type": "boolean"}},
                 "required": ["text"]}}},
             "required": ["art", "von", "bis"]}},
         "schluss": {"type": "object", "properties": {"zeile": {"type": "string"}, "wort": {"type": "string"}}}},
         "required": ["hook", "betont", "grafiken"]}
-    res = ki_call(system, f"Titel: {title or '-'}\n\nText:\n{text}", schema)
+    system += (" Wichtig: Decke das GANZE Video ab, auch die zweite Hälfte. Listenpunkte ('haken') sind vollständige Aussagen "
+               "(„Keine Startkosten“, nicht „Startkosten“). hook.gross nennt das Thema in einem allgemein verständlichen Wort, "
+               "kein Fachkürzel.")
+    dur = T[-1][2]
+    soll = max(4, int(dur / 8))
+    user = f"Titel: {title or '-'}\nLänge: {dur:.0f} Sekunden – plane mindestens {soll} Grafiken.\n\nText:\n{text}"
+    res = ki_call(system, user, schema)
     if not res:
         log("Premium-Grafiken: keine KI-Antwort")
         return None
+    _zahlen(res)
+    _nur_gesagtes(res, T, log)
+    gut = [g for g in res.get("grafiken") or [] if g.get("art") in erlaubt]
+    gross_da = any(g.get("art") in ("voll_wort", "voll_zahl") or g.get("karte") for g in gut)
+    zeiten = sorted(T[g["von"]][1] for g in gut if isinstance(g.get("von"), int) and 0 <= g["von"] < len(T))
+    loch = max([b - a for a, b in zip([0.0] + zeiten, zeiten + [dur])] or [dur])
+    if len(gut) < soll or not gross_da or loch > 14:   # zu dünn, nur kleine Karten oder lange Strecke ohne Grafik → einmal nachfordern
+        res2 = ki_call(system, user + f"\n\nDein erster Plan war zu dünn ({len(gut)} Grafiken, "
+                       f"{'mit' if gross_da else 'ohne'} großes Element, längste Strecke ohne Grafik {loch:.0f} s): {json.dumps(res.get('grafiken'), ensure_ascii=False)[:1500]}\n"
+                       f"Liefere einen vollständigen neuen Plan mit mindestens {soll} Grafiken über das ganze Video, davon mindestens "
+                       "eine Vollbild-Karte oder eine Grafik mit 'karte': true.", schema)
+        _zahlen(res2)
+        _nur_gesagtes(res2, T, log)
+        if res2 and len([g for g in res2.get("grafiken") or [] if g.get("art") in erlaubt]) >= len(gut):
+            res = res2
     res["_erlaubt"] = erlaubt
     return res
 
@@ -97,6 +183,7 @@ def ereignisse(plan, T, dur, seed, log=print):
         return out
 
     def add(g, hook=False):
+        nonlocal papier
         art = g.get("art")
         if art not in ARTEN or used.get(art, 0) >= 2:
             return
@@ -113,7 +200,7 @@ def ereignisse(plan, T, dur, seed, log=print):
             if it:
                 e = dict(type="chips", items=[dict(icon=icon(x.get("icon")), text=x["text"], a=ti, **({"sub": _kurz(x.get("sub"), 24)} if _kurz(x.get("sub"), 24) else {}),
                                                   **({"state": "ok" if x["ok"] else "no"} if isinstance(x.get("ok"), bool) else {})) for x, ti in it])
-        elif art == "zahl" and isinstance(g.get("zahl"), (int, float)):
+        elif art == "zahl" and isinstance(g.get("zahl"), (int, float)) and g["zahl"] > 0:
             e = dict(type="counter", to=g["zahl"], label=G or "", sub=K or "", suffix=_kurz(g.get("einheit"), 6) and " " + g["einheit"].strip(), dur=0.6,
                      **({"to2": g["zahl2"]} if isinstance(g.get("zahl2"), (int, float)) else {}), size=84 if g.get("zahl2") or g["zahl"] >= 10000 else 96)
         elif art == "schritte":
@@ -138,7 +225,7 @@ def ereignisse(plan, T, dur, seed, log=print):
                 papier = not papier
                 e = dict(type="full", big="\n".join(z), bsize=230 if max(len(x) for x in z) <= 9 else 180, **({"kicker": K.upper()} if K else {}),
                          **({"accent": AK} if AK and len(AK) <= 14 else {}), **({"bg": "paper"} if papier else {}))
-        elif art == "voll_zahl" and isinstance(g.get("zahl"), (int, float)):
+        elif art == "voll_zahl" and isinstance(g.get("zahl"), (int, float)) and g["zahl"] > 0:
             papier = not papier
             two = isinstance(g.get("zahl2"), (int, float))
             e = dict(type="full", num=dict(to=g["zahl"], **({"to2": g["zahl2"]} if two else {}), **({"suffix": " " + g["einheit"].strip()} if _kurz(g.get("einheit"), 4) else {})),
@@ -239,7 +326,9 @@ def _projekt():
     os.makedirs(os.path.join(CACHE, "public", "v"), exist_ok=True)
 
 
-def render(cut, words_out, title, out, ki_call, cut_times=(), logo=None, accent=None, seed_text="", log=print, plan=None, brand=None, outro=True):
+def render(cut, words_out, title, out, ki_call, cut_times=(), logo=None, accent=None, seed_text="", log=print, plan=None, brand=None, outro=True,
+           brolls=(), bilder=()):
+    """brolls: [{"file", "t", "dur"}] – Zwischenschnitte des Kunden (Zeit im fertigen Clip); bilder: [{"file", "t"}]."""
     """Premium-Video bauen. Rückgabe: Pfad der fertigen Datei oder None (dann zeichnet die Pipeline wie bisher)."""
     T = []
     for w, s, e in words_out:
@@ -267,6 +356,36 @@ def render(cut, words_out, title, out, ki_call, cut_times=(), logo=None, accent=
     vid = f"v/{key}.mp4"
     shutil.copyfile(cut, os.path.join(CACHE, "public", vid))
     base, face = bildlage(cut)
+    # B-Roll und Bilder des Kunden: abwechselnd als Vollbild-Zwischenschnitt, als Karte unter dem Sprecher oder im Handy-Mockup
+    rnd = random.Random(seed + 2)
+    arten = rnd.sample(["broll", "media", "phone"], 3)
+    med = []
+    for k, b in enumerate(sorted(list(brolls) + [dict(x, img=True, dur=2.4) for x in bilder], key=lambda x: x["t"])):
+        if not os.path.exists(b["file"]) or b["t"] > dur - 1.2 or (med and b["t"] - med[-1]["b"] < 1.5):
+            continue
+        ext = os.path.splitext(b["file"])[1].lower()
+        dst = f"v/{key}_b{k}{ext}"
+        shutil.copyfile(b["file"], os.path.join(CACHE, "public", dst))
+        art = "media" if b.get("img") else arten[len(med) % 3]
+        if art == "media" and not face:
+            art = "broll"
+        d = min(float(b.get("dur") or 2.4), 3.2 if art != "media" else 4.0, dur - b["t"] - 0.3)
+        e = dict(type=art, a=round(b["t"], 2), b=round(b["t"] + max(1.2, d), 2), src=dst, **({"img": True} if b.get("img") else {}))
+        if art == "media":
+            e.update(frame=True, pscale=1.3)
+        med.append(e)
+    if med:
+        # eigenes Material des Kunden hat Vorrang: KI-Grafiken, die sich damit überschneiden, weichen
+        keep = []
+        for e in ev:
+            hit = [m for m in med if min(e["b"], m["b"]) - max(e["a"], m["a"]) > 0.2]
+            if not hit:
+                keep.append(e)
+            elif e["type"] in ("full", "behind") or any(m["type"] == "media" for m in hit) or e.get("frame"):
+                continue
+            else:
+                keep.append(e)   # kleine Bühnen-Grafik unter einem Vollbild-Zwischenschnitt: bleibt (ist dann kurz verdeckt)
+        ev = sorted(keep + med, key=lambda e: e["a"])
     if not face:   # ohne Gesicht kein „dahinter“ und keine Sprecher-Karte
         ev = [e for e in ev if e["type"] != "behind"]
         for e in ev:
@@ -302,12 +421,13 @@ def render(cut, words_out, title, out, ki_call, cut_times=(), logo=None, accent=
         elif ty == "funnel": sfx += [[i["a"], "po", .28] for i in e["rows"]]
         elif ty == "counter": sfx.append([e["a"] + 0.65, "po", .34])
         elif ty in ("chat", "search", "call"): sfx.append([e["a"] + 0.1, "po", .3])
+        elif ty in ("broll", "phone", "media"): sfx.append([e["a"], "wh", .22])
         if e.get("frame"): sfx.append([max(0, e["a"] - 0.2), "wh", .2])
     sfx += [[c, "wh", .14] for c in sweeps]
     sch = plan.get("schluss") or {}
     props = dict(file=vid, dur=round(dur, 3), base=base, cam=cam, sweeps=sweeps, chunks=untertitel(T, set(i for i in plan.get("betont") or [] if isinstance(i, int))),
                  events=ev, sfx=[dict(t=round(a, 2), k=k, vol=v) for a, k, v in sfx],
-                 outro=(dict(line=_kurz(sch.get("zeile"), 22) or "Folg für", gold=_kurz(sch.get("wort"), 14) or "mehr", handle="", site="") if outro else None),
+                 outro=(dict(line=(_kurz(sch.get("zeile"), 22) if _kurz(sch.get("wort"), 14) else "") or "Folg für", gold=(_kurz(sch.get("wort"), 14) if _kurz(sch.get("zeile"), 22) else "") or "mehr", handle="", site="") if outro else None),
                  brand=brand or ({"logo": None} if not logo else {"logo": f"v/{key}_logo.png"}))
     if logo and not brand:
         shutil.copyfile(logo, os.path.join(pub, f"{key}_logo.png"))
@@ -330,4 +450,5 @@ def render(cut, words_out, title, out, ki_call, cut_times=(), logo=None, accent=
                     "-movflags", "+faststart", out], check=True)
     os.remove(tmp)
     log(f"Premium-Grafiken: {len(ev)} Elemente – " + ", ".join(e["type"] + ("/Karte" if e.get("frame") else "") for e in ev))
-    return out, dict(elemente=[e["type"] for e in ev], erlaubt=plan.get("_erlaubt"), props=pf)
+    return out, dict(elemente=[e["type"] for e in ev], erlaubt=plan.get("_erlaubt"), props=pf, abspann_s=2.6 if outro else 0.0,
+                     untertitel=sum(len(c) for c in props["chunks"]))

@@ -1,5 +1,5 @@
 import React from 'react';
-import {AbsoluteFill, Audio, OffthreadVideo, Sequence, staticFile, useCurrentFrame} from 'remotion';
+import {AbsoluteFill, Audio, Img, OffthreadVideo, Sequence, staticFile, useCurrentFrame} from 'remotion';
 
 const FPS = 30;
 let GOLD = '#D4AB72';
@@ -627,7 +627,64 @@ const Full: React.FC<{t: number; e: Ev}> = ({t, e}) => {
   );
 };
 
-const RENDER: Record<string, React.FC<{t: number; e: Ev}>> = {behind: (pr) => <BehindKicker {...pr} />, chat: Chat, search: SearchBar, call: Call, title: Title, chips: Chips, counter: Counter, steps: Steps, big: Big, stack: Stack, checks: Checks, funnel: Funnel, num: Num, follow: Follow, contact: Contact};
+
+/* ---------- B-Roll und Bilder des Kunden ---------- */
+const MediaIn: React.FC<{e: Ev; style?: React.CSSProperties}> = ({e, style}) =>
+  e.img ? (
+    <Img src={staticFile(e.src)} style={{width: '100%', height: '100%', objectFit: 'cover', ...style}} />
+  ) : (
+    <Sequence from={Math.round(e.a * FPS)} layout="none">
+      <OffthreadVideo muted src={staticFile(e.src)} style={{width: '100%', height: '100%', objectFit: 'cover', ...style}} />
+    </Sequence>
+  );
+// kleine Karte unter dem Sprecher (Sprecher-als-Karte): „zeig, worüber du redest“
+const Media: React.FC<{t: number; e: Ev}> = ({t, e}) => {
+  const {o, on, p} = io(t, e.a, e.b);
+  if (!on) return null;
+  const kb = 1.04 + 0.06 * clamp((t - e.a) / Math.max(1, e.b - e.a));
+  return (
+    <div style={{...STAGE, opacity: o}}>
+      <div style={{width: 640, height: 330, marginTop: 110, borderRadius: 30, overflow: 'hidden', border: `2px solid ${GOLD}`, boxShadow: '0 20px 50px rgba(0,0,0,0.6)', transform: `translateY(${(1 - p) * 40}px) scale(${0.9 + 0.1 * p}) rotate(${(1 - p) * -3}deg)`, background: '#111'}}>
+        <div style={{width: '100%', height: '100%', transform: `scale(${e.img ? kb : 1})`}}>
+          <MediaIn e={e} />
+        </div>
+      </div>
+    </div>
+  );
+};
+// Zwischenschnitt im Vollbild: zoomt sich weich auf die volle Größe ein
+const BrollFull: React.FC<{t: number; e: Ev}> = ({t, e}) => {
+  if (t < e.a || t >= e.b) return null;
+  const pin = eo((t - e.a) / 0.4);
+  const o = clamp((t - e.a) / 0.12) * (1 - clamp((t - (e.b - 0.12)) / 0.12));
+  return (
+    <AbsoluteFill style={{opacity: o, background: '#000'}}>
+      <AbsoluteFill style={{transform: `scale(${1.1 - 0.1 * pin})`}}>
+        <MediaIn e={e} />
+      </AbsoluteFill>
+      <AbsoluteFill style={{background: 'linear-gradient(180deg, transparent 55%, rgba(0,0,0,0.55) 78%, rgba(0,0,0,0.2) 100%)'}} />
+    </AbsoluteFill>
+  );
+};
+// Handy-Mockup auf ruhiger Fläche
+const Phone: React.FC<{t: number; e: Ev}> = ({t, e}) => {
+  if (t < e.a || t >= e.b) return null;
+  const pin = back((t - e.a) / 0.45);
+  const o = clamp((t - e.a) / 0.15) * (1 - clamp((t - (e.b - 0.18)) / 0.18));
+  const tilt = (1 - clamp(pin)) * 14 - 3 + 2 * Math.sin((t - e.a) * 0.9);
+  return (
+    <AbsoluteFill style={{opacity: o, background: 'radial-gradient(90% 60% at 50% 42%, #2a2218 0%, #0c0b0a 62%, #060606 100%)', alignItems: 'center'}}>
+      <div style={{marginTop: 300, width: 500, height: 1000, borderRadius: 70, padding: 14, background: 'linear-gradient(145deg, #3a3a3e, #121214)', boxShadow: `0 40px 100px rgba(0,0,0,0.8), 0 0 0 2px rgba(255,255,255,0.08), 0 0 90px rgba(212,171,114,0.18)`, transform: `translateY(${(1 - clamp(pin)) * 220}px) rotate(${tilt}deg) scale(${0.9 + 0.1 * clamp(pin)})`, boxSizing: 'border-box'}}>
+        <div style={{position: 'relative', width: '100%', height: '100%', borderRadius: 58, overflow: 'hidden', background: '#000'}}>
+          <MediaIn e={e} />
+          <div style={{position: 'absolute', left: '50%', top: 16, width: 130, height: 34, marginLeft: -65, borderRadius: 17, background: '#000'}} />
+        </div>
+      </div>
+    </AbsoluteFill>
+  );
+};
+
+const RENDER: Record<string, React.FC<{t: number; e: Ev}>> = {media: Media, behind: (pr) => <BehindKicker {...pr} />, chat: Chat, search: SearchBar, call: Call, title: Title, chips: Chips, counter: Counter, steps: Steps, big: Big, stack: Stack, checks: Checks, funnel: Funnel, num: Num, follow: Follow, contact: Contact};
 
 /* ---------- Abzeichen, Untertitel, Kamera, Abspann ---------- */
 const Badge: React.FC<{t: number; dur: number; hide?: boolean; brand?: BProps['brand']}> = ({t, dur, hide, brand}) => {
@@ -678,7 +735,7 @@ const frameAmt = (t: number, evs: Ev[]) => {
   for (const e of evs) if (e.frame) f = Math.max(f, eio(clamp((t - (e.a - 0.3)) / 0.36)) * (1 - eio(clamp((t - (e.b - 0.12)) / 0.36))));
   return f;
 };
-const fullOn = (t: number, evs: Ev[]) => evs.find((e) => e.type === 'full' && t >= e.a + 0.06 && t < e.b - 0.1);
+const fullOn = (t: number, evs: Ev[]) => evs.find((e) => (e.type === 'full' || e.type === 'broll' || e.type === 'phone') && t >= e.a + 0.06 && t < e.b - 0.1);
 const behindOn = (t: number, evs: Ev[]) => evs.some((e) => e.type === 'behind' && t >= e.a - 0.05 && t < e.b);
 const BehindText: React.FC<{t: number; e: Ev}> = ({t, e}) => {
   if (t < e.a || t >= e.b) return null;
@@ -823,9 +880,9 @@ export const Batch: React.FC<BProps> = (p) => {
         }
         return <R key={i} t={t} e={e} />;
       })}
-      {p.events.map((e, i) => (e.type === 'full' ? <Full key={`f${i}`} t={t} e={e} /> : null))}
+      {p.events.map((e, i) => (e.type === 'full' ? <Full key={`f${i}`} t={t} e={e} /> : e.type === 'broll' ? <BrollFull key={`f${i}`} t={t} e={e} /> : e.type === 'phone' ? <Phone key={`f${i}`} t={t} e={e} /> : null))}
       <Badge t={t} dur={p.dur} hide={FO?.bg === 'paper'} brand={p.brand ?? {novus: true}} />
-      <Captions t={t} chunks={p.chunks} dur={p.dur} y={FO ? 1370 : behindOn(t, p.events) ? 450 : 586 + (1062 - 586) * F} paper={FO?.bg === 'paper'} />
+      <Captions t={t} chunks={p.chunks} dur={p.dur} y={FO ? (FO.type === 'phone' ? 1480 : 1370) : behindOn(t, p.events) ? 450 : 586 + (1062 - 586) * F} paper={FO?.bg === 'paper'} />
       <Outro t={t} p={p} />
       {p.sfx.map((s, i) => {
         const f = SFXF[s.k];

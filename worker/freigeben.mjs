@@ -22,9 +22,13 @@ const offen = () => (existsSync(LERN) ? readdirSync(LERN) : []).filter((d) => ex
   .map((d) => ({ dir: join(LERN, d), ...JSON.parse(readFileSync(join(LERN, d, 'freigabe.json'), 'utf8')) })).filter((f) => !f.erledigt);
 
 const [id, ...rest] = process.argv.slice(2);
+// REIHENFOLGE (Inhaber 17.10.: niemand soll unnötig warten): Clean und Viral sind in ~5 Min. gebaut, Premium braucht ~20 Min.
+// Schnelle Aufträge kommen deshalb zuerst – ein Premium-Auftrag, der schon 40 Min. wartet, rückt aber wieder nach vorn.
+const minuten = (f) => (Date.now() - Date.parse(f.wartet_seit)) / 60e3;
+const rang = (f) => (f.claude && f.stil === 'premium' && minuten(f) < 40 ? 1 : 0);
 if (!id) {
-  const l = offen();
-  console.log(l.length ? l.map((f) => `${f.id}  wartet seit ${f.wartet_seit}  ${f.claude ? 'CLAUDE-SCHNITT (noch nicht geschnitten)' : `${f.outputs.length} Clip(s) zur Prüfung`}  ${f.dir}`).join('\n') : 'Nichts wartet auf Prüfung.');
+  const l = offen().sort((a, b) => rang(a) - rang(b) || Date.parse(a.wartet_seit) - Date.parse(b.wartet_seit));
+  console.log(l.length ? l.map((f) => `${f.id}  wartet seit ${f.wartet_seit}  ${f.claude ? `CLAUDE-SCHNITT (noch nicht geschnitten, Stil ${f.stil || '?'}${existsSync(join(f.dir, 'edit', 'material.md')) ? ', schon vorgehört' : ''})` : `${f.outputs.length} Clip(s) zur Prüfung`}  ${f.dir}`).join('\n') : 'Nichts wartet auf Prüfung.');
   process.exit(0);
 }
 const f = offen().find((x) => x.id === id || x.id.startsWith(id));

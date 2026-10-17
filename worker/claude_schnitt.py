@@ -140,6 +140,31 @@ def transkript(clip, arbeit):
 
 
 def hoeren(ordner, arbeit):
+    """Sperrdatei: Hört die Schnitt-Maschine gerade schon vor (worker.mjs → vorhoeren), wird darauf gewartet statt doppelt zu
+    transkribieren – danach ist alles zwischengespeichert und dieser Aufruf in Sekunden fertig."""
+    os.makedirs(arbeit, exist_ok=True)
+    sperre = os.path.join(arbeit, ".hoeren.lock")
+    t0 = time.time()
+    while os.path.exists(sperre) and time.time() - t0 < 1800:
+        try:
+            os.kill(int(open(sperre).read().strip() or 0), 0)
+        except (ValueError, ProcessLookupError, PermissionError, OSError):
+            break   # Sperre verwaist
+        if time.time() - t0 < 1:
+            print("Vorhören läuft noch – warte darauf …", flush=True)
+        time.sleep(5)
+    open(sperre, "w").write(str(os.getpid()))
+    try:
+        _hoeren(ordner, arbeit)
+    finally:
+        try:
+            if open(sperre).read().strip() == str(os.getpid()):
+                os.remove(sperre)
+        except OSError:
+            pass
+
+
+def _hoeren(ordner, arbeit):
     from PIL import Image, ImageDraw, ImageFont
     os.makedirs(os.path.join(arbeit, "thumbs"), exist_ok=True)
     clips = sorted(f for f in os.listdir(ordner) if f.lower().endswith(VIDEO) and not f.startswith("._"))

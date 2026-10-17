@@ -91,7 +91,25 @@ async function lernablage(job, dir, wartet = null) {
   if (wartet) await writeFile(join(ziel, 'freigabe.json'), JSON.stringify({ id: job.id, user_id: job.user_id, wartet_seit: new Date().toISOString(), outputs: wartet.outputs,
     ...(wartet.claude ? { claude: true, roh: wartet.roh, marke: wartet.marke, stil: job.style, logo: wartet.logo, lernkonto: wartet.lernkonto } : {}) }, null, 1));
   log('📚', job.id, 'als Lernmaterial abgelegt');
+  if (wartet?.claude) vorhoeren(job.id, ziel, wartet.roh);
   return true;
+}
+// SOFORT VORHÖREN (Inhaber 17.10.: Kunden sollen nicht unnötig warten): Transkript und Kontaktbogen entstehen direkt nach dem
+// Hochladen im Hintergrund, nicht erst, wenn der Claude-Lauf drankommt. Der Lauf ruft „hoeren“ trotzdem auf – das ist dann in
+// Sekunden fertig (Transkripte zwischengespeichert; läuft das Vorhören noch, wartet „hoeren“ per Sperrdatei darauf).
+// Immer nur eins zur Zeit (8 GB Arbeitsspeicher).
+let vorhoerKette = Promise.resolve();
+function vorhoeren(id, ordner, roh) {
+  const rohPfad = roh ? (roh.startsWith('/') ? roh : join(ordner, roh)) : ordner;
+  vorhoerKette = vorhoerKette.then(() => new Promise((fertig) => {
+    let quelle = ordner;
+    try { readdirSync(rohPfad); quelle = rohPfad; } catch { /* roh ist eine einzelne Datei → im Auftragsordner hören */ }
+    const edit = join(ordner, 'edit');
+    const p = spawn(PYTHON, [join(import.meta.dirname, 'claude_schnitt.py'), 'hoeren', quelle, edit], { cwd: MASCHINE, stdio: 'ignore' });
+    const t0 = Date.now();
+    p.on('close', (code) => { log('👂', id, code === 0 ? `vorgehört (${Math.round((Date.now() - t0) / 1000)} s)` : `Vorhören fehlgeschlagen (Code ${code}) – der Claude-Lauf hört selbst`); fertig(); });
+    p.on('error', (e) => { log('👂', id, 'Vorhören nicht gestartet:', e.message); fertig(); });
+  }));
 }
 
 // Video-Speicher Cloudflare R2 (S3-kompatibel): uploads/<pfad> und outputs/<pfad>

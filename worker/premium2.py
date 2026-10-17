@@ -371,7 +371,7 @@ def _projekt():
 
 
 def render(cut, words_out, title, out, ki_call, cut_times=(), logo=None, accent=None, seed_text="", log=print, plan=None, brand=None, outro=True,
-           brolls=(), bilder=(), lage=None):
+           brolls=(), bilder=(), lage=None, gesichter=None):
     """brolls: [{"file", "t", "dur"}] – Zwischenschnitte des Kunden (Zeit im fertigen Clip); bilder: [{"file", "t"}]."""
     """Premium-Video bauen. Rückgabe: Pfad der fertigen Datei oder None (dann zeichnet die Pipeline wie bisher)."""
     T = []
@@ -482,7 +482,8 @@ def render(cut, words_out, title, out, ki_call, cut_times=(), logo=None, accent=
                  blitz=[round(c, 3) for c in sorted(cut_times) if plan.get("blitze", True) and 0.8 < c < dur - 0.8][:8], chunks=untertitel(T, set(i for i in plan.get("betont") or [] if isinstance(i, int))),
                  events=ev, sfx=[dict(t=round(a, 2), k=k, vol=v) for a, k, v in sfx],
                  outro=(dict(line=(_kurz(sch.get("zeile"), 22) if _kurz(sch.get("wort"), 14) else "") or "Folg für", gold=(_kurz(sch.get("wort"), 14) if _kurz(sch.get("zeile"), 22) else "") or "mehr", handle="", site="") if outro else None),
-                 brand=brand or ({"logo": None} if not logo else {"logo": f"v/{key}_logo.png"}))
+                 brand=brand or ({"logo": None} if not logo else {"logo": f"v/{key}_logo.png"}),
+                 faces=list(gesichter or []))
     if logo and not brand:
         shutil.copyfile(logo, os.path.join(pub, f"{key}_logo.png"))
     if outro: sfx.append([dur - 0.1, "wh", .32]); props["sfx"].append(dict(t=round(dur - 0.1, 2), k="wh", vol=.32))

@@ -835,6 +835,7 @@ def bauen(plan_pfad):
             # ~715 px liegt (darüber ist Platz für Untertitel und Grafik); verkleinert wird nie, höchstens 1,5-fach vergrößert.
             import cv2 as _cv
             _cc = _cv.CascadeClassifier(_cv.data.haarcascades + "haarcascade_frontalface_default.xml")
+            GES = []   # Gesicht je Sprechteil im fertigen Bild (Haaransatz bis Kinn) – dort darf NIE Schrift liegen
             for k in range(len(TALK)):
                 cap = _cv.VideoCapture(f"{CL}/talk{k}.mp4")
                 n_ = int(cap.get(_cv.CAP_PROP_FRAME_COUNT)) or 1
@@ -851,6 +852,9 @@ def bauen(plan_pfad):
                     continue
                 x_, y_, w_, h_ = np.median(np.array(fb), axis=0)
                 hair = y_ - 0.2 * h_
+                _fb = np.array(fb)   # obere/untere Kante über alle Stichproben (er bewegt sich) statt nur Mittelwert
+                _top, _bot = float((_fb[:, 1] - 0.2 * _fb[:, 3]).min()), float((_fb[:, 1] + 1.08 * _fb[:, 3]).max())
+                GES.append(dict(a=round(OFF[k], 3), b=round(OFF[k] + TALK[k]["d"], 3), top=round(_top), bot=round(_bot)))
                 ziel_h = 715.0
                 if ZEIGT[k]:
                     # ZEIGT ER ETWAS, BLEIBT DAS BILD WIE GEDREHT – kein Zoom (×1,5 schnitt alle Kuchen weg) und auch kein verkleinertes Bild
@@ -870,7 +874,9 @@ def bauen(plan_pfad):
                 W2, H2 = int(1080 * sc) // 2 * 2, int(1920 * sc) // 2 * 2
                 ox = min(max(0, int(cx_ * sc - 540)), W2 - 1080)
                 oy = min(max(0, int(hair * sc - ziel_h)), H2 - 1920)
+                GES[-1].update(top=round(_top * sc - oy), bot=round(_bot * sc - oy))
                 if sc <= 1.01 and abs(hair - ziel_h) < 60:
+                    GES[-1].update(top=round(_top), bot=round(_bot))
                     continue
                 run(["ffmpeg", "-v", "error", "-y", "-i", f"{CL}/talk{k}.mp4", "-vf", f"scale={W2}:{H2}:flags=lanczos,crop=1080:1920:{ox}:{oy},setsar=1",
                      "-c:v", "libx264", "-preset", "fast", "-crf", "14", "-c:a", "copy", f"{CL}/talk{k}_lage.mp4"])
@@ -894,9 +900,16 @@ def bauen(plan_pfad):
             r_ = premium2.render(cut, W_OUT, P.get("titel") or "", ZIEL, None, cut_times=OFF[1:], logo=_logo if _logo and os.path.exists(_logo) else None,
                                  accent=AKZ, seed_text=P.get("titel") or ARB, plan=PR, brolls=[{"file": f_, "t": st, "dur": du, **({"art": "broll"} if ZEIGT[max(i for i in range(len(OFF)) if OFF[i] <= st + 0.01)] else {})} for f_, st, du in EIN],
                                  outro=P.get("abspann", True), log=lambda m: print(m, flush=True),
-                                 lage=dict(s=1.0, tx=0, ty=0, ox=540, oy=1150))   # Lage hat claude_schnitt je Teil gesetzt – nicht noch einmal fürs ganze Video
+                                 lage=dict(s=1.0, tx=0, ty=0, ox=540, oy=1150), gesichter=GES)   # Lage hat claude_schnitt je Teil gesetzt – nicht noch einmal fürs ganze Video
             if r_:
-                json.dump({"premium": True, "sprechteile": [(s["clip"], round(s["a"], 3), round(s["a"] + s["d"], 3)) for s in TALK], "elemente": r_[1].get("elemente")},
+                _aus = [(st, st + du) for _, st, du in EIN]
+                try:
+                    _aus += [(e["a"], e["b"]) for e in json.load(open(r_[1]["props"]))["events"] if e.get("type") in ("full", "broll", "phone", "punkte", "media") or e.get("frame")]
+                except Exception:
+                    pass
+                _gv = gesicht_frei(ZIEL, [(f"{CL}/talk{k}.mp4", OFF[k], TALK[k]["d"]) for k in range(len(TALK))], _aus)
+                json.dump({"premium": True, "sprechteile": [(s["clip"], round(s["a"], 3), round(s["a"] + s["d"], 3)) for s in TALK], "elemente": r_[1].get("elemente"),
+                           "gesicht_verdeckt": _gv},
                           open(os.path.join(ARB, "schnittliste.json"), "w"), ensure_ascii=False, indent=1)
                 print(f"fertig [premium · Motion-Graphics-Baukasten]: {ZIEL}  ({dauer(ZIEL):.1f} s)", flush=True)
                 return
@@ -1244,7 +1257,8 @@ def bauen(plan_pfad):
          "-c:v", "libx264", "-preset", "medium", "-crf", "17", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "256k", "-movflags", "+faststart", ZIEL])
     json.dump({"sprechteile": [(s["clip"], round(s["a"], 3), round(s["a"] + s["d"], 3)) for s in TALK], "gesprochen_s": round(T_TALK, 2), "gesamt_s": round(TOTAL, 2),
                "einschuebe": [(os.path.basename(f), round(a, 2), round(d, 2)) for f, a, d in EIN],
-               "grafiken": [(os.path.basename(p), round(a, 2), round(b, 2), int(x), int(y)) for p, a, b, x, y, _, _ in G]},
+               "grafiken": [(os.path.basename(p), round(a, 2), round(b, 2), int(x), int(y)) for p, a, b, x, y, _, _ in G],
+               "gesicht_verdeckt": gesicht_frei(ZIEL, [(f"{CL}/talk{k}.mp4", OFF[k], TALK[k]["d"]) for k in range(len(TALK))], [(a, a + d) for _, a, d in EIN])},
               open(os.path.join(ARB, "schnittliste.json"), "w"), ensure_ascii=False, indent=1)
     print(f"fertig [{STUFE}]: {ZIEL}  ({TOTAL:.1f} s, davon {T_TALK:.1f} s gesprochen)")
 
@@ -1344,6 +1358,74 @@ def stabilisieren(quelle, a, d, ziel, fps=FPS, schwelle=0.3):
 
 
 # ───────────────────────────── 5. Selbst ansehen ─────────────────────────────
+def gesicht_frei(final, teile, aus=(), schritt=0.25):
+    """GESICHTS-PRÜFUNG (Inhaber, zum 5. Mal am 17.10.: „Es soll nie irgendwas über das Gesicht eingeblendet werden“): vergleicht das
+    fertige Video mit dem Bild OHNE Schrift (je Sprechteil die Datei talk{k}.mp4) – nur im Gesichtsrechteck. Ändern sich dort viele
+    Pixel stark (Schrift, Karte, Emoji), ist das ein Verstoß. teile = [(datei, start_im_final, dauer)], aus = [(von, bis)] ohne
+    Prüfung (Einschübe, Vollbild-Grafiken). Rückgabe: Liste der Zeitpunkte mit Verstoß."""
+    import cv2, numpy as np
+    kas = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+    orb = cv2.ORB_create(3000)
+    fin = cv2.VideoCapture(final)
+    fehler = []
+    for datei, t0, d in teile:
+        roh = cv2.VideoCapture(datei)
+        t = 0.3
+        while t < d - 0.3:
+            T_ = t0 + t
+            if any(a - 0.3 <= T_ <= b + 0.3 for a, b in aus):
+                t += schritt
+                continue
+            fin.set(cv2.CAP_PROP_POS_MSEC, T_ * 1000)
+            ok2, f_ = fin.read()
+            roh.set(cv2.CAP_PROP_POS_MSEC, max(0.0, t - 0.04) * 1000)
+            nachbarn = [r for ok_, r in (roh.read() for _ in range(3)) if ok_]   # ±1 Bild: Hände bewegen sich schnell
+            if not (ok2 and nachbarn) or nachbarn[0].shape != f_.shape:
+                t += schritt
+                continue
+            besten = []
+            for r_ in nachbarn:
+                besten.append(_gesicht_diff(r_, f_, kas, orb))
+            besten = [b for b in besten if b is not None]
+            if besten and min(besten) > 0.03:
+                fehler.append((round(T_, 2), round(min(besten) * 100, 1)))
+            t += schritt
+        roh.release()
+    fin.release()
+    if fehler:
+        print(f"GESICHT VERDECKT an {len(fehler)} Stellen: " + ", ".join(f"{a:.2f} s ({p} %)" for a, p in fehler[:12]), flush=True)
+    else:
+        print("Gesichts-Prüfung: nichts liegt auf dem Gesicht ✓", flush=True)
+    return fehler
+
+
+def _gesicht_diff(r_, f_, kas, orb):
+    """Anteil stark veränderter Pixel im Gesicht (Haaransatz bis Kinn) zwischen Bild ohne Schrift (r_) und fertigem Bild (f_)."""
+    import cv2, numpy as np
+    g = cv2.cvtColor(r_, cv2.COLOR_BGR2GRAY)
+    gf = cv2.cvtColor(f_, cv2.COLOR_BGR2GRAY)
+    # Premium legt eine langsame Kamerafahrt übers Bild (bis ~8 % Zoom) – vor dem Vergleich das Bild ohne Schrift per
+    # Bildmerkmalen (ORB + RANSAC, Schrift stört dabei nicht) darauf ausrichten
+    try:
+        kr, dr = orb.detectAndCompute(g, None)
+        kf, df = orb.detectAndCompute(gf, None)
+        ms = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True).match(dr, df)
+        M, inl = cv2.estimateAffinePartial2D(np.float32([kr[m.queryIdx].pt for m in ms]), np.float32([kf[m.trainIdx].pt for m in ms]),
+                                             method=cv2.RANSAC, ransacReprojThreshold=3)
+        if M is None or inl is None or inl.sum() < 15:
+            return None          # Bilder lassen sich nicht sicher übereinanderlegen → diese Stichprobe nicht werten
+        g = cv2.warpAffine(g, M, (g.shape[1], g.shape[0]))
+    except cv2.error:
+        return None
+    fs = kas.detectMultiScale(cv2.equalizeHist(cv2.resize(g, (540, 960))), 1.1, 7, minSize=(80, 80))   # kleiner = Logo an der Wand o. ä.
+    if len(fs):
+        x, y, w, h = [int(v * 2) for v in max(fs, key=lambda b: b[2] * b[3])]
+        y0, y1 = max(0, int(y - 0.15 * h)), min(g.shape[0], int(y + 1.05 * h))
+        d_ = cv2.absdiff(g[y0:y1, x:x + w], gf[y0:y1, x:x + w])
+        return float((d_ > 80).mean())
+    return None
+
+
 def pruefen(video, arbeit):
     import math
     d = dauer(video)

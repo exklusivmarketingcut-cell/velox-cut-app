@@ -24,6 +24,16 @@ export type BProps = {
   look?: string;
   blitz?: number[];
   hell?: boolean;
+  faces?: {a: number; b: number; top: number; bot: number}[];
+};
+// NIE SCHRIFT AUFS GESICHT (Inhaber, mehrfach – zuletzt 17.10.): liegt die Untertitel-Zeile (±55 px) im Gesicht (Haaransatz bis
+// Kinn, +30 px Rand), rutscht sie knapp unter das Kinn (obere Brust) – oder darüber, wenn unten kein Platz ist.
+const FULLTYPES = new Set(['full', 'broll', 'phone', 'punkte', 'media', 'behind']);
+const capFrei = (y: number, t: number, faces?: BProps['faces']) => {
+  const f = (faces || []).find((x) => t >= x.a - 0.05 && t < x.b + 0.05);
+  if (!f || y + 55 < f.top - 30 || y - 55 > f.bot + 30) return y;
+  const unten = f.bot + 140;   // +140: Kamerafahrt vergrößert das Bild bis ~8 %, das Kinn wandert dabei nach unten
+  return unten <= 1640 ? unten : Math.max(120, f.top - 120);
 };
 export const totalFrames = (p: BProps) => Math.round((p.dur + (p.outro ? OUTRO : 0)) * FPS);
 
@@ -891,11 +901,20 @@ export const Batch: React.FC<BProps> = (p) => {
             </AbsoluteFill>
           );
         }
-        return <R key={i} t={t} e={e} />;
+        // Grafiken über dem Kopf: steht der Kopf hoch im Bild, rücken sie nach oben – mit 60 px Abstand zum Haaransatz (nie aufs Gesicht)
+        const fz = FULLTYPES.has(e.type) ? undefined : (p.faces || []).find((x) => e.a >= x.a - 0.05 && e.a < x.b);
+        const dy = fz ? Math.max(-380, Math.min(0, fz.top - 110 - 530)) : 0;
+        return dy ? (
+          <AbsoluteFill key={i} style={{transform: `translateY(${dy}px)`}}>
+            <R t={t} e={e} />
+          </AbsoluteFill>
+        ) : (
+          <R key={i} t={t} e={e} />
+        );
       })}
       {p.events.map((e, i) => (e.type === 'full' ? <Full key={`f${i}`} t={t} e={e} /> : e.type === 'broll' ? <BrollFull key={`f${i}`} t={t} e={e} /> : e.type === 'phone' ? <Phone key={`f${i}`} t={t} e={e} /> : null))}
       <Badge t={t} dur={p.dur} hide={FO?.bg === 'paper'} brand={p.brand ?? {novus: true}} />
-      <Captions t={t} chunks={p.chunks} dur={p.dur} y={FO ? (FO.type === 'phone' ? 1480 : 1370) : behindOn(t, p.events) ? 450 : 586 + (1062 - 586) * F} paper={FO?.bg === 'paper'} />
+      <Captions t={t} chunks={p.chunks} dur={p.dur} y={FO ? (FO.type === 'phone' ? 1480 : 1370) : F > 0.01 ? 586 + (1062 - 586) * F : capFrei(behindOn(t, p.events) ? 450 : 586, t, p.faces)} paper={FO?.bg === 'paper'} />
       <Outro t={t} p={p} />
       {p.sfx.map((s, i) => {
         const f = SFXF[s.k];

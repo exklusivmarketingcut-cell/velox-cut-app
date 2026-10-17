@@ -16,7 +16,9 @@ MODULES = os.path.expanduser("~/vaka-remotion/node_modules")           # Remotio
 MATTE = os.path.join(CACHE, "matte")
 ICONS = ["fork", "build", "pin", "send", "check", "x", "user", "chat", "phone", "doc", "euro", "cam", "laptop", "mobile", "bot",
          "insta", "search", "clock", "up", "star", "hand", "bulb"]
-ARTEN = ["chips", "zahl", "schritte", "haken", "trichter", "nummer", "wort", "voll_wort", "voll_zahl", "chat", "suche", "anruf", "dahinter"]
+ARTEN = ["chips", "zahl", "schritte", "haken", "trichter", "nummer", "wort", "voll_wort", "voll_zahl", "chat", "suche", "anruf", "dahinter",
+         # 17.10.: Bausteine aus dem Yacht-Video und den TikTok-Vorbildern (premium/src/Extra.tsx)
+         "titel3d", "mass", "ort", "tage", "kasten", "durch", "ring", "ticket", "klick", "profil", "flow"]
 norm = lambda s: re.sub(r"[^a-zäöüß0-9]", "", s.lower())
 
 
@@ -192,7 +194,7 @@ def ereignisse(plan, T, dur, seed, log=print):
             return
         a = 0.15 if hook else t(von, -0.15)
         b = min(dur - 0.3, max(te(bis) + 0.5, a + 1.4))
-        b = min(b, a + (3.2 if art in ("voll_wort", "voll_zahl", "dahinter", "wort") else 8.0))
+        b = min(b, a + (3.2 if art in ("voll_wort", "voll_zahl", "dahinter", "wort", "titel3d", "kasten") else 8.0))
         G, K, AK = _kurz(g.get("gross"), 24), _kurz(g.get("kicker"), 28), _kurz(g.get("akzent"), 22)
         e = None
         if art == "chips":
@@ -238,6 +240,37 @@ def ereignisse(plan, T, dur, seed, log=print):
             e = dict(type="search", text=G)
         elif art == "anruf" and G:
             e = dict(type="call", name=G, **({"sub": AK} if AK else {}))
+        elif art == "titel3d" and G and len(G) <= 12:
+            e = dict(type="titel3d", text=G.upper(), **({"sub": _kurz(g.get("klein") or g.get("kicker"), 30)} if _kurz(g.get("klein") or g.get("kicker"), 30) else {}))
+        elif art == "mass" and isinstance(g.get("zahl"), (int, float)) and g["zahl"] > 0:
+            e = dict(type="mass", to=g["zahl"], suffix=(" " + g["einheit"].strip()) if _kurz(g.get("einheit"), 6) else "", **({"label": G.upper()} if G else {}))
+        elif art == "ort" and G:
+            e = dict(type="ort", text=G, **({"sub": _kurz(g.get("akzent") or g.get("klein"), 34)} if _kurz(g.get("akzent") or g.get("klein"), 34) else {}))
+        elif art == "tage" and G:
+            tl = [_kurz(x.get("text"), 4).upper() for x in (g.get("texte") or []) if _kurz(x.get("text"), 4)][:7]
+            e = dict(type="tage", text=G.upper(), **({"items": tl} if tl else {}), **({"sub": K} if K else {}))
+        elif art == "kasten" and G:
+            z = [x.strip() for x in re.split(r"\\n|\n", G) if x.strip()][:2]
+            if z and max(len(x) for x in z) <= 18:
+                e = dict(type="kasten", text="\n".join(z), size=84 if max(len(x) for x in z) <= 12 else 68)
+        elif art == "durch":
+            it = items(g, a, b, 3)
+            if it:
+                e = dict(type="durch", **({"kicker": K} if K else {}), items=[dict(a=ti, text=x["text"]) for x, ti in it])
+        elif art == "ring" and isinstance(g.get("zahl"), (int, float)) and 0 < g["zahl"] <= 100:
+            e = dict(type="ring", to=g["zahl"], **({"label": G} if G else {}))
+        elif art == "ticket" and G:
+            e = dict(type="ticket", text=G, kicker=K or "", **({"sub": AK} if AK else {}))
+        elif art == "klick" and G and len(G) <= 16:
+            e = dict(type="klick", text=G, **({"done": AK} if AK else {}))
+        elif art == "profil" and G:
+            st = [dict(text=_kurz(x.get("text"), 12), zahl=(float(re.sub(r"[^\d,]", "", x["sub"]).replace(",", ".")) if re.search(r"\d", str(x.get("sub") or "")) else x.get("sub") or ""))
+                  for x in (g.get("texte") or [])[:3] if _kurz(x.get("text"), 12)]
+            e = dict(type="profil", text=G, **({"kicker": K} if K else {}), **({"items": st} if st else {}))
+        elif art == "flow":
+            it = items(g, a, b, 4)
+            if len(it) >= 2:
+                e = dict(type="flow", items=[dict(a=ti, text=x["text"], **({"sub": _kurz(x.get("sub"), 24)} if _kurz(x.get("sub"), 24) else {})) for x, ti in it])
         elif art == "dahinter" and G and len(G) <= 11 and used.get("dahinter", 0) < 1:
             e = dict(type="behind", text=G.upper(), **({"gold": True} if rnd.random() < 0.5 else {}))
         if not e:
@@ -250,7 +283,7 @@ def ereignisse(plan, T, dur, seed, log=print):
 
     h = plan.get("hook") or {}
     if h.get("gross"):
-        add({"art": h.get("art") if h.get("art") in ("dahinter", "voll_wort", "wort") else "wort", "gross": h["gross"], "kicker": h.get("klein"), "von": 0, "bis": h.get("bis", 6)}, hook=True)
+        add({"art": h.get("art") if h.get("art") in ("dahinter", "voll_wort", "wort", "titel3d", "kasten") else "wort", "gross": h["gross"], "kicker": h.get("klein"), "von": 0, "bis": h.get("bis", 6)}, hook=True)
     for g in sorted(plan.get("grafiken") or [], key=lambda x: x.get("von", 0) if isinstance(x.get("von"), int) else 0):
         add(g)
     # Überschneidungen: Vollbild-Karten liegen über allem, alles andere teilt sich die Bühne
@@ -422,10 +455,16 @@ def render(cut, words_out, title, out, ki_call, cut_times=(), logo=None, accent=
         elif ty == "counter": sfx.append([e["a"] + 0.65, "po", .34])
         elif ty in ("chat", "search", "call"): sfx.append([e["a"] + 0.1, "po", .3])
         elif ty in ("broll", "phone", "media"): sfx.append([e["a"], "wh", .22])
+        elif ty in ("titel3d", "kasten", "ticket", "profil"): sfx.append([e["a"], "wh", .3])
+        elif ty in ("mass", "ring", "tage", "ort"): sfx += [[e["a"], "wh", .22], [e["a"] + 0.6, "po", .3]]
+        elif ty == "durch": sfx += [[i["a"] + 0.35, "po", .28] for i in e["items"]]
+        elif ty == "flow": sfx += [[i["a"], "po", .28] for i in e["items"]]
+        elif ty == "klick": sfx.append([e["a"] + min(1.0, (e["b"] - e["a"]) * 0.45), "cl", .5])
         if e.get("frame"): sfx.append([max(0, e["a"] - 0.2), "wh", .2])
     sfx += [[c, "wh", .14] for c in sweeps]
     sch = plan.get("schluss") or {}
-    props = dict(file=vid, dur=round(dur, 3), base=base, cam=cam, sweeps=sweeps, chunks=untertitel(T, set(i for i in plan.get("betont") or [] if isinstance(i, int))),
+    props = dict(file=vid, dur=round(dur, 3), base=base, cam=cam, sweeps=sweeps, look=(plan.get("look") or ""),
+                 blitz=[round(c, 3) for c in sorted(cut_times) if plan.get("blitze", True) and 0.8 < c < dur - 0.8][:8], chunks=untertitel(T, set(i for i in plan.get("betont") or [] if isinstance(i, int))),
                  events=ev, sfx=[dict(t=round(a, 2), k=k, vol=v) for a, k, v in sfx],
                  outro=(dict(line=(_kurz(sch.get("zeile"), 22) if _kurz(sch.get("wort"), 14) else "") or "Folg für", gold=(_kurz(sch.get("wort"), 14) if _kurz(sch.get("zeile"), 22) else "") or "mehr", handle="", site="") if outro else None),
                  brand=brand or ({"logo": None} if not logo else {"logo": f"v/{key}_logo.png"}))

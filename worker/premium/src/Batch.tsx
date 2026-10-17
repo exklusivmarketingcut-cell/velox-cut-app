@@ -1,5 +1,6 @@
 import React from 'react';
 import {AbsoluteFill, Audio, Img, OffthreadVideo, Sequence, staticFile, useCurrentFrame} from 'remotion';
+import {Blitz, Durch, Filmlook, Flow, Funken, Kasten, Klick, Mass, Ort, Profil, Ring, Tage, Ticket, Titel3D} from './Extra';
 
 const FPS = 30;
 let GOLD = '#D4AB72';
@@ -20,6 +21,8 @@ export type BProps = {
   theme?: {accent: string; accentL: string};
   brand?: {novus?: boolean; logo?: string};
   sfx: {t: number; k: string; vol: number}[];
+  look?: string;
+  blitz?: number[];
 };
 export const totalFrames = (p: BProps) => Math.round((p.dur + (p.outro ? OUTRO : 0)) * FPS);
 
@@ -623,6 +626,7 @@ const Full: React.FC<{t: number; e: Ev}> = ({t, e}) => {
         ) : null}
         {e.sub ? <div style={{fontFamily: 'Montserrat', fontWeight: 700, fontSize: 44, color: paper ? '#4a443a' : 'rgba(255,255,255,0.78)', marginTop: e.accent ? (e.bsize || 210) * 0.5 : 34, opacity: sub, whiteSpace: 'nowrap', transform: `translateY(${(1 - sub) * 16}px)`}}>{e.sub}</div> : null}
       </div>
+      {e.num ? <div style={{position: 'absolute', left: 0, top: 0, width: 1080, height: 1920}}><Funken t={t} at={e.a + 0.1 + d} x={540} y={700} n={34} farbe={paper ? '#8c6531' : GOLD_L} weite={420} /></div> : null}
     </AbsoluteFill>
   );
 };
@@ -684,7 +688,8 @@ const Phone: React.FC<{t: number; e: Ev}> = ({t, e}) => {
   );
 };
 
-const RENDER: Record<string, React.FC<{t: number; e: Ev}>> = {media: Media, behind: (pr) => <BehindKicker {...pr} />, chat: Chat, search: SearchBar, call: Call, title: Title, chips: Chips, counter: Counter, steps: Steps, big: Big, stack: Stack, checks: Checks, funnel: Funnel, num: Num, follow: Follow, contact: Contact};
+const FF = () => ({gold: GOLD, goldL: GOLD_L});
+const RENDER: Record<string, React.FC<{t: number; e: Ev}>> = {titel3d: (pr) => <Titel3D {...pr} f={FF()} />, mass: (pr) => <Mass {...pr} f={FF()} />, ort: (pr) => <Ort {...pr} f={FF()} />, tage: (pr) => <Tage {...pr} f={FF()} />, kasten: (pr) => <Kasten {...pr} f={FF()} />, durch: (pr) => <Durch {...pr} f={FF()} />, ring: (pr) => <Ring {...pr} f={FF()} />, ticket: (pr) => <Ticket {...pr} f={FF()} />, klick: (pr) => <Klick {...pr} f={FF()} />, profil: (pr) => <Profil {...pr} f={FF()} />, flow: (pr) => <Flow {...pr} f={FF()} />, media: Media, behind: (pr) => <BehindKicker {...pr} />, chat: Chat, search: SearchBar, call: Call, title: Title, chips: Chips, counter: Counter, steps: Steps, big: Big, stack: Stack, checks: Checks, funnel: Funnel, num: Num, follow: Follow, contact: Contact};
 
 /* ---------- Abzeichen, Untertitel, Kamera, Abspann ---------- */
 const Badge: React.FC<{t: number; dur: number; hide?: boolean; brand?: BProps['brand']}> = ({t, dur, hide, brand}) => {
@@ -829,6 +834,7 @@ const Outro: React.FC<{t: number; p: BProps}> = ({t, p}) => {
   return (
     <AbsoluteFill style={{background: `rgba(8,8,9,${bg})`, alignItems: 'center', justifyContent: 'center'}}>
       <div style={{position: 'absolute', width: 1000, height: 700, background: 'radial-gradient(closest-side, rgba(212,171,114,0.2), transparent)', opacity: q}} />
+      <div style={{position: 'absolute', left: 0, top: 0, width: 1080, height: 1920}}><Funken t={t} at={a + 0.8} x={540} y={900} n={36} farbe={GOLD_L} weite={420} /></div>
       <div style={{display: 'flex', flexDirection: 'column', alignItems: 'center', marginTop: -120}}>
         {B.logo ? <img src={staticFile(B.logo)} style={{height: 220, opacity: q, borderRadius: 28}} /> : B.novus ? <Lockup h={190} p={q} /> : null}
         <div style={{height: 3, width: 420 * line, background: `linear-gradient(90deg, transparent, ${GOLD}, transparent)`, marginTop: 56}} />
@@ -864,8 +870,12 @@ export const Batch: React.FC<BProps> = (p) => {
       </Sequence>
       <AbsoluteFill style={{opacity: 1 - F, background: 'linear-gradient(180deg, rgba(6,6,7,0.97) 0%, rgba(6,6,7,0.9) 14%, rgba(6,6,7,0.8) 24%, rgba(6,6,7,0.4) 33%, transparent 42%)'}} />
       <AbsoluteFill style={{opacity: 1 - F, background: 'radial-gradient(120% 80% at 50% 62%, transparent 55%, rgba(0,0,0,0.55) 100%)'}} />
+      {p.look === 'film' ? <Sequence durationInFrames={vf} layout="none"><Filmlook t={t} farbe={GOLD} /></Sequence> : null}
       {p.sweeps.map((c) => (
         <Sweep key={c} t={t} at={c - 0.21} />
+      ))}
+      {(p.blitz || []).map((c) => (
+        <Blitz key={`b${c}`} t={t} at={c} farbe={GOLD_L} />
       ))}
       {p.events.map((e, i) => {
         const R = RENDER[e.type];

@@ -395,6 +395,113 @@ return true
     return cdl
 
 
+def _drehung(path):
+    """Drehhinweis im Video (Kameras/Handys speichern Hochkant-Aufnahmen oft als liegendes Bild + „rotation“)."""
+    r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream_side_data=rotation",
+                        "-of", "default=nw=1:nk=1", path], capture_output=True, text=True).stdout.strip()
+    try:
+        return int(float(r.splitlines()[0])) if r else 0
+    except ValueError:
+        return 0
+
+
+def schnitt(teile, dst, name, behalten=True, melden=None):
+    """DER SCHNITT IN RESOLVE (Inhaber 17.10.: „die Videos sollen in DaVinci geschnitten und editiert werden – Claude ist Augen,
+    Ohren und Kopf“). teile = [{"src", "a", "d", "zoom", "stabil", "cdl"}] in Sendereihenfolge (Sekunden im Rohclip).
+    Resolve legt daraus EINE Timeline 1080×1920/30 an: jeder Teil aus dem Original-Clip geschnitten (Start-/Endbild), hochkant
+    gedreht, wenn der Clip einen Drehhinweis hat, Ausschnitt/Zoom gesetzt, auf Wunsch von Resolve stabilisiert, eigene
+    Farbkorrektur (CDL) – dann rendert Resolve Bild UND Ton. Rückgabe: [(start_s, ende_s)] je Teil in der fertigen Timeline."""
+    dst = os.path.abspath(dst)
+    infos, nach = [], []
+    for i, t in enumerate(teile):
+        w, h, fps, _, _ = _probe(t["src"])
+        sf, ef = int(round(t["a"] * fps)), int(round((t["a"] + t["d"]) * fps))
+        infos.append(f"{{mediaPoolItem = clips[{q(os.path.abspath(t['src']))}], startFrame = {sf}, endFrame = {ef}}}")
+        # Drehhinweis: Resolve beachtet ihn selbst (Test 17.10.: FX3-Hochkant als 1920×1080 + rotation=90 → im Medienpool 1080×1920);
+        # eine eigene Drehung legte das Bild wieder auf die Seite. Liegende Clips füllt „scaleToCrop“ (Mitte, 9:16).
+        c = t.get("cdl") or {}
+        cdl = (f'v:SetCDL({{NodeIndex = "1", Slope = {q(c["Slope"])}, Offset = {q(c["Offset"])}, Power = {q(c["Power"])}, Saturation = {q(c["Saturation"])}}})'
+               if c else "")
+        nach.append(f"""
+do local v = vids[{i + 1}]
+  v:SetProperty('ZoomX', {float(t.get('zoom', 1.0)):.4f}); v:SetProperty('ZoomY', {float(t.get('zoom', 1.0)):.4f})
+  {"v:Stabilize()" if t.get("stabil") else ""}
+  {cdl}
+end""")
+    pfade = list(dict.fromkeys(os.path.abspath(t["src"]) for t in teile))
+    marke = "vs_" + uuid.uuid4().hex[:10]
+    ziel_dir = os.path.dirname(dst)
+    job = None
+    with Bruecke() as b:
+        start = _KOPF + f"""
+if p:IsRenderingInProgress() then error("Resolve rendert gerade etwas anderes") end
+local alt = mp:GetCurrentFolder()
+mp:SetCurrentFolder(ordner({q(BIN)}))
+local clips = {{}}
+local neu = mp:ImportMedia({{{", ".join(q(x) for x in pfade)}}}) or {{}}
+for _, c in ipairs(neu) do clips[c:GetClipProperty("File Path")] = c end
+for _, c in ipairs(mp:GetCurrentFolder():GetClipList() or {{}}) do
+  local fp = c:GetClipProperty("File Path"); if fp and not clips[fp] then clips[fp] = c end
+end
+for _, fp in ipairs({{{", ".join(q(x) for x in pfade)}}}) do if not clips[fp] then error("Import fehlgeschlagen: " .. fp) end end
+local tl = mp:CreateEmptyTimeline({q(name[:80] if name else marke)})
+if not tl then error("Timeline nicht angelegt") end
+tl:SetSetting("useCustomSettings", "1")
+tl:SetSetting("timelineResolutionWidth", "1080")
+tl:SetSetting("timelineResolutionHeight", "1920")
+tl:SetSetting("timelineFrameRate", "30")
+tl:SetSetting("timelinePlaybackFrameRate", "30")
+tl:SetSetting("timelineInputResMismatchBehavior", "scaleToCrop")
+p:SetCurrentTimeline(tl)
+local added = mp:AppendToTimeline({{{", ".join(infos)}}})
+mp:SetCurrentFolder(alt)
+if not added then error("Schnitt nicht auf der Timeline") end
+local vids = {{}}
+for _, it in ipairs(added) do local ti = it:GetTrackTypeAndIndex(); if ti and ti[1] == "video" then table.insert(vids, it) end end
+if #vids ~= {len(teile)} then error("Teile auf der Timeline: " .. #vids .. " statt {len(teile)}") end
+{"".join(nach)}
+local t0 = tl:GetStartFrame()
+local zeiten = {{}}
+for _, v in ipairs(vids) do table.insert(zeiten, {{v:GetStart() - t0, v:GetEnd() - t0}}) end
+p:SetCurrentRenderFormatAndCodec("mp4", "H264")
+p:SetRenderSettings({{SelectAllFrames = true, TargetDir = {q(ziel_dir)}, CustomName = {q(marke)}, UseUniqueFilenames = false,
+  FormatWidth = 1080, FormatHeight = 1920, ExportVideo = true, ExportAudio = true, VideoQuality = 40000}})
+local job = p:AddRenderJob()
+if not job or job == "" then error("Render-Auftrag nicht angelegt") end
+if not p:StartRendering({{job}}, false) then p:DeleteRenderJob(job); error("Rendern startet nicht") end
+return {{job = job, zeiten = zeiten, timeline = tl:GetName()}}
+"""
+        warten = time.time() + 150
+        while True:
+            try:
+                job = b.lua(start, 240)
+                break
+            except ResolveFehler as e:
+                if "rendert gerade" not in str(e) or time.time() > warten:
+                    raise
+                time.sleep(3)
+        ende = time.time() + max(300, sum(t["d"] for t in teile) * 20)
+        while True:
+            st = b.lua(f'return resolve:GetProjectManager():GetCurrentProject():GetRenderJobStatus({q(job["job"])})', 30)
+            zustand = (st or {}).get("JobStatus", "")
+            if melden:
+                melden(int((st or {}).get("CompletionPercentage") or 0))
+            if zustand == "Complete":
+                break
+            if zustand in ("Failed", "Cancelled"):
+                raise ResolveFehler(f"Rendern in Resolve: {zustand} {(st or {}).get('Error', '')}".strip())
+            if time.time() > ende:
+                b.lua("resolve:GetProjectManager():GetCurrentProject():StopRendering()", 20)
+                raise ResolveFehler("Rendern in Resolve dauert zu lange")
+            time.sleep(1.0)
+        b.lua(f"local p = resolve:GetProjectManager():GetCurrentProject(); p:DeleteRenderJob({q(job['job'])}); resolve:GetProjectManager():SaveProject(); return true", 30)
+    roh = os.path.join(ziel_dir, marke + ".mp4")
+    if not os.path.exists(roh):
+        raise ResolveFehler("Resolve hat keine Datei geschrieben")
+    os.replace(roh, dst)
+    return [(a / 30.0, e / 30.0) for a, e in job["zeiten"]], job.get("timeline")
+
+
 def projekt(name):
     """Eigenes Resolve-Projekt je Auftrag (Inhaber 14.10.: „wenn mehrere Kunden es gleichzeitig benutzen, kannst du nicht beide
     Videos in einer Timeline schneiden“). Öffnet das Projekt `name`, legt es an, wenn es fehlt. Das bisher offene Projekt wird

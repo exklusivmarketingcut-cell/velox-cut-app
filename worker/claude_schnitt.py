@@ -421,6 +421,62 @@ def bauen(plan_pfad):
         print(f"{name}: Bild zittert ({wk[0]:.2f} px je Bild) → stabilisiert (danach {wk[1]:.2f})", flush=True)
         return ziel
 
+    def res_projekt():
+        """eigenes Projekt je Auftrag: „Velox <Datum Uhrzeit> <Auftragsordner>“ (Name wird beim ersten Bauen gemerkt, damit ein Neubau
+        dasselbe Projekt nimmt); Auftrags-Projekte älter als 24 Stunden räumt das Programm selbst weg"""
+        _pf = os.path.join(ARB, "resolve_projekt.txt")
+        _pn = open(_pf).read().strip() if os.path.exists(_pf) else \
+            f"Velox {time.strftime('%Y-%m-%d %H%M')} {os.path.basename(os.path.dirname(os.path.abspath(ARB).rstrip('/')))[:60]}"
+        open(_pf, "w").write(_pn)
+        _pr = RES.projekt(_pn)
+        print(f"DaVinci Resolve: Projekt „{_pr['projekt']}“" + (" angelegt" if _pr.get("neu") else " geöffnet"), flush=True)
+        try:
+            _weg = RES.aufraeumen(24, _pn)
+            if _weg:
+                print(f"DaVinci Resolve: {len(_weg)} alte Auftrags-Projekte gelöscht", flush=True)
+        except Exception:  # noqa: BLE001
+            pass
+
+    # SCHNITT IN RESOLVE (Inhaber 17.10.: „die Videos sollen in DaVinci geschnitten und editiert werden – Claude ist Augen, Ohren,
+    # Kopf und prüft“). Ist Resolve erreichbar, schneidet RESOLVE die Sprechteile aus den Original-Clips (Timeline 9:16, Ausschnitt,
+    # Stabilisierung, Farbe je Aufnahme, Rendern mit Ton). Danach kommen Kamerafahrten, Untertitel, Karten und Töne darüber.
+    # Fällt Resolve aus, schneidet ffmpeg wie bisher. "resolve_schnitt": false im Plan = nur Farbe in Resolve.
+    RESCUT = bool(RES) and P.get("resolve_schnitt", True)
+
+    def klar(k):
+        # VERSTÄNDLICHKEIT (Papaya-Video, 13.10.: Ich hatte die flüssigere frühere Fassung gewählt – einzeln und ohne Vorgabe abgehört
+        # war sie genuschelt („Lungenweinigetron“, Sicherheit 0,74); die letzte Fassung war klar (0,99)). Jeder geschnittene Sprechteil
+        # wird deshalb so abgehört, wie ihn ein Zuschauer hört: ohne Zusammenhang, ohne Vorgabe. Unter 0,85 → Warnung.
+        if not P.get("klarheit", True):
+            return
+        try:
+            import mlx_whisper
+            _w = f"{CL}/talk{k}.wav"
+            run(["ffmpeg", "-v", "error", "-y", "-i", f"{CL}/talk{k}.mp4", "-vn", "-ac", "1", "-ar", "16000", "-af", "dynaudnorm", _w])
+            _r = mlx_whisper.transcribe(_w, path_or_hf_repo=os.environ.get("VELOX_WHISPER", "mlx-community/whisper-large-v3-turbo"), word_timestamps=True,
+                                        condition_on_previous_text=False, temperature=0.0)
+            os.remove(_w)
+            _ww = [x for sg in _r["segments"] for x in sg.get("words", [])]
+            _pr = sum(float(x.get("probability", 0)) for x in _ww) / max(1, len(_ww))
+            TALK[k]["klar"] = round(_pr, 2)
+            print(f"   Verständlichkeit {_pr:.2f}" + ("  ⚠ UNDEUTLICH – andere Fassung prüfen" if _pr < 0.85 else "") + f" – gehört: „{_r['text'].strip()[:90]}“", flush=True)
+        except Exception as _e:  # noqa: BLE001
+            print(f"   Verständlichkeit nicht prüfbar ({_e})", flush=True)
+
+    def ff_teil(k):
+        """Sprechteil k mit ffmpeg schneiden (ohne Resolve oder wenn Resolve ausfällt)."""
+        s = TALK[k]
+        a, d, z = s["a"], s["d"], s["_z"]
+        stab = stabil(s["clip"], a, d, f"talk{k}")
+        vf = f"fps={FPS},scale=1080:1920:force_original_aspect_ratio=increase:flags=lanczos,crop=1080:1920," + \
+             (f"scale=iw*{z}:ih*{z}:flags=lanczos,crop=1080:1920:(iw-1080)/2:(ih-1920)*0.38," if z > 1 else "") + s["_fahrt"] + f"{farbe(s['clip'])},setsar=1,format=yuv420p"
+        run(["ffmpeg", "-v", "error", "-y", *(["-i", stab] if stab else []), "-ss", f"{a:.3f}", "-t", f"{d:.3f}", "-i", src(s["clip"]),
+             *(["-map", "0:v", "-map", "1:a"] if stab else []), "-vf", vf,
+             "-af", f"afade=t=in:st=0:d=0.03,afade=t=out:st={max(0.0, d - 0.03):.3f}:d=0.03,aresample=48000", "-ac", "2",
+             "-c:v", "libx264", "-preset", "fast", "-crf", "14", "-c:a", "aac", "-b:a", "256k", f"{CL}/talk{k}.mp4"])
+        print(f"Sprechteil {k}: {s['clip']} {a:.2f}–{a + d:.2f} s  „{' '.join(w['t'] for w in s['ws'])[:70]}“", flush=True)
+        klar(k)
+
     # Sprechteile: Kanten in die Ruhe neben das erste/letzte Wort legen
     TALK, OFF, t = [], [], 0.0
     for k, s in enumerate(P["sprechteile"]):
@@ -444,37 +500,50 @@ def bauen(plan_pfad):
         else:
             z = PUNCH if k > 0 and TALK[-2]["clip"] == s["clip"] and TALK[-2].get("_z", 1.0) == 1.0 else 1.0
         TALK[-1]["_z"] = z
-        stab = stabil(s["clip"], a, d, f"talk{k}")
         fahrt = ""
         if (STUFE == "premium" or (STUFE == "viral" and k == 0)) and d >= 1.5 and s.get("fahrt", True):
             n_, r_ = max(1, int(d * FPS)), min(0.06, 0.012 * d)          # langsames Heranfahren, höchstens 6 %
             zf = f"(1+{r_:.4f}*on/{n_})"
             fahrt = (f"perspective=x0='W*0.5*(1-1/{zf})':y0='H*0.38*(1-1/{zf})':x1='W-W*0.5*(1-1/{zf})':y1='H*0.38*(1-1/{zf})':"
                      f"x2='W*0.5*(1-1/{zf})':y2='H-H*0.62*(1-1/{zf})':x3='W-W*0.5*(1-1/{zf})':y3='H-H*0.62*(1-1/{zf})':sense=source:interpolation=cubic:eval=frame,")
-        vf = f"fps={FPS},scale=1080:1920:force_original_aspect_ratio=increase:flags=lanczos,crop=1080:1920," + \
-             (f"scale=iw*{z}:ih*{z}:flags=lanczos,crop=1080:1920:(iw-1080)/2:(ih-1920)*0.38," if z > 1 else "") + fahrt + f"{farbe(s['clip'])},setsar=1,format=yuv420p"
-        run(["ffmpeg", "-v", "error", "-y", *(["-i", stab] if stab else []), "-ss", f"{a:.3f}", "-t", f"{d:.3f}", "-i", src(s["clip"]),
-             *(["-map", "0:v", "-map", "1:a"] if stab else []), "-vf", vf,
-             "-af", f"afade=t=in:st=0:d=0.03,afade=t=out:st={max(0.0, d - 0.03):.3f}:d=0.03,aresample=48000", "-ac", "2",
-             "-c:v", "libx264", "-preset", "fast", "-crf", "14", "-c:a", "aac", "-b:a", "256k", f"{CL}/talk{k}.mp4"])
-        print(f"Sprechteil {k}: {s['clip']} {a:.2f}–{a + d:.2f} s  „{' '.join(w['t'] for w in ws)[:70]}“", flush=True)
-        # VERSTÄNDLICHKEIT (Papaya-Video, 13.10.: Ich hatte die flüssigere frühere Fassung gewählt – einzeln und ohne Vorgabe abgehört
-        # war sie genuschelt („Lungenweinigetron“, Sicherheit 0,74); die letzte Fassung war klar (0,99)). Jeder geschnittene Sprechteil
-        # wird deshalb so abgehört, wie ihn ein Zuschauer hört: ohne Zusammenhang, ohne Vorgabe. Unter 0,85 → Warnung.
-        if P.get("klarheit", True):
-            try:
-                import mlx_whisper
-                _w = f"{CL}/talk{k}.wav"
-                run(["ffmpeg", "-v", "error", "-y", "-i", f"{CL}/talk{k}.mp4", "-vn", "-ac", "1", "-ar", "16000", "-af", "dynaudnorm", _w])
-                _r = mlx_whisper.transcribe(_w, path_or_hf_repo=os.environ.get("VELOX_WHISPER", "mlx-community/whisper-large-v3-turbo"), word_timestamps=True,
-                                            condition_on_previous_text=False, temperature=0.0)
-                os.remove(_w)
-                _ww = [x for sg in _r["segments"] for x in sg.get("words", [])]
-                _pr = sum(float(x.get("probability", 0)) for x in _ww) / max(1, len(_ww))
-                TALK[-1]["klar"] = round(_pr, 2)
-                print(f"   Verständlichkeit {_pr:.2f}" + ("  ⚠ UNDEUTLICH – andere Fassung prüfen" if _pr < 0.85 else "") + f" – gehört: „{_r['text'].strip()[:90]}“", flush=True)
-            except Exception as _e:  # noqa: BLE001
-                print(f"   Verständlichkeit nicht prüfbar ({_e})", flush=True)
+        TALK[-1]["_fahrt"] = fahrt
+        if not RESCUT:
+            ff_teil(k)
+    if RESCUT:
+        try:
+            res_projekt()
+            _cdl = {}
+            teile_r = []
+            for k, s in enumerate(TALK):
+                if s["clip"] not in _cdl:
+                    _cdl[s["clip"]] = RES.auto_cdl(src(s["clip"]), STUFE)
+                zt = zittern_messen(src(s["clip"]), s["a"], s["d"]) if P.get("stabil", True) else 0.0
+                teile_r.append({"src": src(s["clip"]), "a": s["a"], "d": s["d"], "zoom": s["_z"], "stabil": zt > 0.3, "cdl": _cdl[s["clip"]]})
+                print(f"Sprechteil {k}: {s['clip']} {s['a']:.2f}–{s['a'] + s['d']:.2f} s → Resolve" + (f" (stabilisiert, Zittern {zt:.2f})" if zt > 0.3 else "") +
+                      f"  „{' '.join(w['t'] for w in s['ws'])[:60]}“", flush=True)
+            zeiten, tl_name = RES.schnitt(teile_r, f"{CL}/resolve_schnitt.mp4",
+                                          f"Velox {P.get('titel') or os.path.basename(os.path.dirname(ARB.rstrip('/')))} [{STUFE}] {time.strftime('%d.%m. %H-%M')}")
+            print(f"DaVinci Resolve: {len(zeiten)} Teile aus den Original-Clips geschnitten, farbkorrigiert, gerendert – Timeline „{tl_name}“", flush=True)
+            OFF = []
+            for k, (z0, z1) in enumerate(zeiten):   # fertigen Resolve-Schnitt in die Sprechteile zerlegen (für Gesicht, Untertitel, Prüfung)
+                d_ = round((z1 - z0) * FPS) / FPS
+                TALK[k]["d"] = d_
+                OFF.append(z0)
+                vf = f"fps={FPS},scale=1080:1920:flags=lanczos,setsar=1," + TALK[k]["_fahrt"] + ("vignette=PI/6," if STUFE == "premium" else "") + "format=yuv420p"
+                run(["ffmpeg", "-v", "error", "-y", "-ss", f"{z0:.3f}", "-t", f"{d_:.3f}", "-i", f"{CL}/resolve_schnitt.mp4", "-vf", vf,
+                     "-af", f"afade=t=in:st=0:d=0.03,afade=t=out:st={max(0.0, d_ - 0.03):.3f}:d=0.03,aresample=48000", "-ac", "2",
+                     "-c:v", "libx264", "-preset", "fast", "-crf", "14", "-c:a", "aac", "-b:a", "256k", f"{CL}/talk{k}.mp4"])
+                klar(k)
+            t = OFF[-1] + TALK[-1]["d"]
+        except Exception as e:  # noqa: BLE001
+            print(f"DaVinci Resolve-Schnitt fehlgeschlagen ({e}) – schneide mit ffmpeg", flush=True)
+            RES = None
+            RESCUT = False
+            OFF, t = [], 0.0
+            for k in range(len(TALK)):
+                OFF.append(t)
+                ff_teil(k)
+                t += TALK[k]["d"]
     T_TALK = t
     # GESICHT (erster Test über die Webseiten-Strecke, 13.10.: nahes Selfie – Untertitel und Karten lagen quer über Augen und Mund).
     # Je Sprechteil wird gemessen, wo das Gesicht im fertigen Bild liegt; Untertitel und Grafiken bekommen ihren Platz daneben:
@@ -570,7 +639,24 @@ def bauen(plan_pfad):
         TOTAL = T_TALK
 
     GRADED = None
-    if RES:
+    if RESCUT:      # Sprechteile sind schon in Resolve geschnitten und gegradet – nur Montage und Zwischenbilder noch durch Resolve
+        for i, (f_, st, du) in enumerate(EIN):
+            try:
+                g_ = f_[:-4] + "_resolve.mp4"
+                RES.grade(f_, g_, STUFE, behalten=False)
+                EIN[i] = (g_, st, du)
+            except Exception:  # noqa: BLE001
+                run(["ffmpeg", "-v", "error", "-y", "-i", f_, "-vf", farbe_ff(EIN_NAMEN[i]) + ",format=yuv420p", "-c:v", "libx264", "-preset", "fast", "-crf", "14", f_[:-4] + "_ff.mp4"])
+                EIN[i] = (f_[:-4] + "_ff.mp4", st, du)
+        for i, (f_, name) in enumerate(zip(mont_files, ([c for c, _ in M["clips"]] + [M["ende"][0]]) if M else [])):
+            try:
+                RES.grade(f_, f_[:-4] + "_resolve.mp4", STUFE, behalten=False)
+                os.replace(f_[:-4] + "_resolve.mp4", f_)
+            except Exception:  # noqa: BLE001
+                run(["ffmpeg", "-v", "error", "-y", "-i", f_, "-vf", farbe_ff(name) + ",format=yuv420p", "-c:v", "libx264", "-preset", "fast", "-crf", "14", f_[:-4] + "_ff.mp4"])
+                os.replace(f_[:-4] + "_ff.mp4", f_)
+        RES.speichern()
+    elif RES:
         teile = [(f"{CL}/talk{k}.mp4", s["clip"]) for k, s in enumerate(TALK)] + \
                 list(zip(mont_files, ([c for c, _ in M["clips"]] + [M["ende"][0]]) if M else []))
         roh = f"{CL}/schnitt_roh.mp4"
@@ -582,20 +668,7 @@ def bauen(plan_pfad):
             shots.append((f0, f0 + n_, name))
             f0 += n_
         try:
-            # eigenes Projekt je Auftrag: „Velox <Datum Uhrzeit> <Auftragsordner>“ (Name wird beim ersten Bauen gemerkt, damit ein
-            # Neubau dasselbe Projekt nimmt); Auftrags-Projekte älter als 24 Stunden räumt das Programm selbst weg
-            _pf = os.path.join(ARB, "resolve_projekt.txt")
-            _pn = open(_pf).read().strip() if os.path.exists(_pf) else \
-                f"Velox {time.strftime('%Y-%m-%d %H%M')} {os.path.basename(os.path.dirname(os.path.abspath(ARB).rstrip('/')))[:60]}"
-            open(_pf, "w").write(_pn)
-            _pr = RES.projekt(_pn)
-            print(f"DaVinci Resolve: Projekt „{_pr['projekt']}“" + (" angelegt" if _pr.get("neu") else " geöffnet"), flush=True)
-            try:
-                _weg = RES.aufraeumen(24, _pn)
-                if _weg:
-                    print(f"DaVinci Resolve: {len(_weg)} alte Auftrags-Projekte gelöscht", flush=True)
-            except Exception:  # noqa: BLE001
-                pass
+            res_projekt()
             RES.grade(roh, f"{CL}/schnitt_resolve.mp4", STUFE, behalten=True, shots=shots,
                       name=f"Velox {P.get('titel') or os.path.basename(os.path.dirname(ARB.rstrip('/')))} [{STUFE}] {time.strftime('%d.%m. %H-%M')}")
             for i, (f_, st, du) in enumerate(EIN):
@@ -986,6 +1059,18 @@ def _zittern(v):
         return 0.0
     gl = np.stack([np.convolve(v[:, i], np.ones(9) / 9, "same") for i in (0, 1)], axis=1)
     return float(np.abs(v[:, :2] - gl)[5:-5].mean() * 3.0)
+
+
+def zittern_messen(quelle, a, d, fps=FPS):
+    """Nur messen (für den Schnitt in Resolve, der selbst stabilisiert): Zittern in px je Bild, Schwenks zählen nicht."""
+    import numpy as np
+    p = subprocess.Popen(["ffmpeg", "-v", "error", "-ss", f"{a:.3f}", "-t", f"{min(d, 6.0):.3f}", "-i", quelle, "-an", "-vf",
+                          f"fps={fps:.4f},scale=360:640:force_original_aspect_ratio=increase:flags=bilinear,crop=360:640", "-pix_fmt", "gray",
+                          "-f", "rawvideo", "-"], stdout=subprocess.PIPE)
+    roh = p.stdout.read()
+    p.wait()
+    n = 360 * 640
+    return _zittern(_bewegung([np.frombuffer(roh[i:i + n], np.uint8).reshape(640, 360) for i in range(0, len(roh) - n + 1, n)]))
 
 
 def stabilisieren(quelle, a, d, ziel, fps=FPS, schwelle=0.3):

@@ -202,6 +202,31 @@ def pegel(clip):
     return _PEGEL[clip]
 
 
+def einsatz(clip, w):
+    """ECHTER WORTBEGINN (Inhaber 17.10.: „bei den Aufzählungen hört man davor noch den Kameramann reden – das sage ich dir zum
+    wievielten Mal“). Die Erkennung dehnt das erste Wort eines Clips oft über alles davor („Oder“ 0,0–1,24 s) – darin steckt dann
+    die Stimme hinter der Kamera. Die Person vor der Kamera trägt das Mikro und ist deutlich lauter: Der Schnitt beginnt erst dort,
+    wo der letzte laute Abschnitt des Wortes anfängt (nach mindestens 0,08 s, die mehr als 14 dB leiser waren)."""
+    if w["e"] - w["s"] <= 0.55:
+        return w["s"]
+    lv = pegel(clip)
+    i0, i1 = int(w["s"] / 0.01), int(w["e"] / 0.01)
+    seg = lv[i0:i1]
+    if len(seg) < 10:
+        return w["s"]
+    schwelle = max(seg) - 14.0
+    leise, k = 0, len(seg) - 1
+    while k > 0:
+        if seg[k] < schwelle:
+            leise += 1
+            if leise >= 8:
+                return round((i0 + k + leise) * 0.01, 2)
+        else:
+            leise = 0
+        k -= 1
+    return w["s"]
+
+
 def kante(clip, t, anfang, grenze):
     """Schnittkante neben das Wort legen – „nicht zu früh, nicht zu spät“: am Anfang die leiseste Stelle in den 0,16 s VOR dem
     Wort (nie vor `grenze` = Ende des Wortes davor), am Ende die leiseste Stelle in den 0,22 s NACH dem Wort (nie nach `grenze`)."""
@@ -487,7 +512,11 @@ def bauen(plan_pfad):
         i0, i1 = alle.index(ws[0]), alle.index(ws[-1])
         vor = alle[i0 - 1]["e"] if i0 > 0 else 0.0
         nach = alle[i1 + 1]["s"] if i1 + 1 < len(alle) else dauer(src(s["clip"]))
-        a = kante(src(s["clip"]), ws[0]["s"], True, vor)
+        _ein = einsatz(src(s["clip"]), ws[0])
+        if _ein > ws[0]["s"] + 0.05:
+            print(f"Sprechteil {k}: „{ws[0]['t']}“ beginnt erst bei {_ein:.2f} s statt {ws[0]['s']:.2f} s – davor spricht jemand anderes/leise → abgeschnitten", flush=True)
+            vor = max(vor, _ein - 0.2)
+        a = kante(src(s["clip"]), _ein, True, vor)
         b = kante(src(s["clip"]), ws[-1]["e"], False, nach)
         d = round((b - a) * FPS) / FPS
         TALK.append({**s, "a": a, "d": d, "ws": ws})
@@ -685,6 +714,117 @@ def bauen(plan_pfad):
                 run(["ffmpeg", "-v", "error", "-y", "-i", p_, "-vf", farbe_ff(name) + ",format=yuv420p", "-c:v", "libx264", "-preset", "fast", "-crf", "14",
                      "-c:a", "copy", p_[:-4] + "_ff.mp4"])
                 os.replace(p_[:-4] + "_ff.mp4", p_)
+
+    # PREMIUM MIT DEM MOTION-GRAPHICS-BAUKASTEN (Inhaber 17.10.: „für Premium viel zu schlecht – so wie das Yacht-Video auf der
+    # Webseite muss jedes Premium-Video aussehen, mit richtig krassen Motion Graphics“). Steht im Plan "premium": {…}, zeichnet der
+    # Remotion-Baukasten (worker/premium, derselbe wie bei den Novus-Videos) das ganze Video: Kamerafahrten, Vollbild-Karten, Text
+    # hinter der Person, Zähler, Abläufe, Listen, Chat/Suche/Anruf, Zwischenbilder als Vollbild/Karte/Handy, Untertitel, Töne, Abspann.
+    # CLAUDE wählt die Bausteine (früher Gemini). Zeiten im Plan wie überall: {"teil": k, "zeit": Sekunde im Rohclip}.
+    if STUFE == "premium" and P.get("premium"):
+        try:
+            import premium2
+            # Wörter des fertigen Schnitts (mit den Schreibweisen des Plans)
+            W_OUT, W_TEIL = [], []
+            for k, s in enumerate(TALK):
+                ers = s.get("ersetzen") or {}
+                for w in s["ws"]:
+                    tx = ers.get(w["t"], ers.get(w["t"].strip(".,!?"), None))
+                    if tx is not None and w["t"] not in ers:
+                        tx = tx + (re.search(r"[.,!?]+$", w["t"]) or re.match("", "")).group(0)
+                    tx = w["t"] if tx is None else tx
+                    if not tx or tx in ("…", "..."):
+                        continue
+                    W_OUT.append((tx, round(out_t(k, w["s"]), 3), round(out_t(k, w["e"]), 3)))
+                    W_TEIL.append(k)
+
+            def wi(z, ende=False):
+                """{"teil", "zeit"} → Nummer des Wortes im fertigen Video"""
+                if isinstance(z, int):
+                    return z
+                ot = out_t(int(z["teil"]), float(z["zeit"]))
+                if ende:
+                    c = [i for i, w in enumerate(W_OUT) if w[1] <= ot + 0.05]
+                    return c[-1] if c else 0
+                c = [i for i, w in enumerate(W_OUT) if w[2] > ot - 0.02]
+                return c[0] if c else len(W_OUT) - 1
+            PR = json.loads(json.dumps(P["premium"]))
+            if PR.get("hook"):
+                PR["hook"]["bis"] = wi(PR["hook"].get("bis", {"teil": 0, "zeit": TALK[0]["a"] + 2.5}), True)
+            for g in PR.get("grafiken") or []:
+                g["von"], g["bis"] = wi(g["von"]), wi(g["bis"], True)
+                for it in g.get("texte") or []:
+                    if isinstance(it.get("wort"), dict):
+                        it["wort"] = wi(it["wort"])
+            premium2._zahlen(PR)        # „3“ → 3 (sonst verwirft der Baukasten Zähler und Nummern)
+            bet = {norm(x) for x in PR.get("betont") or [] if isinstance(x, str)}
+            PR["betont"] = [i for i, w in enumerate(W_OUT) if norm(w[0]) in bet][:24]
+            # KOPF ÜBERALL GLEICH HOCH (Test 17.10.: Der Baukasten legt das Bild einmal fürs ganze Video – bei näher gefilmten
+            # Teilen lagen die Untertitel auf der Stirn). Jeder Sprechteil wird so vergrößert/verschoben, dass der Haaransatz bei
+            # ~715 px liegt (darüber ist Platz für Untertitel und Grafik); verkleinert wird nie, höchstens 1,5-fach vergrößert.
+            import cv2 as _cv
+            _cc = _cv.CascadeClassifier(_cv.data.haarcascades + "haarcascade_frontalface_default.xml")
+            for k in range(len(TALK)):
+                cap = _cv.VideoCapture(f"{CL}/talk{k}.mp4")
+                n_ = int(cap.get(_cv.CAP_PROP_FRAME_COUNT)) or 1
+                fb = []
+                for q in (0.15, 0.35, 0.55, 0.75, 0.9):
+                    cap.set(_cv.CAP_PROP_POS_FRAMES, int(n_ * q))
+                    ok, im = cap.read()
+                    if ok:
+                        fs = _cc.detectMultiScale(_cv.equalizeHist(_cv.cvtColor(im, _cv.COLOR_BGR2GRAY)), 1.1, 6, minSize=(160, 160))
+                        if len(fs):
+                            fb.append(max(fs, key=lambda b: b[2] * b[3]))
+                cap.release()
+                if len(fb) < 2:
+                    continue
+                x_, y_, w_, h_ = np.median(np.array(fb), axis=0)
+                hair = y_ - 0.2 * h_
+                ziel_h = 715.0
+                sc = max(1.0, min(1.5, 470.0 / w_ if w_ < 470 else 1.0))
+                # nach dem Vergrößern um die Gesichtsmitte: wohin muss das Bild, damit der Haaransatz auf ziel_h liegt?
+                cx_, cy_ = x_ + w_ / 2, y_ + h_ / 2
+                hair_s = cy_ + (hair - cy_) * sc
+                dy = ziel_h - hair_s
+                need = abs(dy) * 2 / 1920 + 1.0          # so viel Vergrößerung braucht die Verschiebung ohne schwarzen Rand
+                if need > sc:
+                    sc = min(1.5, need)
+                    hair_s = cy_ + (hair - cy_) * sc
+                    dy = ziel_h - hair_s
+                W2, H2 = int(1080 * sc) // 2 * 2, int(1920 * sc) // 2 * 2
+                ox = min(max(0, int(cx_ * sc - 540)), W2 - 1080)
+                oy = min(max(0, int(hair * sc - ziel_h)), H2 - 1920)
+                if sc <= 1.01 and abs(hair - ziel_h) < 60:
+                    continue
+                run(["ffmpeg", "-v", "error", "-y", "-i", f"{CL}/talk{k}.mp4", "-vf", f"scale={W2}:{H2}:flags=lanczos,crop=1080:1920:{ox}:{oy},setsar=1",
+                     "-c:v", "libx264", "-preset", "fast", "-crf", "14", "-c:a", "copy", f"{CL}/talk{k}_lage.mp4"])
+                os.replace(f"{CL}/talk{k}_lage.mp4", f"{CL}/talk{k}.mp4")
+                print(f"Sprechteil {k}: Kopf ausgerichtet (×{sc:.2f}, Haaransatz {hair:.0f} → {hair * sc - oy:.0f} px)", flush=True)
+            # Rohschnitt ohne Schrift: gegradete Sprechteile hintereinander (Ton wie im fertigen Video)
+            cut = f"{CL}/premium_roh.mp4"
+            ins = []
+            for k in range(len(TALK)):
+                ins += ["-i", f"{CL}/talk{k}.mp4"]
+            if False:
+                ins = ["-i", GRADED] + ins
+                fcx = "".join(f"[{k + 1}:a]" for k in range(len(TALK))) + f"concat=n={len(TALK)}:v=0:a=1[a]"
+                run(["ffmpeg", "-v", "error", "-y", *ins, "-filter_complex", fcx, "-map", "0:v", "-map", "[a]", "-c:v", "libx264", "-crf", "14", "-preset", "fast", "-c:a", "aac", "-b:a", "256k", cut])
+            else:
+                fcx = "".join(f"[{k}:v][{k}:a]" for k in range(len(TALK))) + f"concat=n={len(TALK)}:v=1:a=1[v][a]"
+                run(["ffmpeg", "-v", "error", "-y", *ins, "-filter_complex", fcx, "-map", "[v]", "-map", "[a]", "-c:v", "libx264", "-crf", "14", "-preset", "fast", "-c:a", "aac", "-b:a", "256k", cut])
+            _logo = P.get("logo")
+            if _logo and not os.path.isabs(_logo):
+                _logo = os.path.join(ORD, _logo)
+            r_ = premium2.render(cut, W_OUT, P.get("titel") or "", ZIEL, None, cut_times=OFF[1:], logo=_logo if _logo and os.path.exists(_logo) else None,
+                                 accent=AKZ, seed_text=P.get("titel") or ARB, plan=PR, brolls=[{"file": f_, "t": st, "dur": du} for f_, st, du in EIN],
+                                 outro=P.get("abspann", True), log=lambda m: print(m, flush=True))
+            if r_:
+                json.dump({"premium": True, "sprechteile": [(s["clip"], round(s["a"], 3), round(s["a"] + s["d"], 3)) for s in TALK], "elemente": r_[1].get("elemente")},
+                          open(os.path.join(ARB, "schnittliste.json"), "w"), ensure_ascii=False, indent=1)
+                print(f"fertig [premium · Motion-Graphics-Baukasten]: {ZIEL}  ({dauer(ZIEL):.1f} s)", flush=True)
+                return
+            print("Premium-Baukasten lieferte nichts – baue mit den einfachen Grafiken", flush=True)
+        except Exception as e:  # noqa: BLE001
+            print(f"Premium-Baukasten fehlgeschlagen ({e}) – baue mit den einfachen Grafiken", flush=True)
 
     # Grafiken: jede bekommt ihren Platz – unten (unter den Untertiteln) nebeneinander, „pille“ oben; nichts überlappt
     Y_UT, Y_UNTEN, Y_OBEN, SAFE_B = 1090, 1250, 250, 1400

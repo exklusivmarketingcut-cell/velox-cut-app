@@ -23,6 +23,7 @@ export type BProps = {
   sfx: {t: number; k: string; vol: number}[];
   look?: string;
   blitz?: number[];
+  hell?: boolean;
 };
 export const totalFrames = (p: BProps) => Math.round((p.dur + (p.outro ? OUTRO : 0)) * FPS);
 
@@ -832,14 +833,14 @@ const Outro: React.FC<{t: number; p: BProps}> = ({t, p}) => {
   const l2 = eo((t - a - 1.0) / 0.4);
   const line = eo((t - a - 0.6) / 0.5);
   return (
-    <AbsoluteFill style={{background: `rgba(8,8,9,${bg})`, alignItems: 'center', justifyContent: 'center'}}>
+    <AbsoluteFill style={{background: p.hell ? `rgba(246,242,234,${bg})` : `rgba(8,8,9,${bg})`, alignItems: 'center', justifyContent: 'center'}}>
       <div style={{position: 'absolute', width: 1000, height: 700, background: 'radial-gradient(closest-side, rgba(212,171,114,0.2), transparent)', opacity: q}} />
       <div style={{position: 'absolute', left: 0, top: 0, width: 1080, height: 1920}}><Funken t={t} at={a + 0.8} x={540} y={900} n={36} farbe={GOLD_L} weite={420} /></div>
       <div style={{display: 'flex', flexDirection: 'column', alignItems: 'center', marginTop: -120}}>
         {B.logo ? <img src={staticFile(B.logo)} style={{height: 220, opacity: q, borderRadius: 28}} /> : B.novus ? <Lockup h={190} p={q} /> : null}
         <div style={{height: 3, width: 420 * line, background: `linear-gradient(90deg, transparent, ${GOLD}, transparent)`, marginTop: 56}} />
-        <div style={{fontFamily: 'Playfair', fontStyle: 'italic', fontWeight: 700, fontSize: 62, color: '#fff', marginTop: 46, whiteSpace: 'nowrap', opacity: l1, transform: `translateY(${(1 - l1) * 20}px)`}}>
-          {p.outro.line} <span style={{color: GOLD_L}}>{p.outro.gold}</span>
+        <div style={{fontFamily: 'Playfair', fontStyle: 'italic', fontWeight: 700, fontSize: 62, color: p.hell ? '#15130f' : '#fff', marginTop: 46, whiteSpace: 'nowrap', opacity: l1, transform: `translateY(${(1 - l1) * 20}px)`}}>
+          {p.outro.line} <span style={{color: p.hell ? '#8c6531' : GOLD_L}}>{p.outro.gold}</span>
         </div>
         <div style={{display: 'flex', gap: 18, marginTop: 40, opacity: l2, transform: `translateY(${(1 - l2) * 20}px)`}}>
           {(p.outro.handle ?? (B.novus ? '@_novusmedia' : '')) ? <div style={{...card, padding: '16px 30px', borderRadius: 20, fontFamily: 'Montserrat', fontWeight: 700, fontSize: 34, color: GOLD_L}}>{p.outro.handle ?? '@_novusmedia'}</div> : null}
@@ -868,8 +869,10 @@ export const Batch: React.FC<BProps> = (p) => {
       <Sequence durationInFrames={vf} layout="none">
         <Camera p={p} />
       </Sequence>
-      <AbsoluteFill style={{opacity: 1 - F, background: 'linear-gradient(180deg, rgba(6,6,7,0.97) 0%, rgba(6,6,7,0.9) 14%, rgba(6,6,7,0.8) 24%, rgba(6,6,7,0.4) 33%, transparent 42%)'}} />
-      <AbsoluteFill style={{opacity: 1 - F, background: 'radial-gradient(120% 80% at 50% 62%, transparent 55%, rgba(0,0,0,0.55) 100%)'}} />
+      {/* Inhaber 17.10.: „dieses Dunkle oben ist nicht gut – bei normalen Reels (Cheesecake, Laden) heller und offener; abdunkeln nur bei
+          ernsten Themen wie Aktien, Immobilien, Podcast“ → hell: nur ein leichter Schleier oben für die Lesbarkeit, keine Randabdunklung */}
+      <AbsoluteFill style={{opacity: 1 - F, background: p.hell ? 'linear-gradient(180deg, rgba(0,0,0,0.28) 0%, rgba(0,0,0,0.14) 18%, transparent 34%)' : 'linear-gradient(180deg, rgba(6,6,7,0.97) 0%, rgba(6,6,7,0.9) 14%, rgba(6,6,7,0.8) 24%, rgba(6,6,7,0.4) 33%, transparent 42%)'}} />
+      {p.hell ? null : <AbsoluteFill style={{opacity: 1 - F, background: 'radial-gradient(120% 80% at 50% 62%, transparent 55%, rgba(0,0,0,0.55) 100%)'}} />}
       {p.look === 'film' ? <Sequence durationInFrames={vf} layout="none"><Filmlook t={t} farbe={GOLD} /></Sequence> : null}
       {p.sweeps.map((c) => (
         <Sweep key={c} t={t} at={c - 0.21} />

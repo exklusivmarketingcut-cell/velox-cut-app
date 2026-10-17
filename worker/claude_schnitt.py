@@ -529,13 +529,19 @@ def bauen(plan_pfad):
         t += d
         # Bildwechsel am Schnitt: Folgt ein Teil aus DERSELBEN Aufnahme, springt das Bild sonst sichtbar („Jump Cut“). Ohne Vorgabe
         # im Plan wechselt der Ausschnitt deshalb ab (ganz / etwas näher) – je Stufe verschieden stark.
-        if "zoom" in s:
+        # ZEIGT (Inhaber 17.10.): Wird etwas gezeigt (Plan "zeigt": true oder Zeige-Wörter), gibt es dort keinen Zoom und keine Kamerafahrt –
+        # sonst fallen die Produkte am Bildrand heraus.
+        ZW = {"hier", "dieser", "diese", "dieses", "diesen", "schaut", "seht", "guckt", "zeige", "zeigen", "sowas", "solche"}
+        TALK[-1]["_zeigt"] = bool(s.get("zeigt")) or (s.get("zeigt") is None and any(norm(w["t"]) in ZW for w in ws))
+        if TALK[-1]["_zeigt"]:
+            z = 1.0
+        elif "zoom" in s:
             z = float(s["zoom"])
         else:
             z = PUNCH if k > 0 and TALK[-2]["clip"] == s["clip"] and TALK[-2].get("_z", 1.0) == 1.0 else 1.0
         TALK[-1]["_z"] = z
         fahrt = ""
-        if (STUFE == "premium" or (STUFE == "viral" and k == 0)) and d >= 1.5 and s.get("fahrt", True):
+        if (STUFE == "premium" or (STUFE == "viral" and k == 0)) and d >= 1.5 and s.get("fahrt", True) and not TALK[-1]["_zeigt"]:
             n_, r_ = max(1, int(d * FPS)), min(0.06, 0.012 * d)          # langsames Heranfahren, höchstens 6 %
             zf = f"(1+{r_:.4f}*on/{n_})"
             fahrt = (f"perspective=x0='W*0.5*(1-1/{zf})':y0='H*0.38*(1-1/{zf})':x1='W-W*0.5*(1-1/{zf})':y1='H*0.38*(1-1/{zf})':"
@@ -639,6 +645,10 @@ def bauen(plan_pfad):
     for k, e in enumerate(P.get("einschuebe") or []):
         a = max(OFF[e["teil"]], out_t(e["teil"], e["ab"]) - 0.05)
         b = min(teil_ende(e["teil"]), out_t(e["teil"], e["bis"]) - 0.02) if e.get("bis") else teil_ende(e["teil"])
+        # Inhaber 17.10.: „das Bild von den Cheesecakes am Anfang ist zu kurz, da sieht man kaum was – wirkt abgehackt“ → mindestens 2 s
+        # (läuft dann über den nächsten Satz weiter), höchstens bis kurz vor Schluss
+        if b - a < 2.0:
+            b = min(a + 2.0, (OFF[-1] + TALK[-1]["d"]) - 0.3)
         if b - a >= 0.5:
             EIN.append((broll(f"ein{k}", e["clip"], e.get("start", 0.0), b - a, e.get("tempo", 0.6)), a, b - a))
             EIN_NAMEN.append(e["clip"])
@@ -765,8 +775,7 @@ def bauen(plan_pfad):
             # den Produkten in seinen Händen; „bei ‚drei dieser Special Cheesecakes‘ sieht man den Kuchen nicht“ – Vollbild-Zahl darüber).
             # Ein Sprechteil „zeigt“, wenn der Plan es sagt ("zeigt": true) oder Zeige-Wörter fallen (hier, dieser, schaut …).
             # Dort gibt es keine Vollbild-Karten und keine Sprecher-Karte – die Grafik wird zur kleinen Bühnen-Grafik über dem Kopf.
-            ZEIGEWORT = {"hier", "dieser", "diese", "dieses", "diesen", "schaut", "seht", "guckt", "zeige", "zeigen", "sowas", "solche"}
-            ZEIGT = [bool(s.get("zeigt")) or (s.get("zeigt") is None and any(norm(w["t"]) in ZEIGEWORT for w in s["ws"])) for s in TALK]
+            ZEIGT = [bool(s.get("_zeigt")) for s in TALK]
             print("Sprechteile, in denen etwas gezeigt wird: " + (", ".join(str(k) for k, z in enumerate(ZEIGT) if z) or "keine"), flush=True)
 
             def zeigt_bei(i0, i1):
@@ -817,7 +826,7 @@ def bauen(plan_pfad):
                     s_ = max(0.68, min(1.0, (1920.0 - ziel_h) / (1920.0 - hair)))
                     W2, H2 = int(1080 * s_) // 2 * 2, int(1920 * s_) // 2 * 2
                     run(["ffmpeg", "-v", "error", "-y", "-i", f"{CL}/talk{k}.mp4", "-filter_complex",
-                         f"[0:v]split[a][b];[a]scale=1080:1920,boxblur=28:4,eq=brightness=-0.12:saturation=1.1[bg];[b]scale={W2}:{H2}:flags=lanczos[fg];"
+                         f"[0:v]split[a][b];[a]scale=1080:1920,boxblur=28:4,eq=brightness={-0.12 if (P.get('premium') or {}).get('ton') == 'ernst' else 0.02}:saturation=1.1[bg];[b]scale={W2}:{H2}:flags=lanczos[fg];"
                          f"[bg][fg]overlay=(1080-w)/2:1920-h,setsar=1[v]", "-map", "[v]", "-map", "0:a",
                          "-c:v", "libx264", "-preset", "fast", "-crf", "14", "-c:a", "copy", f"{CL}/talk{k}_lage.mp4"])
                     os.replace(f"{CL}/talk{k}_lage.mp4", f"{CL}/talk{k}.mp4")
@@ -933,7 +942,8 @@ def bauen(plan_pfad):
                 if not gesetzt:
                     print(f"Pfeil „{g['text']}“ weggelassen – läge auf Gesicht, Untertitel oder einer anderen Grafik", flush=True)
                 continue
-            y0 = Y_OBEN if g["art"] == "pille" else (_yu if _yu is not None else 99999) + (0 if g["art"] in ("preis", "ort") else 40)
+            # zeigt die Person gerade etwas (Produkte unten im Bild), gehören Karten nach oben – nie auf die Produkte
+            y0 = Y_OBEN if g["art"] == "pille" or TALK[g["teil"]].get("_zeigt") else (_yu if _yu is not None else 99999) + (0 if g["art"] in ("preis", "ort") else 40)
             if y0 + h > SAFE_B + 20 or _auf_gesicht(y0, y0 + h):   # unten kein Platz → oben versuchen, sonst weglassen
                 y0 = Y_OBEN if not _auf_gesicht(Y_OBEN, Y_OBEN + h) and abs(UT_Y[g["teil"]] - Y_OBEN) > h + 60 else 99999
             platz = None

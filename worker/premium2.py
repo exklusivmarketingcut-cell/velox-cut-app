@@ -478,7 +478,7 @@ def render(cut, words_out, title, out, ki_call, cut_times=(), logo=None, accent=
         if e.get("frame"): sfx.append([max(0, e["a"] - 0.2), "wh", .2])
     sfx += [[c, "wh", .14] for c in sweeps]
     sch = plan.get("schluss") or {}
-    props = dict(file=vid, dur=round(dur, 3), base=base, cam=cam, sweeps=sweeps, look=(plan.get("look") or ""),
+    props = dict(file=vid, dur=round(dur, 3), base=base, cam=cam, sweeps=sweeps, look=(plan.get("look") or ""), hell=(plan.get("ton") or "hell") != "ernst",
                  blitz=[round(c, 3) for c in sorted(cut_times) if plan.get("blitze", True) and 0.8 < c < dur - 0.8][:8], chunks=untertitel(T, set(i for i in plan.get("betont") or [] if isinstance(i, int))),
                  events=ev, sfx=[dict(t=round(a, 2), k=k, vol=v) for a, k, v in sfx],
                  outro=(dict(line=(_kurz(sch.get("zeile"), 22) if _kurz(sch.get("wort"), 14) else "") or "Folg für", gold=(_kurz(sch.get("wort"), 14) if _kurz(sch.get("zeile"), 22) else "") or "mehr", handle="", site="") if outro else None),

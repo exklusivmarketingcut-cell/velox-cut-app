@@ -215,7 +215,12 @@ def einsatz(clip, w):
     if len(seg) < 10:
         return w["s"]
     schwelle = max(seg) - 14.0
-    leise, k = 0, len(seg) - 1
+    # Test 17.10. (Papaya): „Stopp!“ war kurz und laut, danach Stille bis zum Wortende – die Stille AM ENDE ist keine Lücke vor dem
+    # Sprecher. Deshalb erst vom Ende her bis zum letzten lauten Abschnitt gehen, dann dessen Anfang suchen.
+    k = len(seg) - 1
+    while k > 0 and seg[k] < schwelle:
+        k -= 1
+    leise = 0
     while k > 0:
         if seg[k] < schwelle:
             leise += 1
@@ -756,6 +761,29 @@ def bauen(plan_pfad):
                     if isinstance(it.get("wort"), dict):
                         it["wort"] = wi(it["wort"])
             premium2._zahlen(PR)        # „3“ → 3 (sonst verwirft der Baukasten Zähler und Nummern)
+            # NICHTS VERDECKEN, WAS GEZEIGT WIRD (Inhaber 17.10.: „bei der Aufzählung sieht man ihn gar nicht“ – Sprecher-Karte über
+            # den Produkten in seinen Händen; „bei ‚drei dieser Special Cheesecakes‘ sieht man den Kuchen nicht“ – Vollbild-Zahl darüber).
+            # Ein Sprechteil „zeigt“, wenn der Plan es sagt ("zeigt": true) oder Zeige-Wörter fallen (hier, dieser, schaut …).
+            # Dort gibt es keine Vollbild-Karten und keine Sprecher-Karte – die Grafik wird zur kleinen Bühnen-Grafik über dem Kopf.
+            ZEIGEWORT = {"hier", "dieser", "diese", "dieses", "diesen", "schaut", "seht", "guckt", "zeige", "zeigen", "sowas", "solche"}
+            ZEIGT = [bool(s.get("zeigt")) or (s.get("zeigt") is None and any(norm(w["t"]) in ZEIGEWORT for w in s["ws"])) for s in TALK]
+            print("Sprechteile, in denen etwas gezeigt wird: " + (", ".join(str(k) for k, z in enumerate(ZEIGT) if z) or "keine"), flush=True)
+
+            def zeigt_bei(i0, i1):
+                return any(ZEIGT[W_TEIL[i]] for i in range(max(0, i0), min(len(W_TEIL), i1 + 1)))
+            for g in PR.get("grafiken") or []:
+                if not zeigt_bei(g["von"], g["bis"]):
+                    continue
+                if g.get("karte"):
+                    g["karte"] = False
+                    print(f"   {g['art']}: ohne Sprecher-Karte – dort wird etwas gezeigt", flush=True)
+                if g.get("art") == "voll_zahl":
+                    g["art"] = "zahl"
+                    g["gross"] = g.get("gross") or g.get("kicker") or ""
+                    print("   voll_zahl → Zähler über dem Kopf – dort wird etwas gezeigt", flush=True)
+                elif g.get("art") == "voll_wort":
+                    g["art"] = "kasten" if len(str(g.get("gross") or "")) <= 18 else "wort"
+                    print(f"   voll_wort → {g['art']} über dem Kopf – dort wird etwas gezeigt", flush=True)
             bet = {norm(x) for x in PR.get("betont") or [] if isinstance(x, str)}
             PR["betont"] = [i for i, w in enumerate(W_OUT) if norm(w[0]) in bet][:24]
             # KOPF ÜBERALL GLEICH HOCH (Test 17.10.: Der Baukasten legt das Bild einmal fürs ganze Video – bei näher gefilmten

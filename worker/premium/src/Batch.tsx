@@ -1,6 +1,6 @@
 import React from 'react';
 import {AbsoluteFill, Audio, Img, OffthreadVideo, Sequence, staticFile, useCurrentFrame} from 'remotion';
-import {Blitz, Durch, Filmlook, Flow, Funken, Kasten, Klick, Mass, Ort, Profil, Ring, Tage, Ticket, Titel3D} from './Extra';
+import {Blitz, Durch, Filmlook, Flow, Funken, Kasten, Klick, Mass, Ort, Profil, Punkte, Ring, Tage, Ticket, Titel3D, Wolke} from './Extra';
 
 const FPS = 30;
 let GOLD = '#D4AB72';
@@ -689,7 +689,7 @@ const Phone: React.FC<{t: number; e: Ev}> = ({t, e}) => {
 };
 
 const FF = () => ({gold: GOLD, goldL: GOLD_L});
-const RENDER: Record<string, React.FC<{t: number; e: Ev}>> = {titel3d: (pr) => <Titel3D {...pr} f={FF()} />, mass: (pr) => <Mass {...pr} f={FF()} />, ort: (pr) => <Ort {...pr} f={FF()} />, tage: (pr) => <Tage {...pr} f={FF()} />, kasten: (pr) => <Kasten {...pr} f={FF()} />, durch: (pr) => <Durch {...pr} f={FF()} />, ring: (pr) => <Ring {...pr} f={FF()} />, ticket: (pr) => <Ticket {...pr} f={FF()} />, klick: (pr) => <Klick {...pr} f={FF()} />, profil: (pr) => <Profil {...pr} f={FF()} />, flow: (pr) => <Flow {...pr} f={FF()} />, media: Media, behind: (pr) => <BehindKicker {...pr} />, chat: Chat, search: SearchBar, call: Call, title: Title, chips: Chips, counter: Counter, steps: Steps, big: Big, stack: Stack, checks: Checks, funnel: Funnel, num: Num, follow: Follow, contact: Contact};
+const RENDER: Record<string, React.FC<{t: number; e: Ev}>> = {titel3d: (pr) => <Titel3D {...pr} f={FF()} />, mass: (pr) => <Mass {...pr} f={FF()} />, ort: (pr) => <Ort {...pr} f={FF()} />, tage: (pr) => <Tage {...pr} f={FF()} />, kasten: (pr) => <Kasten {...pr} f={FF()} />, durch: (pr) => <Durch {...pr} f={FF()} />, ring: (pr) => <Ring {...pr} f={FF()} />, ticket: (pr) => <Ticket {...pr} f={FF()} />, klick: (pr) => <Klick {...pr} f={FF()} />, profil: (pr) => <Profil {...pr} f={FF()} />, flow: (pr) => <Flow {...pr} f={FF()} />, punkte: (pr) => <Punkte {...pr} f={FF()} />, wolke: (pr) => <Wolke {...pr} f={FF()} />, media: Media, behind: (pr) => <BehindKicker {...pr} />, chat: Chat, search: SearchBar, call: Call, title: Title, chips: Chips, counter: Counter, steps: Steps, big: Big, stack: Stack, checks: Checks, funnel: Funnel, num: Num, follow: Follow, contact: Contact};
 
 /* ---------- Abzeichen, Untertitel, Kamera, Abspann ---------- */
 const Badge: React.FC<{t: number; dur: number; hide?: boolean; brand?: BProps['brand']}> = ({t, dur, hide, brand}) => {
@@ -740,7 +740,7 @@ const frameAmt = (t: number, evs: Ev[]) => {
   for (const e of evs) if (e.frame) f = Math.max(f, eio(clamp((t - (e.a - 0.3)) / 0.36)) * (1 - eio(clamp((t - (e.b - 0.12)) / 0.36))));
   return f;
 };
-const fullOn = (t: number, evs: Ev[]) => evs.find((e) => (e.type === 'full' || e.type === 'broll' || e.type === 'phone') && t >= e.a + 0.06 && t < e.b - 0.1);
+const fullOn = (t: number, evs: Ev[]) => evs.find((e) => (e.type === 'full' || e.type === 'broll' || e.type === 'phone' || e.type === 'punkte') && t >= e.a + 0.06 && t < e.b - 0.1);
 const behindOn = (t: number, evs: Ev[]) => evs.some((e) => e.type === 'behind' && t >= e.a - 0.05 && t < e.b);
 const BehindText: React.FC<{t: number; e: Ev}> = ({t, e}) => {
   if (t < e.a || t >= e.b) return null;

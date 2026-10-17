@@ -18,7 +18,7 @@ ICONS = ["fork", "build", "pin", "send", "check", "x", "user", "chat", "phone", 
          "insta", "search", "clock", "up", "star", "hand", "bulb"]
 ARTEN = ["chips", "zahl", "schritte", "haken", "trichter", "nummer", "wort", "voll_wort", "voll_zahl", "chat", "suche", "anruf", "dahinter",
          # 17.10.: Bausteine aus dem Yacht-Video und den TikTok-Vorbildern (premium/src/Extra.tsx)
-         "titel3d", "mass", "ort", "tage", "kasten", "durch", "ring", "ticket", "klick", "profil", "flow"]
+         "titel3d", "mass", "ort", "tage", "kasten", "durch", "ring", "ticket", "klick", "profil", "flow", "punkte", "wolke"]
 norm = lambda s: re.sub(r"[^a-zäöüß0-9]", "", s.lower())
 
 
@@ -271,6 +271,17 @@ def ereignisse(plan, T, dur, seed, log=print):
             it = items(g, a, b, 4)
             if len(it) >= 2:
                 e = dict(type="flow", items=[dict(a=ti, text=x["text"], **({"sub": _kurz(x.get("sub"), 24)} if _kurz(x.get("sub"), 24) else {})) for x, ti in it])
+        elif art == "punkte":
+            al = [_kurz(x.get("text"), 22) for x in (g.get("texte") or []) if _kurz(x.get("text"), 22)][:9]
+            if len(al) >= 3:
+                cur = g.get("zahl")
+                cur = int(cur) - 1 if isinstance(cur, (int, float)) and 1 <= cur <= len(al) else 0
+                e = dict(type="punkte", items=al, cur=cur, **({"kicker": K} if K else {}))
+                b = min(b, a + 2.2)
+        elif art == "wolke":
+            it = items(g, a, b, 5)
+            if len(it) >= 2:
+                e = dict(type="wolke", items=[dict(a=ti, text=x["text"]) for x, ti in it])
         elif art == "dahinter" and G and len(G) <= 11 and used.get("dahinter", 0) < 1:
             e = dict(type="behind", text=G.upper(), **({"gold": True} if rnd.random() < 0.5 else {}))
         if not e:
@@ -288,11 +299,11 @@ def ereignisse(plan, T, dur, seed, log=print):
         add(g)
     # Überschneidungen: Vollbild-Karten liegen über allem, alles andere teilt sich die Bühne
     ev.sort(key=lambda e: e["a"])
-    stage = [e for e in ev if e["type"] != "full"]
+    stage = [e for e in ev if e["type"] not in ("full", "punkte")]
     for x, y in zip(stage, stage[1:]):
         if y["a"] < x["b"] + 0.05:
             x["b"] = round(y["a"] - 0.05, 2)
-    full = [e for e in ev if e["type"] == "full"]
+    full = [e for e in ev if e["type"] in ("full", "punkte")]
     for f in full:   # Bühnen-Grafik unter einer Vollbild-Karte: weglassen, wenn sie darin fast ganz verschwindet
         stage = [e for e in stage if not (e["a"] >= f["a"] - 0.2 and e["b"] <= f["b"] + 0.2)]
     ev = [e for e in stage + full if e["b"] - e["a"] >= 1.0]
@@ -459,6 +470,8 @@ def render(cut, words_out, title, out, ki_call, cut_times=(), logo=None, accent=
         elif ty in ("mass", "ring", "tage", "ort"): sfx += [[e["a"], "wh", .22], [e["a"] + 0.6, "po", .3]]
         elif ty == "durch": sfx += [[i["a"] + 0.35, "po", .28] for i in e["items"]]
         elif ty == "flow": sfx += [[i["a"], "po", .28] for i in e["items"]]
+        elif ty == "wolke": sfx += [[i["a"], "po", .24] for i in e["items"]]
+        elif ty == "punkte": sfx.append([e["a"], "wh", .3])
         elif ty == "klick": sfx.append([e["a"] + min(1.0, (e["b"] - e["a"]) * 0.45), "cl", .5])
         if e.get("frame"): sfx.append([max(0, e["a"] - 0.2), "wh", .2])
     sfx += [[c, "wh", .14] for c in sweeps]

@@ -808,6 +808,21 @@ def bauen(plan_pfad):
                 x_, y_, w_, h_ = np.median(np.array(fb), axis=0)
                 hair = y_ - 0.2 * h_
                 ziel_h = 715.0
+                if ZEIGT[k]:
+                    # ZEIGT ER ETWAS, WIRD NIE HINEINGEZOOMT (Test 17.10. „Unter 10 €“: ×1,5 schnitt alle Kuchen auf der Theke weg). Stattdessen
+                    # wird das Bild verkleinert und nach unten gesetzt – alles bleibt sichtbar, der Kopf rutscht unter die Grafiken; der freie
+                    # Platz darüber und daneben ist eine unscharfe, abgedunkelte Kopie desselben Bildes.
+                    if hair >= ziel_h - 60:
+                        continue
+                    s_ = max(0.68, min(1.0, (1920.0 - ziel_h) / (1920.0 - hair)))
+                    W2, H2 = int(1080 * s_) // 2 * 2, int(1920 * s_) // 2 * 2
+                    run(["ffmpeg", "-v", "error", "-y", "-i", f"{CL}/talk{k}.mp4", "-filter_complex",
+                         f"[0:v]split[a][b];[a]scale=1080:1920,boxblur=28:4,eq=brightness=-0.12:saturation=1.1[bg];[b]scale={W2}:{H2}:flags=lanczos[fg];"
+                         f"[bg][fg]overlay=(1080-w)/2:1920-h,setsar=1[v]", "-map", "[v]", "-map", "0:a",
+                         "-c:v", "libx264", "-preset", "fast", "-crf", "14", "-c:a", "copy", f"{CL}/talk{k}_lage.mp4"])
+                    os.replace(f"{CL}/talk{k}_lage.mp4", f"{CL}/talk{k}.mp4")
+                    print(f"Sprechteil {k}: zeigt etwas → Bild verkleinert (×{s_:.2f}), nichts abgeschnitten, Haaransatz {hair:.0f} → {1920 - H2 + hair * s_:.0f} px", flush=True)
+                    continue
                 sc = max(1.0, min(1.5, 470.0 / w_ if w_ < 470 else 1.0))
                 # nach dem Vergrößern um die Gesichtsmitte: wohin muss das Bild, damit der Haaransatz auf ziel_h liegt?
                 cx_, cy_ = x_ + w_ / 2, y_ + h_ / 2
@@ -843,8 +858,9 @@ def bauen(plan_pfad):
             if _logo and not os.path.isabs(_logo):
                 _logo = os.path.join(ORD, _logo)
             r_ = premium2.render(cut, W_OUT, P.get("titel") or "", ZIEL, None, cut_times=OFF[1:], logo=_logo if _logo and os.path.exists(_logo) else None,
-                                 accent=AKZ, seed_text=P.get("titel") or ARB, plan=PR, brolls=[{"file": f_, "t": st, "dur": du} for f_, st, du in EIN],
-                                 outro=P.get("abspann", True), log=lambda m: print(m, flush=True))
+                                 accent=AKZ, seed_text=P.get("titel") or ARB, plan=PR, brolls=[{"file": f_, "t": st, "dur": du, **({"art": "broll"} if ZEIGT[max(i for i in range(len(OFF)) if OFF[i] <= st + 0.01)] else {})} for f_, st, du in EIN],
+                                 outro=P.get("abspann", True), log=lambda m: print(m, flush=True),
+                                 lage=dict(s=1.0, tx=0, ty=0, ox=540, oy=1150))   # Lage hat claude_schnitt je Teil gesetzt – nicht noch einmal fürs ganze Video
             if r_:
                 json.dump({"premium": True, "sprechteile": [(s["clip"], round(s["a"], 3), round(s["a"] + s["d"], 3)) for s in TALK], "elemente": r_[1].get("elemente")},
                           open(os.path.join(ARB, "schnittliste.json"), "w"), ensure_ascii=False, indent=1)

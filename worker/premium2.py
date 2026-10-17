@@ -371,7 +371,7 @@ def _projekt():
 
 
 def render(cut, words_out, title, out, ki_call, cut_times=(), logo=None, accent=None, seed_text="", log=print, plan=None, brand=None, outro=True,
-           brolls=(), bilder=()):
+           brolls=(), bilder=(), lage=None):
     """brolls: [{"file", "t", "dur"}] – Zwischenschnitte des Kunden (Zeit im fertigen Clip); bilder: [{"file", "t"}]."""
     """Premium-Video bauen. Rückgabe: Pfad der fertigen Datei oder None (dann zeichnet die Pipeline wie bisher)."""
     T = []
@@ -400,6 +400,8 @@ def render(cut, words_out, title, out, ki_call, cut_times=(), logo=None, accent=
     vid = f"v/{key}.mp4"
     shutil.copyfile(cut, os.path.join(CACHE, "public", vid))
     base, face = bildlage(cut)
+    if lage:   # Bildlage schon je Teil gesetzt (claude_schnitt): nur das Gesicht-ja/nein übernehmen
+        base = lage
     # B-Roll und Bilder des Kunden: abwechselnd als Vollbild-Zwischenschnitt, als Karte unter dem Sprecher oder im Handy-Mockup
     rnd = random.Random(seed + 2)
     arten = rnd.sample(["broll", "media", "phone"], 3)
@@ -410,7 +412,7 @@ def render(cut, words_out, title, out, ki_call, cut_times=(), logo=None, accent=
         ext = os.path.splitext(b["file"])[1].lower()
         dst = f"v/{key}_b{k}{ext}"
         shutil.copyfile(b["file"], os.path.join(CACHE, "public", dst))
-        art = "media" if b.get("img") else arten[len(med) % 3]
+        art = b.get("art") or ("media" if b.get("img") else arten[len(med) % 3])   # art vorgegeben (z. B. „broll“, wenn gerade etwas gezeigt wird)
         if art == "media" and not face:
             art = "broll"
         d = min(float(b.get("dur") or 2.4), 3.2 if art != "media" else 4.0, dur - b["t"] - 0.3)

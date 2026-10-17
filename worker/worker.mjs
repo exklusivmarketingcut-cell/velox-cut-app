@@ -24,11 +24,9 @@ const POLL_MS = 8000;
 // (…/schnitt-maschine/lern/<Datum>_<Auftrag>), statt nach dem Schnitt gelöscht zu werden. Alle anderen Kunden: wie bisher löschen.
 const LERN_CODE = process.env.LERN_CODE || 'TEST-F7LF3Y4H';
 const CLAUDE_SCHNITT = ['lern', 'alle'].includes(process.env.CLAUDE_SCHNITT) ? process.env.CLAUDE_SCHNITT : ''; // '' = aus (Standard)
-// AUSWEICHEN (Launch-Vorbereitung 16.10.: „nichts darf hängen bleiben“). Wird ein Auftrag, der an den Claude-Schnitt gegangen
-// ist, nicht innerhalb von CLAUDE_FRIST_MIN Minuten (Standard 45) angefasst – Claude-App zu, geplante Aufgabe nicht freigegeben,
-// Rechner war aus –, schneidet die Maschine ihn selbst auf dem bewährten Weg (pipeline/montage) aus dem abgelegten Rohmaterial.
-// Der Kunde bekommt also immer ein Video. Merkliste: schnitt-maschine/claude_ausweich.json.
-const CLAUDE_FRIST_MIN = Number(process.env.CLAUDE_FRIST_MIN || 45);
+// WARTEZEIT: siehe claudeFristPruefen() – seit 17.10. kein Ausweichen auf die alte Pipeline mehr, nur Warnung an den Inhaber.
+// (claude_ausweich.json stammt aus der Zeit davor; dort eingetragene Aufträge schneidet die Maschine noch wie früher.)
+const CLAUDE_FRIST_MIN = Number(process.env.CLAUDE_FRIST_MIN || 30);
 const AUSWEICH_DATEI = join(MASCHINE, 'claude_ausweich.json');
 function ausweichListe() { try { return new Set(JSON.parse(readFileSync(AUSWEICH_DATEI, 'utf8'))); } catch { return new Set(); } }
 function claudeAblagen() {   // [{ordner, f, j}] aller abgelegten Claude-Aufträge
@@ -42,20 +40,29 @@ function claudeAblagen() {   // [{ordner, f, j}] aller abgelegten Claude-Aufträ
   }
   return r;
 }
+// KEIN AUSWEICHEN MEHR AUF GEMINI (Inhaber 17.10.: „über diese Gemini-Pipeline, das ist echt Quatsch – ändere das um, dass du
+// das machst, auch wenn das mal hängt“). Claude-Aufträge bleiben IMMER bei Claude. Wartet einer zu lange, wird der Inhaber
+// gewarnt (E-Mail + Mitteilung auf dem Mac) und der Kunde sieht „dauert etwas länger“. Stufen: nach CLAUDE_FRIST_MIN (30) Min.
+// und nach 2 Std. erneut. Der Auftrag wird nie an die alte Pipeline gegeben.
 async function claudeFristPruefen() {
   if (!CLAUDE_SCHNITT) return;
-  const liste = ausweichListe();
-  for (const { ordner, f, j } of claudeAblagen()) {
-    if (j.erledigt || Date.now() - Date.parse(j.wartet_seit) < CLAUDE_FRIST_MIN * 60e3) continue;
-    const ed = join(ordner, 'edit');   // Claude arbeitet gerade daran (in den letzten 20 Min. etwas geschrieben) → nicht dazwischenfunken
-    if (existsSync(ed) && Date.now() - (await stat(ed)).mtimeMs < 20 * 60e3) continue;
-    const { data: z } = await sb.from('jobs').update({ status: 'queued', stage: 'Dein Video wird gerade geschnitten …' }).eq('id', j.id).eq('status', 'review').select('id');
-    j.erledigt = z?.length ? 'ausweich' : 'nicht-mehr-offen'; j.erledigt_am = new Date().toISOString();
+  const offen = claudeAblagen().filter(({ j }) => !j.erledigt);
+  for (const { f, j } of offen) {
+    const min = (Date.now() - Date.parse(j.wartet_seit)) / 60e3;
+    const stufe = min >= 120 ? 2 : min >= CLAUDE_FRIST_MIN ? 1 : 0;
+    if (stufe <= (j.gewarnt || 0)) continue;
+    const { data: z } = await sb.from('jobs').select('status').eq('id', j.id).single();
+    if (z?.status !== 'review') { j.erledigt = 'nicht-mehr-offen'; j.erledigt_am = new Date().toISOString(); await writeFile(f, JSON.stringify(j, null, 1)); continue; }
+    j.gewarnt = stufe;
     await writeFile(f, JSON.stringify(j, null, 1));
-    if (!z?.length) continue;
-    liste.add(j.id);
-    await writeFile(AUSWEICH_DATEI, JSON.stringify([...liste]));
-    log('⏱', j.id, `wartete über ${CLAUDE_FRIST_MIN} Min. auf den Claude-Schnitt – die Maschine schneidet ihn jetzt selbst`);
+    await sb.from('jobs').update({ stage: 'Dein Video ist in Arbeit – heute dauert es etwas länger. Du bekommst eine E-Mail, sobald es fertig ist.' }).eq('id', j.id).eq('status', 'review');
+    const text = `Auftrag ${j.id} wartet seit ${Math.round(min)} Min. auf den Claude-Schnitt (${offen.length} offen).\n\n` +
+      'Bitte prüfen: MacBook an, SSD angesteckt, Claude-App offen, DaVinci Resolve offen (Workspace → Scripts → resolve_mcp_bridge).\n' +
+      'In der Claude-App unter „Geplante Aufgaben“ → „Velox Cut – Claude schneidet wartende Aufträge“: hängt ein Lauf an einer Rückfrage, dort „Immer erlauben“ wählen oder „Jetzt ausführen“.\n\n' +
+      'Der Auftrag bleibt bei Claude – es wird NICHT auf die alte Pipeline ausgewichen.';
+    await mail({ art: 'warnung', betreff: stufe === 2 ? 'Auftrag wartet seit über 2 Std. auf den Schnitt' : 'Auftrag wartet auf den Claude-Schnitt', text });
+    spawn('osascript', ['-e', `display notification "Auftrag wartet seit ${Math.round(min)} Min. – Claude-App prüfen" with title "Velox Cut" sound name "Glass"`]).on('error', () => null);
+    log('⏱', j.id, `wartet seit ${Math.round(min)} Min. auf den Claude-Schnitt – Inhaber gewarnt (Stufe ${stufe}), bleibt bei Claude`);
   }
 }
 function ausweichRoh(jobId) {   // Rohmaterial eines Ausweich-Auftrags aus der Ablage

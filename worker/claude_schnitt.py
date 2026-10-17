@@ -232,6 +232,25 @@ def einsatz(clip, w):
     return w["s"]
 
 
+def ausklang(clip, e, b, grenze):
+    """SCHLUSS (Inhaber 17.10.: „das Ende war bei allen sehr abrupt, er kam gar nicht zum Schluss“): Nach dem letzten Wort erst
+    warten, bis die Stimme wirklich verklungen ist (0,15 s Ruhe, höchstens 0,8 s nach dem Wortende), dann noch 0,5 s Bild
+    stehen lassen – nie in das nächste gesprochene Wort hinein. Der Ton wird am Ende weich ausgeblendet."""
+    lv = pegel(clip)
+    i0 = int(e / 0.01)
+    seg = lv[i0:i0 + 80]
+    if not seg:
+        return b
+    ruhe = min(lv[i0:i0 + 150] or seg) + 6.0
+    ende, still = e + 0.8, 0
+    for i, v in enumerate(seg):
+        still = still + 1 if v <= ruhe else 0
+        if still >= 15:
+            ende = e + (i - 14) * 0.01
+            break
+    return max(b, min(grenze - 0.05, dauer(clip) - 0.05, ende + 0.5))
+
+
 def kante(clip, t, anfang, grenze):
     """Schnittkante neben das Wort legen – „nicht zu früh, nicht zu spät“: am Anfang die leiseste Stelle in den 0,16 s VOR dem
     Wort (nie vor `grenze` = Ende des Wortes davor), am Ende die leiseste Stelle in den 0,22 s NACH dem Wort (nie nach `grenze`)."""
@@ -267,7 +286,15 @@ def emoji(ch, px):
     im = Image.new("RGBA", (220, 220), (0, 0, 0, 0))
     ImageDraw.Draw(im).text((30, 30), ch, font=_EMO[0], embedded_color=True)
     box = im.getbbox()
-    return im.crop(box).resize((px, px), Image.LANCZOS) if box else Image.new("RGBA", (px, px), (0, 0, 0, 0))
+    out = Image.new("RGBA", (px, px), (0, 0, 0, 0))
+    if not box:
+        return out
+    # Inhaber 17.10.: „die Emojis sind eingeengt – müssen clean in den Kasten passen“ → Seitenverhältnis behalten, mittig einpassen
+    em = im.crop(box)
+    f_ = px / max(em.width, em.height)
+    em = em.resize((max(1, round(em.width * f_)), max(1, round(em.height * f_))), Image.LANCZOS)
+    out.alpha_composite(em, ((px - em.width) // 2, (px - em.height) // 2))
+    return out
 
 
 GLAS = (34, 34, 40, 96)   # Inhaber 13.10.: „schlicht, clean, weiß … Glas, durchsichtiger Hintergrund – nicht weiß, nicht farbig, nichts, was stört“
@@ -295,7 +322,7 @@ def grafik(g, akzent, pfad):
     art = g["art"]
     if art == "emoji":
         im, P = karte(108, 108, 30)
-        im.alpha_composite(emoji(g["zeichen"], 68), (P + 20, P + 20))
+        im.alpha_composite(emoji(g["zeichen"], 60), (P + 24, P + 24))
         wh = (108, 108)
     elif art in ("marke", "pille"):
         f = ImageFont.truetype(F6, 36)
@@ -502,12 +529,13 @@ def bauen(plan_pfad):
              (f"scale=iw*{z}:ih*{z}:flags=lanczos,crop=1080:1920:(iw-1080)/2:(ih-1920)*0.38," if z > 1 else "") + s["_fahrt"] + f"{farbe(s['clip'])},setsar=1,format=yuv420p"
         run(["ffmpeg", "-v", "error", "-y", *(["-i", stab] if stab else []), "-ss", f"{a:.3f}", "-t", f"{d:.3f}", "-i", src(s["clip"]),
              *(["-map", "0:v", "-map", "1:a"] if stab else []), "-vf", vf,
-             "-af", f"afade=t=in:st=0:d=0.03,afade=t=out:st={max(0.0, d - 0.03):.3f}:d=0.03,aresample=48000", "-ac", "2",
+             "-af", f"afade=t=in:st=0:d=0.03,afade=t=out:st={max(0.0, d - AUS(k)):.3f}:d={AUS(k)},aresample=48000", "-ac", "2",
              "-c:v", "libx264", "-preset", "fast", "-crf", "14", "-c:a", "aac", "-b:a", "256k", f"{CL}/talk{k}.mp4"])
         print(f"Sprechteil {k}: {s['clip']} {a:.2f}–{a + d:.2f} s  „{' '.join(w['t'] for w in s['ws'])[:70]}“", flush=True)
         klar(k)
 
     # Sprechteile: Kanten in die Ruhe neben das erste/letzte Wort legen
+    AUS = lambda k: 0.35 if k == len(P["sprechteile"]) - 1 else 0.03     # letzter Teil klingt weich aus, sonst 30 ms gegen Knacken
     TALK, OFF, t = [], [], 0.0
     for k, s in enumerate(P["sprechteile"]):
         ws = [w for w in W(s["clip"]) if s["von"] - 0.06 <= w["s"] and w["e"] <= s["bis"] + 0.06]
@@ -523,6 +551,8 @@ def bauen(plan_pfad):
             vor = max(vor, _ein - 0.2)
         a = kante(src(s["clip"]), _ein, True, vor)
         b = kante(src(s["clip"]), ws[-1]["e"], False, nach)
+        if k == len(P["sprechteile"]) - 1:
+            b = ausklang(src(s["clip"]), ws[-1]["e"], b, nach)
         d = round((b - a) * FPS) / FPS
         TALK.append({**s, "a": a, "d": d, "ws": ws})
         OFF.append(t)
@@ -571,7 +601,7 @@ def bauen(plan_pfad):
                 OFF.append(z0)
                 vf = f"fps={FPS},scale=1080:1920:flags=lanczos,setsar=1," + TALK[k]["_fahrt"] + ("vignette=PI/6," if STUFE == "premium" else "") + "format=yuv420p"
                 run(["ffmpeg", "-v", "error", "-y", "-ss", f"{z0:.3f}", "-t", f"{d_:.3f}", "-i", f"{CL}/resolve_schnitt.mp4", "-vf", vf,
-                     "-af", f"afade=t=in:st=0:d=0.03,afade=t=out:st={max(0.0, d_ - 0.03):.3f}:d=0.03,aresample=48000", "-ac", "2",
+                     "-af", f"afade=t=in:st=0:d=0.03,afade=t=out:st={max(0.0, d_ - AUS(k)):.3f}:d={AUS(k)},aresample=48000", "-ac", "2",
                      "-c:v", "libx264", "-preset", "fast", "-crf", "14", "-c:a", "aac", "-b:a", "256k", f"{CL}/talk{k}.mp4"])
                 klar(k)
             t = OFF[-1] + TALK[-1]["d"]
@@ -647,9 +677,14 @@ def bauen(plan_pfad):
         b = min(teil_ende(e["teil"]), out_t(e["teil"], e["bis"]) - 0.02) if e.get("bis") else teil_ende(e["teil"])
         # Inhaber 17.10.: „das Bild von den Cheesecakes am Anfang ist zu kurz, da sieht man kaum was – wirkt abgehackt“ → mindestens 2 s
         # (läuft dann über den nächsten Satz weiter), höchstens bis kurz vor Schluss
+        # Inhaber 17.10. (Premium): „die Menschenmenge zum Schluss war viel zu kurz – dann lieber weglassen“ → passt keine 2 s mehr
+        # hinein, fällt der Einschub weg statt kurz aufzublitzen
         if b - a < 2.0:
             b = min(a + 2.0, (OFF[-1] + TALK[-1]["d"]) - 0.3)
-        if b - a >= 0.5:
+        _min = 3.0 if e["teil"] == len(TALK) - 1 else 1.9      # im letzten Satz wirkt ein Einschub nur mit Ruhe (≥ 3 s), sonst wie ein Aufblitzen
+        if b - a < _min:
+            print(f"Einschub {e['clip']} weggelassen – nur {b - a:.1f} s Platz (unter {_min:.0f} s wirkt abgehackt)", flush=True)
+        elif b - a >= 0.5:
             EIN.append((broll(f"ein{k}", e["clip"], e.get("start", 0.0), b - a, e.get("tempo", 0.6)), a, b - a))
             EIN_NAMEN.append(e["clip"])
 
@@ -818,19 +853,9 @@ def bauen(plan_pfad):
                 hair = y_ - 0.2 * h_
                 ziel_h = 715.0
                 if ZEIGT[k]:
-                    # ZEIGT ER ETWAS, WIRD NIE HINEINGEZOOMT (Test 17.10. „Unter 10 €“: ×1,5 schnitt alle Kuchen auf der Theke weg). Stattdessen
-                    # wird das Bild verkleinert und nach unten gesetzt – alles bleibt sichtbar, der Kopf rutscht unter die Grafiken; der freie
-                    # Platz darüber und daneben ist eine unscharfe, abgedunkelte Kopie desselben Bildes.
-                    if hair >= ziel_h - 60:
-                        continue
-                    s_ = max(0.68, min(1.0, (1920.0 - ziel_h) / (1920.0 - hair)))
-                    W2, H2 = int(1080 * s_) // 2 * 2, int(1920 * s_) // 2 * 2
-                    run(["ffmpeg", "-v", "error", "-y", "-i", f"{CL}/talk{k}.mp4", "-filter_complex",
-                         f"[0:v]split[a][b];[a]scale=1080:1920,boxblur=28:4,eq=brightness={-0.12 if (P.get('premium') or {}).get('ton') == 'ernst' else 0.02}:saturation=1.1[bg];[b]scale={W2}:{H2}:flags=lanczos[fg];"
-                         f"[bg][fg]overlay=(1080-w)/2:1920-h,setsar=1[v]", "-map", "[v]", "-map", "0:a",
-                         "-c:v", "libx264", "-preset", "fast", "-crf", "14", "-c:a", "copy", f"{CL}/talk{k}_lage.mp4"])
-                    os.replace(f"{CL}/talk{k}_lage.mp4", f"{CL}/talk{k}.mp4")
-                    print(f"Sprechteil {k}: zeigt etwas → Bild verkleinert (×{s_:.2f}), nichts abgeschnitten, Haaransatz {hair:.0f} → {1920 - H2 + hair * s_:.0f} px", flush=True)
+                    # ZEIGT ER ETWAS, BLEIBT DAS BILD WIE GEDREHT – kein Zoom (×1,5 schnitt alle Kuchen weg) und auch kein verkleinertes Bild
+                    # auf unscharfem Hintergrund (Inhaber 17.10.: „sieht einfach nicht gut aus, soll bitte nicht mit drin sein“).
+                    print(f"Sprechteil {k}: zeigt etwas → Bild bleibt unverändert", flush=True)
                     continue
                 sc = max(1.0, min(1.5, 470.0 / w_ if w_ < 470 else 1.0))
                 # nach dem Vergrößern um die Gesichtsmitte: wohin muss das Bild, damit der Haaransatz auf ziel_h liegt?

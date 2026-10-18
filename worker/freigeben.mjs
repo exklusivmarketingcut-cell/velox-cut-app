@@ -5,7 +5,7 @@
 //   node --env-file=worker/.env worker/freigeben.mjs <Auftrag> --ablehnen → fehlgeschlagen + Credits zurück
 import { createClient } from '@supabase/supabase-js';
 import { AwsClient } from 'aws4fetch';
-import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
@@ -22,6 +22,25 @@ const offen = () => (existsSync(LERN) ? readdirSync(LERN) : []).filter((d) => ex
   .map((d) => ({ dir: join(LERN, d), ...JSON.parse(readFileSync(join(LERN, d, 'freigabe.json'), 'utf8')) })).filter((f) => !f.erledigt);
 
 const [id, ...rest] = process.argv.slice(2);
+
+// EIN LAUF ZUR ZEIT (Test 17./18.10.: Bei 5-Minuten-Takt arbeiteten drei Läufe gleichzeitig am selben Auftrag, überschrieben sich
+// den Schnittplan, gaben nichts frei und verbrauchten das Claude-Kontingent → 5 Std. Wartezeit). --start legt eine Sperre an
+// (schlägt fehl, wenn ein anderer Lauf seit < 90 Min. arbeitet), --ende gibt sie frei. Abgestürzte Läufe blockieren höchstens 90 Min.
+const SPERRE = join(MASCHINE, 'claude_lauf.lock');
+if (id === '--start') {
+  try {
+    const alt = Date.parse(readFileSync(SPERRE, 'utf8'));
+    if (Date.now() - alt < 90 * 60e3) { console.log(`LÄUFT SCHON – ein anderer Lauf arbeitet seit ${Math.round((Date.now() - alt) / 60e3)} Min. Sofort beenden, nichts tun.`); process.exit(0); }
+  } catch { /* keine Sperre */ }
+  writeFileSync(SPERRE, new Date().toISOString());
+  console.log('Sperre gesetzt – dieser Lauf arbeitet. Am Ende: freigeben.mjs --ende');
+  process.exit(0);
+}
+if (id === '--ende') {
+  try { unlinkSync(SPERRE); } catch { /* schon weg */ }
+  console.log('Sperre freigegeben.');
+  process.exit(0);
+}
 // REIHENFOLGE (Inhaber 17.10.: niemand soll unnötig warten): Clean und Viral sind in ~5 Min. gebaut, Premium braucht ~20 Min.
 // Schnelle Aufträge kommen deshalb zuerst – ein Premium-Auftrag, der schon 40 Min. wartet, rückt aber wieder nach vorn.
 const minuten = (f) => (Date.now() - Date.parse(f.wartet_seit)) / 60e3;

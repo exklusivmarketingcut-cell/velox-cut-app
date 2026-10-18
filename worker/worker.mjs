@@ -263,11 +263,16 @@ async function download(job, dir) {
   if (job.source_kind === 'folder') { // mehrere Clips + Bilder → eigener Eingangsordner
     const inDir = join(dir, 'eingang');
     await mkdir(inDir, { recursive: true });
-    for (const p of job.source_paths || []) {
-      const r = await r2get(`uploads/${p}`);
-      if (!r.ok) throw new Error('Eine hochgeladene Datei fehlt.');
-      await streamPipeline(Readable.fromWeb(r.body), createWriteStream(join(inDir, p.split('/').pop())));
-    }
+    // 4 Dateien gleichzeitig laden (Test 17.10.: 16 Dateien nacheinander = gut 4 Min. bis zur Übergabe)
+    const liste = [...(job.source_paths || [])];
+    const lade = async () => {
+      for (let p = liste.shift(); p; p = liste.shift()) {
+        const r = await r2get(`uploads/${p}`);
+        if (!r.ok) throw new Error('Eine hochgeladene Datei fehlt.');
+        await streamPipeline(Readable.fromWeb(r.body), createWriteStream(join(inDir, p.split('/').pop())));
+      }
+    };
+    await Promise.all([lade(), lade(), lade(), lade()]);
     return inDir;
   }
   if (job.source_kind === 'drive' && /\/folders\//.test(job.source_url || '')) { // ganzer Drive-Ordner → wie Ordner-Upload

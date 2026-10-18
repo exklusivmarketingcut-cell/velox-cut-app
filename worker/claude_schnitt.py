@@ -1466,6 +1466,17 @@ if __name__ == "__main__":
     if len(sys.argv) >= 4 and sys.argv[1] == "hoeren":
         hoeren(sys.argv[2], sys.argv[3])
     elif len(sys.argv) >= 3 and sys.argv[1] == "bauen":
+        # RENDER-WARTESCHLANGE (Inhaber 18.10.: mehrere Kunden gleichzeitig): Planen läuft parallel, gebaut wird nacheinander –
+        # DaVinci Resolve rendert nur ein Projekt zur Zeit, und 8 GB Arbeitsspeicher reichen nicht für zwei Premium-Renders.
+        # flock gibt den Platz auch frei, wenn ein Prozess abstürzt.
+        import fcntl
+        _sp = open(os.path.join(MASCH, "bau.lock"), "w")
+        try:
+            fcntl.flock(_sp, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print("Anderer Auftrag wird gerade gebaut – warte auf den Render-Platz …", flush=True)
+            fcntl.flock(_sp, fcntl.LOCK_EX)
+            print("Render-Platz frei – baue jetzt.", flush=True)
         bauen(sys.argv[2])
     elif len(sys.argv) >= 4 and sys.argv[1] == "pruefen":
         pruefen(sys.argv[2], sys.argv[3])

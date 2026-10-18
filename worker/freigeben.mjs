@@ -23,22 +23,23 @@ const offen = () => (existsSync(LERN) ? readdirSync(LERN) : []).filter((d) => ex
 
 const [id, ...rest] = process.argv.slice(2);
 
-// EIN LAUF ZUR ZEIT (Test 17./18.10.: Bei 5-Minuten-Takt arbeiteten drei Läufe gleichzeitig am selben Auftrag, überschrieben sich
-// den Schnittplan, gaben nichts frei und verbrauchten das Claude-Kontingent → 5 Std. Wartezeit). --start legt eine Sperre an
-// (schlägt fehl, wenn ein anderer Lauf seit < 90 Min. arbeitet), --ende gibt sie frei. Abgestürzte Läufe blockieren höchstens 90 Min.
-const SPERRE = join(MASCHINE, 'claude_lauf.lock');
-if (id === '--start') {
-  try {
-    const alt = Date.parse(readFileSync(SPERRE, 'utf8'));
-    if (Date.now() - alt < 90 * 60e3) { console.log(`LÄUFT SCHON – ein anderer Lauf arbeitet seit ${Math.round((Date.now() - alt) / 60e3)} Min. Sofort beenden, nichts tun.`); process.exit(0); }
-  } catch { /* keine Sperre */ }
-  writeFileSync(SPERRE, new Date().toISOString());
-  console.log('Sperre gesetzt – dieser Lauf arbeitet. Am Ende: freigeben.mjs --ende');
-  process.exit(0);
-}
-if (id === '--ende') {
-  try { unlinkSync(SPERRE); } catch { /* schon weg */ }
-  console.log('Sperre freigegeben.');
+// MEHRERE KUNDEN GLEICHZEITIG (Inhaber 18.10.): Jeder Lauf nimmt sich mit --nehmen <Auftrag> genau EINEN Auftrag. Die Markierung
+// (ORDNER/claude_in_arbeit.txt) wird exklusiv angelegt – zwei Läufe können nie denselben Auftrag bearbeiten (Test 17./18.10.: drei
+// Läufe am selben Auftrag überschrieben sich den Schnittplan). Verfällt nach 90 Min. (abgestürzter Lauf). Freigeben/Ablehnen räumt
+// sie weg, --loslassen <Auftrag> gibt einen Auftrag zurück. --start/--ende bleiben als harmlose Befehle (alte Anleitung).
+const BELEGT_MIN = 90;
+const markierung = (dir) => join(dir, 'claude_in_arbeit.txt');
+const belegt = (dir) => { try { return Date.now() - Date.parse(readFileSync(markierung(dir), 'utf8')) < BELEGT_MIN * 60e3; } catch { return false; } };
+if (id === '--start' || id === '--ende') { console.log('ok'); process.exit(0); }
+if (id === '--nehmen' || id === '--loslassen') {
+  const f = offen().find((x) => x.id === rest[0] || x.id.startsWith(rest[0] || '-'));
+  if (!f) { console.log('Kein offener Auftrag mit dieser Nummer.'); process.exit(0); }
+  const m = markierung(f.dir);
+  if (id === '--loslassen') { try { unlinkSync(m); } catch { /* schon frei */ } console.log('Auftrag zurückgegeben.'); process.exit(0); }
+  if (belegt(f.dir)) { console.log('BELEGT – ein anderer Lauf arbeitet an diesem Auftrag. Nimm den nächsten.'); process.exit(0); }
+  try { unlinkSync(m); } catch { /* keine alte */ }
+  try { writeFileSync(m, new Date().toISOString(), {flag: 'wx'}); } catch { console.log('BELEGT – ein anderer Lauf war schneller. Nimm den nächsten.'); process.exit(0); }
+  console.log(`GENOMMEN – dieser Lauf bearbeitet ${f.id}. Ordner: ${f.dir}`);
   process.exit(0);
 }
 // REIHENFOLGE (Inhaber 17.10.: niemand soll unnötig warten): Clean und Viral sind in ~5 Min. gebaut, Premium braucht ~20 Min.
@@ -47,12 +48,12 @@ const minuten = (f) => (Date.now() - Date.parse(f.wartet_seit)) / 60e3;
 const rang = (f) => (f.claude && f.stil === 'premium' && minuten(f) < 40 ? 1 : 0);
 if (!id) {
   const l = offen().sort((a, b) => rang(a) - rang(b) || Date.parse(a.wartet_seit) - Date.parse(b.wartet_seit));
-  console.log(l.length ? l.map((f) => `${f.id}  wartet seit ${f.wartet_seit}  ${f.claude ? `CLAUDE-SCHNITT (noch nicht geschnitten, Stil ${f.stil || '?'}${existsSync(join(f.dir, 'edit', 'material.md')) ? ', schon vorgehört' : ''})` : `${f.outputs.length} Clip(s) zur Prüfung`}  ${f.dir}`).join('\n') : 'Nichts wartet auf Prüfung.');
+  console.log(l.length ? l.map((f) => `${f.id}  wartet seit ${f.wartet_seit}  ${f.claude && belegt(f.dir) ? 'IN ARBEIT bei einem anderen Lauf – überspringen' : f.claude ? `CLAUDE-SCHNITT (noch nicht geschnitten, Stil ${f.stil || '?'}${existsSync(join(f.dir, 'edit', 'material.md')) ? ', schon vorgehört' : ''})` : `${f.outputs.length} Clip(s) zur Prüfung`}  ${f.dir}`).join('\n') : 'Nichts wartet auf Prüfung.');
   process.exit(0);
 }
 const f = offen().find((x) => x.id === id || x.id.startsWith(id));
 if (!f) { console.error('Kein wartender Auftrag mit dieser Nummer.'); process.exit(1); }
-const fertig = (wie) => writeFileSync(join(f.dir, 'freigabe.json'), JSON.stringify({ ...f, dir: undefined, erledigt: wie, erledigt_am: new Date().toISOString() }, null, 1));
+const fertig = (wie) => { writeFileSync(join(f.dir, 'freigabe.json'), JSON.stringify({ ...f, dir: undefined, erledigt: wie, erledigt_am: new Date().toISOString() }, null, 1)); try { unlinkSync(markierung(f.dir)); } catch { /* keine */ } };
 
 if (rest.includes('--ablehnen')) {
   const { data } = await sb.from('jobs').update({ status: 'failed', finished_at: new Date().toISOString(), error: 'Dieses Video konnten wir nicht in guter Qualität schneiden. Bitte versuche es mit einer anderen Aufnahme' }).eq('id', f.id).eq('status', 'review').select('id');

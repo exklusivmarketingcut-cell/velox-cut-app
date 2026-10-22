@@ -4,7 +4,7 @@
 import { createClient } from '@supabase/supabase-js';
 import { AwsClient } from 'aws4fetch';
 import { spawn } from 'node:child_process';
-import { createWriteStream, existsSync, readFileSync, readdirSync } from 'node:fs';
+import { createWriteStream, existsSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { cp, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir, hostname } from 'node:os';
 import { join } from 'node:path';
@@ -57,8 +57,9 @@ async function claudeFristPruefen() {
     await writeFile(f, JSON.stringify(j, null, 1));
     await sb.from('jobs').update({ stage: 'Dein Video ist in Arbeit – heute dauert es etwas länger. Du bekommst eine E-Mail, sobald es fertig ist.' }).eq('id', j.id).eq('status', 'review');
     const text = `Auftrag ${j.id} wartet seit ${Math.round(min)} Min. auf den Claude-Schnitt (${offen.length} offen).\n\n` +
-      'Bitte prüfen: MacBook an, SSD angesteckt, Claude-App offen, DaVinci Resolve offen (Workspace → Scripts → resolve_mcp_bridge).\n' +
-      'In der Claude-App unter „Geplante Aufgaben“ → „Velox Cut – Claude schneidet wartende Aufträge“: hängt ein Lauf an einer Rückfrage, dort „Immer erlauben“ wählen oder „Jetzt ausführen“.\n\n' +
+      'Bitte prüfen: MacBook an, SSD angesteckt, DaVinci Resolve offen (Workspace → Scripts → resolve_mcp_bridge).\n' +
+      (CLAUDE_AUTOSTART ? `Die Maschine startet den Claude-Lauf selbst – Protokoll: <Auftragsordner>/claude_lauf.log und ${join(MASCHINE, 'logs', 'worker.log')}.\n\n`
+        : 'In der Claude-App unter „Geplante Aufgaben“ → „Velox Cut – Claude schneidet wartende Aufträge“: hängt ein Lauf an einer Rückfrage, dort „Immer erlauben“ wählen oder „Jetzt ausführen“.\n\n') +
       'Der Auftrag bleibt bei Claude – es wird NICHT auf die alte Pipeline ausgewichen.';
     await mail({ art: 'warnung', betreff: stufe === 2 ? 'Auftrag wartet seit über 2 Std. auf den Schnitt' : 'Auftrag wartet auf den Claude-Schnitt', text });
     spawn('osascript', ['-e', `display notification "Auftrag wartet seit ${Math.round(min)} Min. – Claude-App prüfen" with title "Velox Cut" sound name "Glass"`]).on('error', () => null);
@@ -91,7 +92,7 @@ async function lernablage(job, dir, wartet = null) {
   if (wartet) await writeFile(join(ziel, 'freigabe.json'), JSON.stringify({ id: job.id, user_id: job.user_id, wartet_seit: new Date().toISOString(), outputs: wartet.outputs,
     ...(wartet.claude ? { claude: true, roh: wartet.roh, marke: wartet.marke, stil: job.style, logo: wartet.logo, lernkonto: wartet.lernkonto } : {}) }, null, 1));
   log('📚', job.id, 'als Lernmaterial abgelegt');
-  if (wartet?.claude) vorhoeren(job.id, ziel, wartet.roh);
+  if (wartet?.claude) { vorhoeren(job.id, ziel, wartet.roh); claudeStarten(); }
   return true;
 }
 // SOFORT VORHÖREN (Inhaber 17.10.: Kunden sollen nicht unnötig warten): Transkript und Kontaktbogen entstehen direkt nach dem
@@ -110,6 +111,115 @@ function vorhoeren(id, ordner, roh) {
     p.on('close', (code) => { log('👂', id, code === 0 ? `vorgehört (${Math.round((Date.now() - t0) / 1000)} s)` : `Vorhören fehlgeschlagen (Code ${code}) – der Claude-Lauf hört selbst`); fertig(); });
     p.on('error', (e) => { log('👂', id, 'Vorhören nicht gestartet:', e.message); fertig(); });
   }));
+}
+
+// CLAUDE-AUSLÖSER (Inhaber 22.10.: „nicht alle 5 Minuten nachgucken, sondern aktivieren, wenn etwas reingelegt wird“). Bisher
+// hat eine geplante Aufgabe in der Claude-App alle 5 Min. eine ganze Claude-Sitzung gestartet, nur um nachzusehen – das hat das
+// Abo-Limit aufgebraucht, auch wenn nichts da war. Jetzt startet die Maschine selbst einen Claude-Lauf (`claude -p`, ohne
+// Chatfenster), sobald ein Auftrag abgelegt ist – genau einen pro Auftrag. Liegt nichts an, läuft kein Claude.
+// - Die Maschine nimmt den Auftrag selbst (claude_in_arbeit.txt, wie freigeben.mjs --nehmen), höchstens CLAUDE_PARALLEL Läufe
+//   gleichzeitig (Standard 1: 8 GB Arbeitsspeicher, gebaut wird ohnehin nacheinander über bau.lock).
+// - Ein Lauf ohne Chatfenster kann nicht an einer Rückfrage hängen bleiben (Test 18.–22.10.: ein Lauf hing 4 Tage) – nicht
+//   erlaubte Werkzeuge werden abgelehnt. Nach CLAUDE_LAUF_MAX_MIN (85) Min. wird er beendet.
+// - Scheitert ein Lauf (Limit, Anmeldung, Absturz), versucht die Maschine es nach 15 Min. erneut, höchstens 3×; danach Mail.
+// - Nach einem Neustart der Maschine werden liegengebliebene Aufträge automatisch nachgeholt.
+// Anmeldung: CLAUDE_CODE_OAUTH_TOKEN (aus `claude setup-token`) oder ANTHROPIC_API_KEY in worker/.env.
+// Abschalten: CLAUDE_AUTOSTART=0 (dann wieder wie früher über die geplante Aufgabe).
+const CLAUDE_AUTOSTART = process.env.CLAUDE_AUTOSTART !== '0';
+const CLAUDE_PARALLEL = Math.max(1, Number(process.env.CLAUDE_PARALLEL || 1));
+const CLAUDE_LAUF_MAX_MIN = Number(process.env.CLAUDE_LAUF_MAX_MIN || 85);   // unter den 90 Min., nach denen die Markierung verfällt
+const CLAUDE_WIEDERHOLEN_MIN = 15;
+const CLAUDE_MAX_VERSUCHE = 3;
+const HOME = process.env.HOME || '';
+const CLAUDE_BIN = process.env.CLAUDE_BIN || [join(HOME, '.local', 'bin', 'claude'), join(HOME, '.claude', 'local', 'claude'), '/opt/homebrew/bin/claude', '/usr/local/bin/claude'].find((p) => existsSync(p)) || 'claude';
+// Arbeitsordner wie bei der geplanten Aufgabe: Dort liegen die Freigaben (~/Downloads/.claude/settings.local.json)
+const CLAUDE_CWD = process.env.CLAUDE_CWD || join(HOME, 'Downloads');
+// Anleitung: der Wortlaut der bisherigen geplanten Aufgabe (dort pflegt der Inhaber die Regeln); fehlt sie, die Kopie im Code
+const CLAUDE_ANLEITUNG = [process.env.CLAUDE_ANLEITUNG, join(HOME, '.claude', 'scheduled-tasks', 'velox-claude-schnitt', 'SKILL.md'), join(import.meta.dirname, 'claude_anleitung.md')].find((p) => p && existsSync(p));
+const claudeLaeufe = new Map();   // Auftrag → Prozess
+let claudeGewarnt = 0;
+
+function claudeBelegt(ordner) {
+  try { return Date.now() - Date.parse(readFileSync(join(ordner, 'claude_in_arbeit.txt'), 'utf8')) < 90 * 60e3; } catch { return false; }
+}
+function claudeNehmen(ordner) {   // wie freigeben.mjs --nehmen: exklusiv anlegen, verfallene Markierung ersetzen
+  const m = join(ordner, 'claude_in_arbeit.txt');
+  if (claudeBelegt(ordner)) return false;
+  try { unlinkSync(m); } catch { /* keine alte */ }
+  try { writeFileSync(m, new Date().toISOString(), { flag: 'wx' }); return true; } catch { return false; }
+}
+// Reihenfolge wie in freigeben.mjs: Clean/Viral zuerst, Premium, das schon 40 Min. wartet, rückt wieder nach vorn
+const claudeRang = (j) => (j.stil === 'premium' && (Date.now() - Date.parse(j.wartet_seit)) / 60e3 < 40 ? 1 : 0);
+
+function claudeStarten() {
+  if (!CLAUDE_SCHNITT || !CLAUDE_AUTOSTART || !existsSync(MASCHINE)) return;
+  const offen = claudeAblagen().filter(({ j, ordner }) => !j.erledigt && !claudeLaeufe.has(j.id) && !claudeBelegt(ordner)
+    && !(j.claude_naechster && Date.parse(j.claude_naechster) > Date.now()) && (j.claude_versuche || 0) < CLAUDE_MAX_VERSUCHE)
+    .sort((a, b) => claudeRang(a.j) - claudeRang(b.j) || Date.parse(a.j.wartet_seit) - Date.parse(b.j.wartet_seit));
+  for (const a of offen) {
+    if (claudeLaeufe.size >= CLAUDE_PARALLEL) return;
+    if (claudeNehmen(a.ordner)) claudeLauf(a);
+  }
+}
+
+function claudeLauf({ ordner, f, j }) {
+  const anleitung = CLAUDE_ANLEITUNG ? readFileSync(CLAUDE_ANLEITUNG, 'utf8') : '';
+  const prompt = `Du schneidest GENAU EINEN Auftrag von Velox Cut: ${j.id}\nOrdner: ${ordner}\nStil: ${j.stil || '?'}\n\n` +
+    'Die Anleitung unten ist die der früheren geplanten Aufgabe. Folge ihr vollständig, mit diesen Abweichungen:\n' +
+    '- Die Liste wartender Aufträge NICHT abrufen und keinen anderen Auftrag bearbeiten – nur diesen.\n' +
+    '- Der Auftrag ist schon für dich genommen: freigeben.mjs --nehmen, --loslassen, --start und --ende NICHT aufrufen.\n' +
+    '- Am Ende entweder freigeben (`freigeben.mjs <Auftrag> "1=<Ordner>/edit/final.mp4"`) oder ablehnen (`--ablehnen`).\n' +
+    '- Nichts außerhalb von schnitt-maschine/lern/ schreiben; das Protokoll gehört nach <Ordner>/protokoll.md.\n\n' +
+    `--- ANLEITUNG (${CLAUDE_ANLEITUNG || 'fehlt'}) ---\n${anleitung}`;
+  // Nur, was Claude braucht – die Schlüssel der Maschine (Supabase, R2, Stripe …) gehen nicht an den Lauf
+  const env = {};
+  for (const k of ['PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'LC_ALL', 'TMPDIR', 'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY']) if (process.env[k]) env[k] = process.env[k];
+  env.PATH = `${join(HOME, '.local', 'bin')}:${env.PATH || '/usr/bin:/bin'}`;
+  const logDatei = join(ordner, 'claude_lauf.log');
+  const out = createWriteStream(logDatei, { flags: 'a' });
+  out.write(`\n=== ${new Date().toISOString()} Lauf ${(j.claude_versuche || 0) + 1} ===\n`);
+  const t0 = Date.now();
+  let p;
+  try {
+    p = spawn(CLAUDE_BIN, ['-p', prompt], { cwd: existsSync(CLAUDE_CWD) ? CLAUDE_CWD : MASCHINE, env, stdio: ['ignore', 'pipe', 'pipe'] });
+  } catch (e) { claudeLaufEnde({ ordner, f, j }, -1, e.message, t0); return; }
+  claudeLaeufe.set(j.id, p);
+  log('🤖', j.id, `Claude-Lauf gestartet (${claudeLaeufe.size}/${CLAUDE_PARALLEL})`);
+  let rest = '';
+  const merken = (d) => { out.write(d); rest = (rest + d).slice(-2000); };
+  p.stdout.on('data', merken);
+  p.stderr.on('data', merken);
+  const stopp = setTimeout(() => { log('🤖', j.id, `Claude-Lauf nach ${CLAUDE_LAUF_MAX_MIN} Min. beendet`); p.kill('SIGTERM'); }, CLAUDE_LAUF_MAX_MIN * 60e3);
+  p.on('error', (e) => { clearTimeout(stopp); out.end(); claudeLaufEnde({ ordner, f, j }, -1, e.message, t0); });
+  p.on('close', (code) => { clearTimeout(stopp); out.end(); claudeLaufEnde({ ordner, f, j }, code, rest, t0); });
+}
+
+async function claudeLaufEnde({ ordner, f, j }, code, rest, t0) {
+  if (!claudeLaeufe.has(j.id) && code !== -1) return;
+  claudeLaeufe.delete(j.id);
+  const min = Math.round((Date.now() - t0) / 60e3);
+  let neu = j;
+  try { neu = JSON.parse(readFileSync(f, 'utf8')); } catch { /* unlesbar → wie vorher */ }
+  if (neu.erledigt) {
+    log('🤖', j.id, `Claude-Lauf fertig (${neu.erledigt}, ${min} Min.)`);
+  } else {
+    try { unlinkSync(join(ordner, 'claude_in_arbeit.txt')); } catch { /* schon frei */ }
+    neu.claude_versuche = (neu.claude_versuche || 0) + 1;
+    neu.claude_naechster = new Date(Date.now() + CLAUDE_WIEDERHOLEN_MIN * 60e3).toISOString();
+    await writeFile(f, JSON.stringify(neu, null, 1)).catch(() => null);
+    const grund = /usage limit|limit reached|rate.?limit/i.test(rest) ? 'Claude-Limit erreicht'
+      : /401|unauthori[sz]ed|invalid api key|log ?in|authenticat/i.test(rest) ? 'Claude ist auf dem Mac nicht angemeldet (claude setup-token)'
+      : /ENOENT|not found/i.test(rest) && code === -1 ? `Claude-Programm nicht gefunden (${CLAUDE_BIN})` : `Lauf endete ohne Freigabe (Code ${code})`;
+    log('🤖', j.id, `${grund} – Versuch ${neu.claude_versuche}/${CLAUDE_MAX_VERSUCHE}${neu.claude_versuche < CLAUDE_MAX_VERSUCHE ? `, nächster in ${CLAUDE_WIEDERHOLEN_MIN} Min.` : ''}`);
+    const allgemein = grund.startsWith('Lauf endete');   // Limit/Anmeldung/Programm fehlt → sofort melden (höchstens alle 3 Std.)
+    if (neu.claude_versuche >= CLAUDE_MAX_VERSUCHE || (!allgemein && Date.now() - claudeGewarnt > 3 * 3600e3)) {
+      claudeGewarnt = Date.now();
+      await mail({ art: 'warnung', betreff: 'Claude-Schnitt: Lauf gescheitert', text: `Auftrag ${j.id}: ${grund}.\nVersuch ${neu.claude_versuche} von ${CLAUDE_MAX_VERSUCHE}` +
+        (neu.claude_versuche >= CLAUDE_MAX_VERSUCHE ? ' – die Maschine versucht es nicht mehr selbst. Nach dem Beheben die Maschine neu starten (dann wird nachgeholt).' : '.') +
+        `\n\nProtokoll: ${join(ordner, 'claude_lauf.log')}\nLetzte Ausgabe:\n${rest.slice(-800)}` });
+    }
+  }
+  claudeStarten();
 }
 
 // Video-Speicher Cloudflare R2 (S3-kompatibel): uploads/<pfad> und outputs/<pfad>
@@ -566,10 +676,14 @@ async function cleanup() {
 await sb.from('jobs').update({ status: 'queued', progress: 0 }).eq('status', 'processing').eq('worker', WORKER);
 await heartbeat({ busy_job: null, last_output: null }).catch(() => null);
 log(`Schnitt-Maschine „${WORKER}“ läuft. Warte auf Aufträge …`);
+if (CLAUDE_SCHNITT) log(CLAUDE_AUTOSTART ? `Claude-Schnitt: startet selbst pro Auftrag (${CLAUDE_BIN}, höchstens ${CLAUDE_PARALLEL} gleichzeitig, Anleitung ${CLAUDE_ANLEITUNG || 'FEHLT'})` : 'Claude-Schnitt: über die geplante Aufgabe (CLAUDE_AUTOSTART=0)');
 let lastCleanup = 0;
 let lastFrist = 0;
+let lastClaude = 0;
 for (;;) {
   try {
+    // Claude-Auslöser: liegengebliebene Aufträge nachholen (nach Neustart, nach gescheitertem Lauf) – liest nur den Ablage-Ordner
+    if (Date.now() - lastClaude > 60e3) { claudeStarten(); lastClaude = Date.now(); }
     if (Date.now() - lastCleanup > 1 * 3600e3) { await cleanup(); await refreshTrends().catch(() => null); lastCleanup = Date.now(); }
     if (Date.now() - lastFrist > 2 * 60e3) { await claudeFristPruefen().catch((e) => log('Frist-Prüfung:', e.message)); lastFrist = Date.now(); }
     const { count } = await sb.from('jobs').select('id', { count: 'exact', head: true }).eq('status', 'queued');

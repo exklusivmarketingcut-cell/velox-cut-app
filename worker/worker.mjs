@@ -121,7 +121,8 @@ function vorhoeren(id, ordner, roh) {
 //   gleichzeitig (Standard 1: 8 GB Arbeitsspeicher, gebaut wird ohnehin nacheinander über bau.lock).
 // - Ein Lauf ohne Chatfenster kann nicht an einer Rückfrage hängen bleiben (Test 18.–22.10.: ein Lauf hing 4 Tage) – nicht
 //   erlaubte Werkzeuge werden abgelehnt. Nach CLAUDE_LAUF_MAX_MIN (85) Min. wird er beendet.
-// - Scheitert ein Lauf (Limit, Anmeldung, Absturz), versucht die Maschine es nach 15 Min. erneut, höchstens 3×; danach Mail.
+// - Scheitert ein Lauf, versucht die Maschine es nach 15 Min. erneut: bei Limit/fehlender Anmeldung immer weiter (Mail höchstens
+//   alle 3 Std.), bei einem echten Fehlschlag beim Schneiden höchstens 3× – danach Mail.
 // - Nach einem Neustart der Maschine werden liegengebliebene Aufträge automatisch nachgeholt.
 // Anmeldung: CLAUDE_CODE_OAUTH_TOKEN (aus `claude setup-token`) oder ANTHROPIC_API_KEY in worker/.env.
 // Abschalten: CLAUDE_AUTOSTART=0 (dann wieder wie früher über die geplante Aufgabe).
@@ -204,18 +205,22 @@ async function claudeLaufEnde({ ordner, f, j }, code, rest, t0) {
     log('🤖', j.id, `Claude-Lauf fertig (${neu.erledigt}, ${min} Min.)`);
   } else {
     try { unlinkSync(join(ordner, 'claude_in_arbeit.txt')); } catch { /* schon frei */ }
-    neu.claude_versuche = (neu.claude_versuche || 0) + 1;
-    neu.claude_naechster = new Date(Date.now() + CLAUDE_WIEDERHOLEN_MIN * 60e3).toISOString();
-    await writeFile(f, JSON.stringify(neu, null, 1)).catch(() => null);
     const grund = /usage limit|limit reached|rate.?limit/i.test(rest) ? 'Claude-Limit erreicht'
       : /401|unauthori[sz]ed|invalid api key|log ?in|authenticat/i.test(rest) ? 'Claude ist auf dem Mac nicht angemeldet (claude setup-token)'
       : /ENOENT|not found/i.test(rest) && code === -1 ? `Claude-Programm nicht gefunden (${CLAUDE_BIN})` : `Lauf endete ohne Freigabe (Code ${code})`;
-    log('🤖', j.id, `${grund} – Versuch ${neu.claude_versuche}/${CLAUDE_MAX_VERSUCHE}${neu.claude_versuche < CLAUDE_MAX_VERSUCHE ? `, nächster in ${CLAUDE_WIEDERHOLEN_MIN} Min.` : ''}`);
-    const allgemein = grund.startsWith('Lauf endete');   // Limit/Anmeldung/Programm fehlt → sofort melden (höchstens alle 3 Std.)
-    if (neu.claude_versuche >= CLAUDE_MAX_VERSUCHE || (!allgemein && Date.now() - claudeGewarnt > 3 * 3600e3)) {
+    // Limit/Anmeldung/Programm: am Auftrag liegt es nicht – zählt nicht als Versuch, es geht alle 15 Min. weiter (kostet nichts,
+    // Claude lehnt sofort ab). Nur echte Fehlschläge beim Schneiden zählen bis CLAUDE_MAX_VERSUCHE.
+    const allgemein = grund.startsWith('Lauf endete');
+    if (allgemein) neu.claude_versuche = (neu.claude_versuche || 0) + 1;
+    neu.claude_naechster = new Date(Date.now() + CLAUDE_WIEDERHOLEN_MIN * 60e3).toISOString();
+    await writeFile(f, JSON.stringify(neu, null, 1)).catch(() => null);
+    const versuche = neu.claude_versuche || 0;
+    log('🤖', j.id, `${grund}${allgemein ? ` – Versuch ${versuche}/${CLAUDE_MAX_VERSUCHE}` : ''}${!allgemein || versuche < CLAUDE_MAX_VERSUCHE ? `, nächster in ${CLAUDE_WIEDERHOLEN_MIN} Min.` : ''}`);
+    if ((allgemein && versuche >= CLAUDE_MAX_VERSUCHE) || (!allgemein && Date.now() - claudeGewarnt > 3 * 3600e3)) {
       claudeGewarnt = Date.now();
-      await mail({ art: 'warnung', betreff: 'Claude-Schnitt: Lauf gescheitert', text: `Auftrag ${j.id}: ${grund}.\nVersuch ${neu.claude_versuche} von ${CLAUDE_MAX_VERSUCHE}` +
-        (neu.claude_versuche >= CLAUDE_MAX_VERSUCHE ? ' – die Maschine versucht es nicht mehr selbst. Nach dem Beheben die Maschine neu starten (dann wird nachgeholt).' : '.') +
+      await mail({ art: 'warnung', betreff: 'Claude-Schnitt: Lauf gescheitert', text: `Auftrag ${j.id}: ${grund}.\n` +
+        (allgemein ? `Versuch ${versuche} von ${CLAUDE_MAX_VERSUCHE} – die Maschine versucht es nicht mehr selbst. Ordner prüfen; zum erneuten Versuch claude_versuche in freigabe.json löschen.`
+          : `Die Maschine versucht es alle ${CLAUDE_WIEDERHOLEN_MIN} Min. weiter, bis es klappt.`) +
         `\n\nProtokoll: ${join(ordner, 'claude_lauf.log')}\nLetzte Ausgabe:\n${rest.slice(-800)}` });
     }
   }

@@ -15,7 +15,7 @@ export default async function Page({ searchParams }: PageProps<'/karte'>) {
   return (
     <AuthShell
       title="Karte hinterlegen"
-      sub={`${c.paket === 'free' ? '' : 'Schritt 2 von 3 · '}Es wird nichts abgebucht – und du bekommst 10 Bonus-Credits geschenkt. Du zahlst nur, wenn du selbst ein Paket startest oder Credits nachkaufst.`}
+      sub={`${c.paket === 'free' ? '' : 'Schritt 2 von 3 · '}Es wird nichts abgebucht. Du zahlst nur, wenn du selbst ein Paket startest oder Credits nachkaufst.`}
     >
       {process.env.NEXT_PUBLIC_DEMO === '1' ? <DemoCard next={next} /> : <CardForm publishableKey={process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY!} next={next} />}
     </AuthShell>

@@ -19,6 +19,6 @@ export async function POST(request: Request) {
   await admin.from('profiles').update({ card_on_file: true, default_payment_method: pm }).eq('id', user.id);
   // Willkommens-Bonus: +10 Credits (verfallen nie) – mit den 10 Start-Credits reicht das für ein Viral-Video zum Testen.
   // Genau einmal pro Konto (grant_topup ist über die Referenz idempotent); erst nach der Karte, damit Mehrfach-Konten nichts bringen.
-  await admin.rpc('grant_topup', { p_user: user.id, p_amount: WELCOME_CREDITS, p_ref: `welcome-${user.id}` });
+  if (WELCOME_CREDITS > 0) await admin.rpc('grant_topup', { p_user: user.id, p_amount: WELCOME_CREDITS, p_ref: `welcome-${user.id}` });
   return NextResponse.json({ ok: true });
 }

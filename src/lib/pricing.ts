@@ -37,8 +37,9 @@ export function revisionCost(style: StyleId, clips: number, nr: number): number 
 }
 
 export const EXTRA_MINUTE_CREDITS = 5;
-/** Einmaliger Bonus nach dem Hinterlegen der Karte (10 Free-Credits + 10 = ein Viral-Video zum Testen) */
-export const WELCOME_CREDITS = 10;
+/** Bonus nach dem Hinterlegen der Karte – seit 22.10. AUS (Inhaber: Start nur mit 10 Credits = 1 Clean-Video, damit Premium
+ *  „knapp nicht reicht“ und man nachkauft/abonniert). Werbe-Code VELOX gibt +20 (= 30, Premium kostet 40). */
+export const WELCOME_CREDITS = 0;
 /** Freunde werben: beim ERSTEN Kauf des Geworbenen (Paket oder Nachkauf) – so bringen Fake-Konten nichts */
 export const INVITE_CREDITS = { werber: 100, freund: 50 };
 export const MAX_CLIPS_PER_JOB = 5;

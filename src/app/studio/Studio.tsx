@@ -4,7 +4,7 @@ import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import CaptionPreview from './CaptionPreview';
 import Results from './Results';
-import { jobCost, MAX_CLIPS_PER_JOB, MAX_UPLOAD_BYTES, STYLES, type StyleId, PREMIUM_AKTIV, REVISION_AKTIV, revisionCost } from '@/lib/pricing';
+import { euro, jobCost, MAX_CLIPS_PER_JOB, MAX_UPLOAD_BYTES, PACKS, PLANS, STYLES, type StyleId, PREMIUM_AKTIV, REVISION_AKTIV, revisionCost } from '@/lib/pricing';
 
 type Job = {
   id: string; status: 'queued' | 'processing' | 'review' | 'done' | 'failed'; style: StyleId; clips: number; source_name: string | null;
@@ -76,7 +76,31 @@ const readHeroLink = () => {
 const noSubscribe = () => () => {};
 const DRIVE_RE = /^https:\/\/((drive|docs)\.google\.com|(www\.|m\.)?youtube\.com|youtu\.be)\//; // Links, die wir öffnen können: Google Drive, YouTube
 
-export default function Studio({ credits, initialJobs }: { credits: number; initialJobs: Job[] }) {
+// UPSELL (Inhaber 22.10.): Mit den Start-Credits geht ein Clean-Video, Premium bleibt sichtbar, aber „knapp nicht erreichbar“ –
+// direkt an der Stilwahl steht, wie wenig es kostet, es freizuschalten (Abo bzw. einmaliger Nachkauf, aus der Preisliste berechnet).
+function Upsell({ style, balance }: { style: StyleId; balance: number }) {
+  const need = STYLES[style].credits;
+  const proAbo = Math.floor(PLANS.starter.credits / need);
+  const proPack = Math.floor(PACKS.p100.credits / need);
+  return (
+    <div className="upsell">
+      <p><b>{STYLES[style].name} braucht {need} Credits – dir fehlen nur noch {need - balance}.</b> So schaltest du es frei:</p>
+      <div className="upsell-opts">
+        <Link href="/konto#abo" className="upsell-opt best">
+          <span className="tag">Beliebt</span>
+          <b>Starter-Abo · {euro(PLANS.starter.monthly)} / Monat</b>
+          <span>{PLANS.starter.credits} Credits jeden Monat = {proAbo} {STYLES[style].name}-Videos · nur {euro(Math.round(PLANS.starter.monthly / proAbo))} pro Video · monatlich kündbar</span>
+        </Link>
+        <Link href="/konto#nachkauf" className="upsell-opt">
+          <b>Einmalig {PACKS.p100.credits} Credits · {euro(PACKS.p100.price)}</b>
+          <span>= {proPack} {STYLES[style].name}-Video{proPack === 1 ? '' : 's'} · verfallen nie · kein Abo</span>
+        </Link>
+      </div>
+    </div>
+  );
+}
+
+export default function Studio({ credits, plan = 'free', initialJobs }: { credits: number; plan?: string; initialJobs: Job[] }) {
   const [tab, setTab] = useState<'upload' | 'drive'>('upload');
   const [files, setFiles] = useState<File[]>([]);
   const [brolls, setBrolls] = useState<File[]>([]); // eigener B-Roll-Bereich: Zwischenschnitte und Bilder, nie Sprech-Clips
@@ -377,10 +401,11 @@ export default function Studio({ credits, initialJobs }: { credits: number; init
                 <input type="radio" name="style" checked={style === s} onChange={() => setStyle(s)} />
                 <b>{STYLES[s].name}{s === 'viral' ? ' 🔥' : ''}</b>
                 <span>{STYLES[s].desc}</span>
-                <em>{STYLES[s].credits} Credits pro Clip</em>
+                <em>{STYLES[s].credits > balance ? `🔒 ${STYLES[s].credits} Credits – dir fehlen ${STYLES[s].credits - balance}` : `${STYLES[s].credits} Credits pro Clip`}</em>
               </label>
             ))}
           </div>
+          {STYLES[style].credits > balance ? <Upsell style={style} balance={balance} /> : null}
         </div>
 
         <label className="check">
@@ -474,6 +499,19 @@ export default function Studio({ credits, initialJobs }: { credits: number; init
 
       <section className="card studio-jobs">
         <h2 style={{ font: '700 20px var(--display)', marginBottom: 14 }}>Deine Videos</h2>
+        {/* Nach dem ersten fertigen Video im Gratis-Paket: Lust auf mehr machen (Premium + Abo) */}
+        {plan === 'free' && jobs.some((j) => j.status === 'done') ? (
+          <div className="upsell" style={{ marginBottom: 16 }}>
+            <p><b>Gefällt dir dein Video? Mit Premium geht noch mehr:</b> Motion Graphics, Vollbild-Karten, Zähler und B-Roll – wie von einer Agentur.</p>
+            <div className="upsell-opts">
+              <Link href="/konto#abo" className="upsell-opt best">
+                <span className="tag">Beliebt</span>
+                <b>Starter-Abo · {euro(PLANS.starter.monthly)} / Monat</b>
+                <span>{PLANS.starter.credits} Credits jeden Monat = {Math.floor(PLANS.starter.credits / STYLES.premium.credits)} Premium- oder {Math.floor(PLANS.starter.credits / STYLES.clean.credits)} Clean-Videos · monatlich kündbar</span>
+              </Link>
+            </div>
+          </div>
+        ) : null}
         {jobs.length === 0 ? <p className="muted">Noch keine Videos. Lade oben dein erstes hoch.</p> : null}
         <div className="jobs">
           {jobs.map((j) => (

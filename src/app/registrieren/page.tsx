@@ -19,7 +19,7 @@ export default async function Page({ searchParams }: PageProps<'/registrieren'>)
   return (
     <AuthShell
       title={c.paket === 'free' ? 'Gratis-Konto erstellen' : `Mit ${plan.name} starten`}
-      sub={c.paket === 'free' ? '20 Credits zum Start – genug für 1 Viral- oder 2 Clean-Videos. 0 €, bis du selbst etwas kaufst.' : 'Schritt 1 von 3: Konto · Karte · Paket bestätigen'}
+      sub={c.paket === 'free' ? '10 Credits zum Start – dein erstes Video ist gratis. 0 €, bis du selbst etwas kaufst.' : 'Schritt 1 von 3: Konto · Karte · Paket bestätigen'}
     >
       <PlanPicker
         paket={c.paket}

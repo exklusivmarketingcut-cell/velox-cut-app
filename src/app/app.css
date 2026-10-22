@@ -256,3 +256,14 @@ label.f { display: grid; gap: 6px; font-size: 14px; font-weight: 600; color: #c9
 
 .adm-form { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px 12px; align-items: end; }
 .adm-form label { display: grid; gap: 5px; font-size: 13px; color: var(--mut); }
+
+/* Upsell an der Stilwahl / nach dem ersten Video (22.10.) */
+.upsell { margin-top: 12px; padding: 16px; border-radius: 18px; border: 1px solid rgba(79,158,255,.35); background: linear-gradient(160deg, rgba(79,158,255,.08), rgba(139,92,255,.06)); }
+.upsell > p { margin: 0 0 12px; font-size: 14.5px; color: var(--txt); line-height: 1.5; }
+.upsell-opts { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+.upsell-opt { position: relative; display: flex; flex-direction: column; gap: 4px; padding: 14px 16px; border-radius: 14px; background: var(--card); border: 1px solid var(--line2); color: var(--txt); text-decoration: none; transition: border-color .15s, transform .15s; }
+.upsell-opt:hover { border-color: var(--acc); transform: translateY(-1px); }
+.upsell-opt b { font-size: 15px; }
+.upsell-opt span { font-size: 13px; color: var(--mut); line-height: 1.45; }
+.upsell-opt.best { border-color: rgba(79,158,255,.6); box-shadow: 0 0 0 1px rgba(79,158,255,.25), 0 10px 30px rgba(79,158,255,.12); }
+.upsell-opt .tag { position: absolute; top: -9px; right: 12px; padding: 2px 9px; border-radius: 999px; background: var(--grad); color: #07080c; font-size: 11px; font-weight: 800; letter-spacing: .4px; }

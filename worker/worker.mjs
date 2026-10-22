@@ -205,7 +205,7 @@ async function claudeLaufEnde({ ordner, f, j }, code, rest, t0) {
     log('🤖', j.id, `Claude-Lauf fertig (${neu.erledigt}, ${min} Min.)`);
   } else {
     try { unlinkSync(join(ordner, 'claude_in_arbeit.txt')); } catch { /* schon frei */ }
-    const grund = /usage limit|limit reached|rate.?limit/i.test(rest) ? 'Claude-Limit erreicht'
+    const grund = /usage limit|limit reached|rate.?limit|hit your [a-z ]*limit|(session|weekly|daily) limit|resets \d/i.test(rest) ? 'Claude-Limit erreicht'
       : /401|unauthori[sz]ed|invalid api key|log ?in|authenticat/i.test(rest) ? 'Claude ist auf dem Mac nicht angemeldet (claude setup-token)'
       : /ENOENT|not found/i.test(rest) && code === -1 ? `Claude-Programm nicht gefunden (${CLAUDE_BIN})` : `Lauf endete ohne Freigabe (Code ${code})`;
     // Limit/Anmeldung/Programm: am Auftrag liegt es nicht – zählt nicht als Versuch, es geht alle 15 Min. weiter (kostet nichts,
